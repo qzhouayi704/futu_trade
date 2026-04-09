@@ -93,13 +93,9 @@ discuss/
 docs/
 archive/
 
-# Temporary scripts in root
-/_tmp*
-/_fix*
-/_check*
-/_verify*
-/_recover*
-/_futu-opend*
+# Temporary scripts and output in root
+/_*
+*_out.txt
 
 # Non-code project files
 FUNCTION.md
