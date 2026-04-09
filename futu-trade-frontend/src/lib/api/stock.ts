@@ -97,7 +97,7 @@ export const stockApi = {
     stockCode: string,
     days: number = 30
   ): Promise<ApiResponse<unknown>> => {
-    return apiClient.get(`/stocks/kline/${stockCode}`, { params: { days } });
+    return apiClient.get(`/kline/${stockCode}`, { params: { days } });
   },
 
   // 初始化数据

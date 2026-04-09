@@ -50,7 +50,7 @@ export function useStockPool() {
 
         if (response.success && response.data) {
           setPlates(response.data);
-          setPlatesTotalCount(response.pagination?.total || response.data.length);
+          setPlatesTotalCount(response.meta?.total || response.data.length);
           setPlatesPage(page);
           setPlatesPageSize(pageSize);
         } else {
@@ -81,7 +81,7 @@ export function useStockPool() {
 
         if (response.success && response.data) {
           setStocks(response.data);
-          setStocksTotalCount(response.pagination?.total || response.data.length);
+          setStocksTotalCount(response.meta?.total || response.data.length);
           setStocksPage(page);
           setStocksPageSize(pageSize);
         } else {
