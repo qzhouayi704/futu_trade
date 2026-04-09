@@ -80,8 +80,12 @@ export function useStockPool() {
         })) as PaginatedResponse<Stock>;
 
         if (response.success && response.data) {
-          setStocks(response.data);
-          setStocksTotalCount(response.meta?.total || response.data.length);
+          // /stocks/pool returns {stocks: [], plates: [], total_stocks, total_plates}
+          const poolData = response.data as any;
+          const stocksList = Array.isArray(poolData) ? poolData : (poolData.stocks || []);
+          const totalCount = Array.isArray(poolData) ? poolData.length : (poolData.total_stocks || stocksList.length);
+          setStocks(stocksList);
+          setStocksTotalCount(response.meta?.total || totalCount);
           setStocksPage(page);
           setStocksPageSize(pageSize);
         } else {
