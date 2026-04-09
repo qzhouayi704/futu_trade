@@ -181,4 +181,9 @@ export const stockApi = {
   removeFromWatchlist: async (code: string): Promise<ApiResponse<{ codes: string[] }>> => {
     return apiClient.delete(`/watchlist/${code}`);
   },
+
+  // 重置活跃度记录
+  resetActivityRecords: async (): Promise<ApiResponse<any>> => {
+    return apiClient.post("/stocks/reset-activity-records");
+  },
 };
