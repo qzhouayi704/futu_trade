@@ -1,0 +1,114 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project specific
+.env
+*.log
+logs/
+data/
+*.db
+*.db-journal
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+*.backup
+nul
+tmpclaude-*
+-p/
+*.7z
+*.zip
+*.tar.gz
+*.rar
+node_modules/
+
+# Test and diagnostic scripts (only root directory)
+/test_*.py
+/verify_*.py
+/diagnose_*.py
+/clear_*.py
+/migrate_*.py
+test_*.html
+
+# Backtest results
+backtest_results/
+test_reports/
+
+# Runtime configuration
+conditions.json
+
+# pip temporary files
+=*
+
+# pytest cache
+.hypothesis/
+
+# Claude and Kiro directories
+.claude/
+.kiro/
+.agents/
+CLAUDE.md
+.gemini/
+
+# Non-code directories
+discuss/
+docs/
+archive/
+
+# Temporary scripts in root
+/_tmp*
+/_fix*
+/_check*
+/_verify*
+/_recover*
+/_futu-opend*
+
+# Non-code project files
+FUNCTION.md
+TODO.md
+TODO-multi-strategy-frontend.md
+Trader.clinerules
+pytest_collect.txt
+pytest_verbose.txt
+run_tests.py
+tests/archived/
+
+.git_old/

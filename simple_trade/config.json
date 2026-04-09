@@ -1,0 +1,207 @@
+{
+  "futu_host": "127.0.0.1",
+  "futu_port": 11111,
+  "database_path": "simple_trade/data/trade.db",
+  "update_interval": 60,
+  "auto_trade": true,
+  "price_change_threshold": 3.0,
+  "volume_surge_threshold": 2.0,
+  "alert_5min_rise_threshold": 2.0,
+  "alert_5min_fall_threshold": 3.0,
+  "alert_5min_amplitude_threshold": 5.0,
+  "price_history_duration": 300,
+  "max_stocks_monitor": 800,
+  "max_subscription_stocks": 300,
+  "monitor_stocks_limit_by_market": {
+    "HK": 50,
+    "US": 50
+  },
+  "kline_priority_enabled": true,
+  "log_kline_detail": true,
+  "priority_thresholds": {
+    "high": 80,
+    "medium": 50,
+    "low": 10
+  },
+  "max_recent_signals": 50,
+  "max_active_stocks": 800,
+  "max_subscribed_stocks": 800,
+  "max_plate_stocks": 800,
+  "max_quality_plates": 20,
+  "max_target_plates": 50,
+  "kline_days": 30,
+  "max_kline_records": 200,
+  "stocks_per_plate": 50,
+  "max_stocks_for_kline_update": 300,
+  "max_stocks_for_trading": 1000,
+  "kline_init_days": 180,
+  "kline_batch_size": 10,
+  "kline_request_delay": 0.3,
+  "auto_init_kline": true,
+  "kline_init_max_stocks": 500,
+  "kline_rate_limit": {
+    "enabled": true,
+    "max_requests": 60,
+    "time_window": 30,
+    "request_delay": 1.0,
+    "fast_mode_delay": 0.5,
+    "batch_delay": 0.5
+  },
+  "kline_retry": {
+    "enabled": true,
+    "max_retries": 3,
+    "initial_backoff": 1.0,
+    "max_backoff": 32.0,
+    "backoff_multiplier": 2.0
+  },
+  "params_cache": {
+    "max_temporary_retries": 3,
+    "retry_cooldown_minutes": 30,
+    "enable_failure_tracking": true
+  },
+  "realtime_activity_filter": {
+    "enabled": true,
+    "min_turnover_rate": {
+      "US": 0.5,
+      "HK": 0.3
+    },
+    "min_turnover_amount": 5000000,
+    "low_activity_recheck_days": 7
+  },
+  "realtime_hot_filter": {
+    "enabled": true,
+    "min_volume": 100000,
+    "turnover_rate_weight": 0.4,
+    "turnover_weight": 0.6,
+    "turnover_rate_max_threshold": 5.0,
+    "turnover_max_threshold": 50000000
+  },
+  "gemini": {
+    "api_key": "",
+    "model": "gemini-3-flash-preview",
+    "enabled": true,
+    "timeout": 30,
+    "max_retries": 3,
+    "proxy": "http://127.0.0.1:7897"
+  },
+  "gemini_analyst": {
+    "enabled": true,
+    "min_urgency": 8,
+    "price_surge_threshold": 2.0,
+    "price_plunge_threshold": -2.0,
+    "capital_anomaly_threshold": 0.5,
+    "cooldown_seconds": 300,
+    "max_triggers_per_cycle": 3,
+    "cache_ttl": 300
+  },
+  "strategies": {
+    "active_strategy": "trend_reversal",
+    "available": {
+      "trend_reversal": {
+        "id": "trend_reversal",
+        "name": "高抛低吸策略",
+        "description": "基于趋势反转的买卖点检测",
+        "active_preset": "B-建议",
+        "presets": {
+          "A-保守": {
+            "name": "A-保守",
+            "description": "高门槛，信号少但精准",
+            "lookback_days": 10,
+            "min_drop_pct": 15.0,
+            "min_rise_pct": 15.0,
+            "min_reversal_pct": 3.0,
+            "max_up_ratio_buy": 0.4,
+            "min_up_ratio_sell": 0.6,
+            "stop_loss_pct": -5.0,
+            "stop_loss_days": 3
+          },
+          "B-建议": {
+            "name": "B-建议",
+            "description": "综合表现最优",
+            "lookback_days": 10,
+            "min_drop_pct": 13.0,
+            "min_rise_pct": 12.0,
+            "min_reversal_pct": 2.0,
+            "max_up_ratio_buy": 0.5,
+            "min_up_ratio_sell": 0.6,
+            "stop_loss_pct": -5.0,
+            "stop_loss_days": 3
+          }
+        }
+      },
+      "price_position_live": {
+        "id": "price_position_live",
+        "name": "日内价格位置策略",
+        "description": "基于回测最优参数，监控股价到达买卖点时产生信号",
+        "active_preset": "默认",
+        "presets": {
+          "默认": {
+            "name": "默认",
+            "description": "使用回测自动优化的参数"
+          }
+        }
+      },
+      "swing": {
+        "id": "swing",
+        "name": "低吸高抛策略",
+        "description": "基于12日高低点的技术分析策略",
+        "active_preset": "默认",
+        "presets": {
+          "默认": {
+            "name": "默认",
+            "description": "12日高低点策略",
+            "lookback_days": 12,
+            "stop_loss_pct": -5.0,
+            "stop_loss_min_rise_pct": 3.0,
+            "stop_loss_check_days": 3,
+            "narrow_range_enabled": true,
+            "narrow_range_amplitude_threshold": 3.0,
+            "narrow_range_check_days": 3,
+            "narrow_range_daily_rise_threshold": 1.0
+          }
+        }
+      },
+      "aggressive": {
+        "id": "aggressive",
+        "name": "激进交易策略",
+        "description": "专注于强势板块中的热门龙头股，进行当日或隔日短线交易",
+        "active_preset": "默认",
+        "presets": {
+          "默认": {
+            "name": "默认",
+            "description": "基于回测优化的参数",
+            "min_plate_strength": 70.0,
+            "max_plate_rank": 3,
+            "min_up_ratio": 0.6,
+            "min_change_pct": 2.5,
+            "max_change_pct": 5.0,
+            "min_volume": 5000000,
+            "min_price_position": 0,
+            "max_price_position": 40,
+            "target_profit_pct": 8.0,
+            "trailing_trigger_pct": 6.0,
+            "trailing_callback_pct": 2.0,
+            "fixed_stop_loss_pct": -5.0,
+            "quick_stop_loss_pct": -3.0,
+            "plate_rank_threshold": 5,
+            "max_holding_days": 1,
+            "max_daily_signals": 2,
+            "min_signal_strength": 0.7,
+            "prefer_intraday": true
+          }
+        }
+      }
+    },
+    "enabled_strategies": [
+      {
+        "strategy_id": "trend_reversal",
+        "preset_name": "B-建议"
+      },
+      {
+        "strategy_id": "price_position_live",
+        "preset_name": "默认"
+      }
+    ],
+    "auto_trade_strategy": null
+  }
+}

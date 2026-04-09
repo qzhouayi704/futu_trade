@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block title %}交易条件监控 - 富途量化交易系统{% endblock %}
+
+{% block nav_conditions %}active{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/config.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- K线额度面板 -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card quota-card">
+                <div class="card-header border-0">
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-bar me-2"></i>K线数据获取额度
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <div class="quota-number" id="used-quota">-</div>
+                                <div>已使用</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <div class="quota-number" id="remaining-quota">-</div>
+                                <div>剩余可用</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <div class="quota-number" id="total-quota">-</div>
+                                <div>总额度</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <div class="quota-number" id="usage-percent">-</div>
+                                <div>使用率</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-4">
+                        <div class="quota-progress">
+                            <div class="progress-bar" id="quota-progress-bar" role="progressbar" style="width: 0%"></div>
+                            <div class="quota-info" id="quota-info">加载中...</div>
+                        </div>
+                    </div>
+                    
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <small>
+                                <i class="fas fa-info-circle me-1"></i>
+                                最后更新: <span id="quota-last-update">-</span>
+                            </small>
+                        </div>
+                        <div class="col-md-6 text-end">
+                            <button class="btn btn-outline-light btn-sm" id="refresh-quota">
+                                <i class="fas fa-sync"></i> 刷新额度
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 交易条件面板 -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="fas fa-list-check me-2"></i>股票交易条件详情
+                            <span class="badge bg-primary ms-2" id="conditions-count">0</span>
+                        </h5>
+                        <div class="filter-buttons">
+                            <button class="btn btn-outline-primary btn-sm active" data-filter="all">
+                                <i class="fas fa-list"></i> 全部
+                            </button>
+                            <button class="btn btn-outline-success btn-sm" data-filter="pass">
+                                <i class="fas fa-check"></i> 符合条件
+                            </button>
+                            <button class="btn btn-outline-danger btn-sm" data-filter="fail">
+                                <i class="fas fa-times"></i> 不符合条件
+                            </button>
+                            <button class="btn btn-outline-info btn-sm" id="refresh-conditions">
+                                <i class="fas fa-sync"></i> 刷新
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="conditions-container">
+                        <div class="text-center py-5">
+                            <div class="spinner-border text-primary mb-3" role="status">
+                                <span class="visually-hidden">加载中...</span>
+                            </div>
+                            <div>正在加载交易条件数据...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 加载提示模态框 -->
+<div class="modal fade" id="loadingModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-body text-center p-4">
+                <div class="spinner-border text-primary mb-3" role="status">
+                    <span class="visually-hidden">加载中...</span>
+                </div>
+                <div id="loading-message">处理中，请稍候...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 提示消息区域 -->
+<div class="position-fixed top-0 end-0 p-3" style="z-index: 1100;">
+    <div id="toast-container"></div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='conditions.js') }}"></script>
+{% endblock %}

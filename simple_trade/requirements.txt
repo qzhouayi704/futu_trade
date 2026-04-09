@@ -1,0 +1,26 @@
+# 简化版富途量化交易系统依赖
+
+# Web框架 - FastAPI
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+
+# 异步数据库驱动
+aiosqlite>=0.19.0
+
+# 环境变量管理
+python-dotenv>=1.0.0
+
+# 富途API
+futu-api>=9.6.0
+
+# SocketIO
+python-socketio>=5.11.0
+
+# 新闻抓取
+playwright==1.49.1
+beautifulsoup4==4.12.3
+lxml==5.3.0
+
+# AI分析
+google-genai>=1.0.0

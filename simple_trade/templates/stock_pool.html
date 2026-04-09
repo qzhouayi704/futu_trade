@@ -1,0 +1,515 @@
+{% extends "base.html" %}
+
+{% block title %}股票池管理 - 富途量化交易系统{% endblock %}
+
+{% block nav_stock_pool %}active{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/stock-pool.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+    <!-- 页面标题和统计 -->
+    <div class="row mb-3">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-chart-pie"></i> 股票池概览
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row text-center">
+                        <div class="col-md-3">
+                            <div class="statistic-item">
+                                <h3 class="text-primary" id="total-plates">0</h3>
+                                <p class="text-muted mb-0">目标板块数</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="statistic-item">
+                                <h3 class="text-success" id="total-stocks">0</h3>
+                                <p class="text-muted mb-0">目标股票数</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="statistic-item">
+                                <h3 class="text-warning" id="manual-stocks">0</h3>
+                                <p class="text-muted mb-0">自选股</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="statistic-item">
+                                <h3 class="text-info" id="plate-stocks">0</h3>
+                                <p class="text-muted mb-0">板块股票</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主要内容区 -->
+    <div class="row">
+        <!-- 左侧：板块管理 -->
+        <div class="col-md-5">
+            <div class="card">
+                <div class="card-header">
+                    <i class="fas fa-layer-group"></i> 板块管理
+                    <button class="btn btn-sm btn-warning float-end me-2" id="manual-init-btn" style="margin-right: 10px;">
+                        <i class="fas fa-database"></i> 初始化股票池
+                    </button>
+                    <button class="btn btn-sm btn-outline-primary float-end" id="refresh-plates">
+                        <i class="fas fa-sync-alt"></i> 刷新
+                    </button>
+                </div>
+                <div class="card-body">
+                    <!-- 添加板块 -->
+                    <div class="mb-3">
+                        <label class="form-label">添加新板块</label>
+                        <div class="input-group mb-2">
+                            <input type="text" class="form-control" id="plate-code-input" 
+                                   placeholder="输入板块代码 (如: BK1027)">
+                            <button class="btn btn-primary" id="add-plate-btn">
+                                <i class="fas fa-plus"></i> 添加
+                            </button>
+                        </div>
+                        <div class="d-flex gap-2 mb-2">
+                            <button class="btn btn-sm btn-info" id="browse-plates-btn">
+                                <i class="fas fa-search"></i> 浏览所有板块
+                            </button>
+                            <button class="btn btn-sm btn-success" id="batch-add-btn" style="display: none;">
+                                <i class="fas fa-plus-circle"></i> 批量添加
+                            </button>
+                        </div>
+                        <small class="form-text text-muted">支持港股(BK)和美股(SZ)板块代码，或点击"浏览所有板块"选择</small>
+                    </div>
+
+                    <!-- 板块筛选器 -->
+                    <div class="mb-3">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label class="form-label">市场筛选</label>
+                                <select class="form-select form-select-sm" id="plate-market-filter">
+                                    <option value="">所有市场</option>
+                                    <option value="HK">港股</option>
+                                    <option value="US">美股</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">类型筛选</label>
+                                <select class="form-select form-select-sm" id="plate-type-filter">
+                                    <option value="">所有类型</option>
+                                    <option value="target">目标板块</option>
+                                    <option value="normal">普通板块</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 板块列表 -->
+                    <div class="plates-container">
+                        <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                            <table class="table table-sm table-hover">
+                                <thead class="table-light sticky-top">
+                                    <tr>
+                                        <th>代码</th>
+                                        <th>名称</th>
+                                        <th>市场</th>
+                                        <th>股票数</th>
+                                        <th>优先级</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="plates-table-body">
+                                    <tr>
+                                        <td colspan="6" class="text-center text-muted py-3">
+                                            <i class="fas fa-spinner fa-spin"></i> 加载中...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <!-- 板块分页控件 -->
+                        <div class="d-flex justify-content-between align-items-center mt-3" id="plates-pagination-container">
+                            <div class="d-flex align-items-center">
+                                <small class="text-muted me-3">每页显示</small>
+                                <select class="form-select form-select-sm" id="plates-page-size" style="width: auto;">
+                                    <option value="10">10</option>
+                                    <option value="20" selected>20</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                </select>
+                                <small class="text-muted ms-3" id="plates-info">显示第1-20条，共0条记录</small>
+                            </div>
+                            <div class="d-flex align-items-center">
+                                <nav aria-label="板块分页导航">
+                                    <ul class="pagination pagination-sm mb-0" id="plates-pagination">
+                                        <!-- 分页按钮将由JavaScript生成 -->
+                                    </ul>
+                                </nav>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧：股票管理 -->
+        <div class="col-md-7">
+            <div class="card">
+                <div class="card-header">
+                    <i class="fas fa-list-alt"></i> 股票管理
+                    <div class="float-end">
+                        <button class="btn btn-sm btn-outline-danger" id="clear-inactive-stocks">
+                            <i class="fas fa-trash"></i> 清理停用
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" id="refresh-stocks">
+                            <i class="fas fa-sync-alt"></i> 刷新
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- 搜索和添加股票 -->
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">搜索股票</label>
+                            <input type="text" class="form-control" id="search-stocks" 
+                                   placeholder="输入股票代码或名称">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">添加股票</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="stock-codes-input" 
+                                       placeholder="输入股票代码，多个用逗号分隔">
+                                <button class="btn btn-success" id="add-stocks-btn">
+                                    <i class="fas fa-plus"></i> 添加
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 筛选器 -->
+                    <div class="row mb-3">
+                        <div class="col-md-3">
+                            <label class="form-label">市场筛选</label>
+                            <select class="form-select form-select-sm" id="stock-market-filter">
+                                <option value="">所有市场</option>
+                                <option value="HK">港股</option>
+                                <option value="US">美股</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">板块筛选</label>
+                            <select class="form-select form-select-sm" id="plate-filter">
+                                <option value="">所有板块</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">状态筛选</label>
+                            <select class="form-select form-select-sm" id="status-filter">
+                                <option value="">所有状态</option>
+                                <option value="active">活跃</option>
+                                <option value="inactive">停用</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">来源筛选</label>
+                            <select class="form-select form-select-sm" id="source-filter">
+                                <option value="">所有来源</option>
+                                <option value="manual">手动添加</option>
+                                <option value="plate">板块导入</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- 股票列表 -->
+                    <div class="stocks-container">
+                        <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
+                            <table class="table table-sm table-hover">
+                                <thead class="table-light sticky-top">
+                                    <tr>
+                                        <th>代码</th>
+                                        <th>名称</th>
+                                        <th>板块</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="stocks-table-body">
+                                    <tr>
+                                        <td colspan="4" class="text-center text-muted py-3">
+                                            <i class="fas fa-spinner fa-spin"></i> 加载中...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <!-- 股票分页控件 -->
+                        <div class="d-flex justify-content-between align-items-center mt-3" id="stocks-pagination-container">
+                            <div class="d-flex align-items-center">
+                                <small class="text-muted me-3">每页显示</small>
+                                <select class="form-select form-select-sm" id="stocks-page-size" style="width: auto;">
+                                    <option value="10">10</option>
+                                    <option value="20" selected>20</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                </select>
+                                <small class="text-muted ms-3" id="stocks-info">显示第1-20条，共0条记录</small>
+                            </div>
+                            <div class="d-flex align-items-center">
+                                <nav aria-label="股票分页导航">
+                                    <ul class="pagination pagination-sm mb-0" id="stocks-pagination">
+                                        <!-- 分页按钮将由JavaScript生成 -->
+                                    </ul>
+                                </nav>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 删除确认模态框 -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">确认删除</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p id="delete-message">确定要删除这个项目吗？</p>
+                <div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <strong>注意：</strong>删除板块将同时删除该板块下的所有股票！
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-danger" id="confirm-delete">确定删除</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 加载提示模态框 -->
+<div class="modal fade" id="loadingModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-body text-center p-4">
+                <div class="spinner-border text-primary mb-3" role="status">
+                    <span class="visually-hidden">加载中...</span>
+                </div>
+                <div id="loading-message">处理中，请稍候...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 初始化进度模态框 -->
+<div class="modal fade" id="initProgressModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-database"></i> 初始化股票池
+                </h5>
+            </div>
+            <div class="modal-body p-4">
+                <!-- 进度条 -->
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <small class="text-muted">进度</small>
+                        <small class="text-muted">
+                            <span id="init-progress-percentage">0</span>%
+                        </small>
+                    </div>
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                             id="init-progress-bar" 
+                             role="progressbar" 
+                             style="width: 0%" 
+                             aria-valuenow="0" 
+                             aria-valuemin="0" 
+                             aria-valuemax="100">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 当前操作 -->
+                <div class="mb-3">
+                    <div class="d-flex align-items-center">
+                        <div class="spinner-border spinner-border-sm text-primary me-2" role="status">
+                            <span class="visually-hidden">处理中...</span>
+                        </div>
+                        <span id="init-current-action">准备初始化...</span>
+                    </div>
+                </div>
+                
+                <!-- 步骤信息 -->
+                <div class="text-center">
+                    <small class="text-muted">
+                        第 <span id="init-current-step">0</span> 步，共 <span id="init-total-steps">0</span> 步
+                    </small>
+                </div>
+                
+                <!-- 错误信息（初始隐藏） -->
+                <div class="alert alert-danger mt-3" id="init-error-alert" style="display: none;">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <strong>初始化失败：</strong>
+                    <span id="init-error-message"></span>
+                </div>
+                
+                <!-- 成功信息（初始隐藏） -->
+                <div class="alert alert-success mt-3" id="init-success-alert" style="display: none;">
+                    <i class="fas fa-check-circle"></i>
+                    <strong>初始化成功！</strong>
+                    <div class="mt-2">
+                        <small>
+                            获取了 <span id="init-plates-count">0</span> 个板块和 
+                            <span id="init-stocks-count">0</span> 只股票
+                        </small>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="init-cancel-btn">取消</button>
+                <button type="button" class="btn btn-success" id="init-complete-btn" style="display: none;" data-bs-dismiss="modal">
+                    完成
+                </button>
+                <button type="button" class="btn btn-danger" id="init-retry-btn" style="display: none;">
+                    重试
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 浏览板块模态框 -->
+<div class="modal fade" id="browsePlatesModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-search"></i> 浏览所有可用板块
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- 搜索和筛选 -->
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <input type="text" class="form-control" id="search-available-plates" 
+                               placeholder="搜索板块代码或名称...">
+                    </div>
+                    <div class="col-md-3">
+                        <select class="form-select" id="market-filter">
+                            <option value="">所有市场</option>
+                            <option value="HK">港股</option>
+                            <option value="US">美股</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <select class="form-select" id="status-filter-modal">
+                            <option value="">所有状态</option>
+                            <option value="added">已添加</option>
+                            <option value="not-added">未添加</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <!-- 批量操作 -->
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-primary" id="select-all-plates">
+                                <i class="fas fa-check-square"></i> 全选
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" id="deselect-all-plates">
+                                <i class="fas fa-square"></i> 取消全选
+                            </button>
+                            <button class="btn btn-sm btn-outline-info" id="select-tech-plates">
+                                <i class="fas fa-microchip"></i> 选择科技板块
+                            </button>
+                            <button class="btn btn-sm btn-outline-success" id="select-medical-plates">
+                                <i class="fas fa-pills"></i> 选择医药板块
+                            </button>
+                            <span class="ms-auto">
+                                已选择 <span id="selected-count">0</span> 个板块
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 板块列表 -->
+                <div class="available-plates-container">
+                    <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+                        <table class="table table-sm table-hover">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th width="40">
+                                        <input type="checkbox" class="form-check-input" id="select-all-checkbox">
+                                    </th>
+                                    <th>板块代码</th>
+                                    <th>板块名称</th>
+                                    <th>市场</th>
+                                    <th>状态</th>
+                                </tr>
+                            </thead>
+                            <tbody id="available-plates-table-body">
+                                <tr>
+                                    <td colspan="5" class="text-center text-muted py-3">
+                                        <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                        加载可用板块中...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- 加载状态 -->
+                <div id="plates-loading" class="text-center mt-3" style="display: none;">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">加载中...</span>
+                    </div>
+                    <p class="mt-2 text-muted">正在获取板块信息，请稍候...</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <div class="me-auto">
+                    <small class="text-muted">
+                        <i class="fas fa-info-circle"></i>
+                        选择相关板块后点击"批量添加"，系统将自动获取板块内的股票
+                    </small>
+                </div>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="confirm-batch-add" disabled>
+                    <i class="fas fa-plus-circle"></i> 批量添加选中板块
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 提示消息区域 -->
+<div class="position-fixed top-0 end-0 p-3" style="z-index: 1100;">
+    <div id="toast-container"></div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<!-- 股票池管理模块（按依赖顺序加载） -->
+<script src="{{ url_for('static', filename='js/stock-pool/plate-manager.js') }}"></script>
+<script src="{{ url_for('static', filename='js/stock-pool/stock-manager.js') }}"></script>
+<script src="{{ url_for('static', filename='js/stock-pool/pagination.js') }}"></script>
+<script src="{{ url_for('static', filename='js/stock-pool/browse-plates.js') }}"></script>
+<script src="{{ url_for('static', filename='js/stock-pool/priority-edit.js') }}"></script>
+<script src="{{ url_for('static', filename='js/stock-pool/init-progress.js') }}"></script>
+{% endblock %}
