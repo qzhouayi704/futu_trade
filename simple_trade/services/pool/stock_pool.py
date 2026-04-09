@@ -132,7 +132,7 @@ class StockPoolService:
 
             # 使用 DataInitializer
             self.logger.info("使用DataInitializer进行初始化...")
-            from .data_initializer import DataInitializer
+            from ..core.data_initializer import DataInitializer
             data_initializer = DataInitializer(self.db_manager, self.futu_client)
 
             init_result = data_initializer.initialize(force_refresh=force_refresh)
@@ -182,12 +182,17 @@ class StockPoolService:
         try:
             self.logger.info("开始增量更新股票池...")
 
-            # 使用 DataInitializer，但不强制刷新
-            from .data_initializer import DataInitializer
+            from ..core.data_initializer import DataInitializer
             data_initializer = DataInitializer(self.db_manager, self.futu_client)
 
-            # force_refresh=False 确保不会清空数据
-            init_result = data_initializer.initialize(force_refresh=False)
+            # 直接调用 _initialize_from_futu 绕过 has_data 检查
+            if not self.futu_client.is_available():
+                return {
+                    'success': False,
+                    'message': '富途API不可用，无法更新数据'
+                }
+
+            init_result = data_initializer._initialize_from_futu()
 
             if init_result['success']:
                 self.query_service.refresh_from_database()
