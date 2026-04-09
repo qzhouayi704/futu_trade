@@ -55,8 +55,8 @@ export default function StockPoolPage() {
 
   // 加载数据
   useEffect(() => {
-    loadPlates();
-    loadStocks(1, 200); // 加载更多股票以显示完整统计（后端限制最大200）
+    loadPlates().catch(() => {});
+    loadStocks(1, 200).catch(() => {});
   }, [loadPlates, loadStocks]);
 
   // 处理添加板块
