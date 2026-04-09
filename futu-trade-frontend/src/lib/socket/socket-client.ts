@@ -5,7 +5,7 @@ import { io, Socket } from "socket.io-client";
 let socket: Socket | null = null;
 let isInitializing = false;
 
-const socketUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+const socketUrl = typeof window !== "undefined" ? window.location.origin : (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000");
 
 /**
  * 健康检查：轮询后端直到就绪
@@ -25,7 +25,7 @@ async function waitForBackend(
 
       if (response.ok) {
         const data = await response.json();
-        if (data.ready) {
+        if (data.ready || data.status === "ok") {
           console.log("[Socket.IO] Backend is ready");
           return true;
         }
