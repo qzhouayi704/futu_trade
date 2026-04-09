@@ -226,6 +226,29 @@ async def init_data(
     )
 
 
+@router.post("/stocks/refresh", response_model=APIResponse)
+async def refresh_data(
+    container=Depends(get_container)
+):
+    """增量更新股票池数据（不删除现有数据）"""
+    _log_deprecation_warning("POST /stocks/refresh", "POST /api/stocks/refresh")
+
+    result = container.stock_pool_service.refresh_stock_pool()
+
+    if not result.get('success', False):
+        raise BusinessError(result.get('message', '数据更新失败'))
+
+    return APIResponse(
+        success=True,
+        data={
+            'plates_count': result.get('plates_count', 0),
+            'stocks_count': result.get('stocks_count', 0),
+            'plates_added': result.get('plates_added', 0),
+            'stocks_added': result.get('stocks_added', 0)
+        },
+        message=result.get('message', '数据更新成功')
+    )
+
 @router.get("/stocks/init/status", response_model=APIResponse)
 async def get_init_status():
     """获取初始化状态 - 兼容前端 GET /stocks/init/status
