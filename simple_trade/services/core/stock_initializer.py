@@ -11,7 +11,7 @@ from ...database.core.db_manager import DatabaseManager
 from ...api.futu_client import FutuClient
 from ...api.market_types import ReturnCode
 from ...utils.field_mapper import FieldMapper
-from ...utils.rate_limiter import wait_for_api, record_api_call
+from ...utils.rate_limiter import wait_for_api
 
 
 class StockInitializerService:
@@ -50,7 +50,6 @@ class StockInitializerService:
                 self.logger.debug(f"等待API可用: {wait_time:.1f}秒")
 
             ret, stock_data = self.futu_client.get_plate_stock(plate_code)
-            record_api_call('get_plate_stock')
 
             if ReturnCode.is_ok(ret) and stock_data is not None and not stock_data.empty:
                 for _, stock_row in stock_data.iterrows():
@@ -105,6 +104,15 @@ class StockInitializerService:
 
             # 更新每个板块的股票数量
             self.update_plate_stock_counts()
+
+            # 清理没有任何板块关联的孤立股票
+            orphan_result = self.db_manager.execute_update('''
+                DELETE FROM stocks WHERE id NOT IN (
+                    SELECT DISTINCT stock_id FROM stock_plates
+                )
+            ''')
+            if orphan_result and orphan_result > 0:
+                self.logger.info(f"清理了 {orphan_result} 条孤立股票记录")
 
             self.logger.info(f"成功保存 {len(stocks)} 只股票及其板块关联")
 
