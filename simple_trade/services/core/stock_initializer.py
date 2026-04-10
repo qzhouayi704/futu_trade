@@ -42,23 +42,51 @@ class StockInitializerService:
             List: 股票列表
         """
         stocks = []
+        max_retries = 2
 
-        try:
-            # 使用频率控制器
-            wait_time = wait_for_api('get_plate_stock')
-            if wait_time > 0:
-                self.logger.debug(f"等待API可用: {wait_time:.1f}秒")
+        for attempt in range(max_retries + 1):
+            try:
+                # 使用频率控制器
+                wait_time = wait_for_api('get_plate_stock')
+                if wait_time > 0:
+                    self.logger.debug(f"等待API可用: {wait_time:.1f}秒")
 
-            ret, stock_data = self.futu_client.get_plate_stock(plate_code)
+                ret, stock_data = self.futu_client.get_plate_stock(plate_code)
 
-            if ReturnCode.is_ok(ret) and stock_data is not None and not stock_data.empty:
+                if not ReturnCode.is_ok(ret):
+                    self.logger.warning(
+                        f"获取板块 {plate_code} 股票API返回错误: ret={ret}, "
+                        f"data={stock_data if isinstance(stock_data, str) else '(DataFrame)'}"
+                    )
+                    if attempt < max_retries:
+                        import time
+                        time.sleep(3)
+                        self.logger.info(f"重试获取板块 {plate_code} 股票 (第{attempt+1}次)")
+                        continue
+                    return stocks
+
+                if stock_data is None or stock_data.empty:
+                    if attempt < max_retries:
+                        import time
+                        time.sleep(3)
+                        self.logger.info(f"板块 {plate_code} 返回空数据, 重试 (第{attempt+1}次)")
+                        continue
+                    self.logger.info(f"板块 {plate_code} 确认无股票数据")
+                    return stocks
+
                 for _, stock_row in stock_data.iterrows():
                     stock_info = FieldMapper.extract_stock_info(stock_row, market_code)
                     if stock_info:
                         stocks.append(stock_info)
 
-        except Exception as e:
-            self.logger.warning(f"获取板块 {plate_code} 股票失败: {e}")
+                return stocks
+
+            except Exception as e:
+                self.logger.warning(f"获取板块 {plate_code} 股票异常: {e}")
+                if attempt < max_retries:
+                    import time
+                    time.sleep(3)
+                    continue
 
         return stocks
 
