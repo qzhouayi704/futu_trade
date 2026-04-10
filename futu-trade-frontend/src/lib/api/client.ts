@@ -16,7 +16,7 @@ const apiClient: AxiosInstance = axios.create({
 // 按 URL 前缀匹配，优先匹配更具体的路径
 const TIMEOUT_RULES: Array<{ match: (url: string) => boolean; timeout: number }> = [
   // 长耗时接口 → 60s
-  { match: (u) => /\/(news\/crawl|init|monitor\/start|advisor\/evaluate)/.test(u), timeout: 60000 },
+  { match: (u) => /\/(news\/crawl|init|refresh|monitor\/start|advisor\/evaluate)/.test(u), timeout: 60000 },
   // 中等耗时接口 → 30s
   { match: (u) => /\/(enhanced-heat|high-turnover)/.test(u), timeout: 30000 },
   // 交易条件页面相关接口 → 20s（后端繁忙时容易超 10s）
