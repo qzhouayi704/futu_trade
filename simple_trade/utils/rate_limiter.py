@@ -183,7 +183,9 @@ def wait_for_api(api_name: str = 'default') -> float:
     return limiter.wait_if_needed()
 
 
-
+def record_api_call(api_name: str = 'default'):
+    """记录一次API调用（兼容旧代码，wait_for_api已内含记录逻辑）"""
+    pass
 
 
 def can_call_api(api_name: str = 'default') -> bool:
