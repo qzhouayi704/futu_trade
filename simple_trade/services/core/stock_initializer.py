@@ -49,16 +49,24 @@ class StockInitializerService:
                 # 使用频率控制器
                 wait_time = wait_for_api('get_plate_stock')
                 if wait_time > 0:
-                    self.logger.debug(f"等待API可用: {wait_time:.1f}秒")
+                    self.logger.info(f"频率限制等待: {wait_time:.1f}秒")
 
                 ret, stock_data = self.futu_client.get_plate_stock(plate_code)
 
                 if not ReturnCode.is_ok(ret):
+                    err_msg = stock_data if isinstance(stock_data, str) else '(DataFrame)'
                     self.logger.warning(
-                        f"获取板块 {plate_code} 股票API返回错误: ret={ret}, "
-                        f"data={stock_data if isinstance(stock_data, str) else '(DataFrame)'}"
+                        f"获取板块 {plate_code} 股票API返回错误: ret={ret}, data={err_msg}"
                     )
-                    if attempt < max_retries:
+                    if attempt < max_retries and '频率太高' in str(err_msg):
+                        # 限频错误：重置计数器并等待完整窗口
+                        from ...utils.rate_limiter import _get_api_limiter
+                        _get_api_limiter('get_plate_stock').reset()
+                        import time
+                        self.logger.info(f"限频触发，等待30秒后重试板块 {plate_code} (第{attempt+1}次)")
+                        time.sleep(30)
+                        continue
+                    elif attempt < max_retries:
                         import time
                         time.sleep(3)
                         self.logger.info(f"重试获取板块 {plate_code} 股票 (第{attempt+1}次)")
