@@ -146,12 +146,21 @@ _api_limiters: dict = {}
 _api_limiters_lock = threading.Lock()
 
 
+# 各 API 实际限频配置（来自富途官方文档 / 实际错误提示）
+_API_RATE_LIMITS = {
+    'get_plate_stock': (10, 30),   # "每30秒最多10次"
+    'get_plate_list': (10, 30),
+    'default': (60, 30),
+}
+
+
 def _get_api_limiter(api_name: str) -> RateLimiter:
     """获取指定 API 的限流器"""
     if api_name not in _api_limiters:
         with _api_limiters_lock:
             if api_name not in _api_limiters:
-                _api_limiters[api_name] = RateLimiter(max_requests=60, time_window=30)
+                max_req, window = _API_RATE_LIMITS.get(api_name, _API_RATE_LIMITS['default'])
+                _api_limiters[api_name] = RateLimiter(max_requests=max_req, time_window=window)
     return _api_limiters[api_name]
 
 
@@ -174,15 +183,7 @@ def wait_for_api(api_name: str = 'default') -> float:
     return limiter.wait_if_needed()
 
 
-def record_api_call(api_name: str = 'default'):
-    """
-    记录一次 API 调用（wait_for_api 已自动记录，此函数为兼容保留）
 
-    Args:
-        api_name: API 名称
-    """
-    # wait_if_needed 已经在内部 append 了时间戳，这里无需重复
-    pass
 
 
 def can_call_api(api_name: str = 'default') -> bool:
