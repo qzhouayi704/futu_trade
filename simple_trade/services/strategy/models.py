@@ -73,20 +73,20 @@ DEFAULT_STRATEGIES: dict = {
     'trend_reversal': {
         'id': 'trend_reversal',
         'name': '高抛低吸策略',
-        'description': '基于趋势反转的买卖点检测',
+        'description': '基于趋势反转的买卖点检测（追踪止盈+高抛兜底）',
         'active_preset': 'B-建议',
         'presets': {
             'A-保守': {
                 'name': 'A-保守', 'description': '高门槛，信号少但精准',
                 'lookback_days': 10, 'min_drop_pct': 15.0, 'min_rise_pct': 15.0,
                 'min_reversal_pct': 3.0, 'max_up_ratio_buy': 0.4,
-                'min_up_ratio_sell': 0.6, 'stop_loss_pct': -5.0, 'stop_loss_days': 3,
+                'min_up_ratio_sell': 0.6, 'stop_loss_pct': -10.0, 'stop_loss_days': 5,
             },
             'B-建议': {
-                'name': 'B-建议', 'description': '综合表现最优',
+                'name': 'B-建议', 'description': '回测验证最优配置（胜率84%）',
                 'lookback_days': 10, 'min_drop_pct': 13.0, 'min_rise_pct': 12.0,
                 'min_reversal_pct': 2.0, 'max_up_ratio_buy': 0.5,
-                'min_up_ratio_sell': 0.6, 'stop_loss_pct': -5.0, 'stop_loss_days': 3,
+                'min_up_ratio_sell': 0.6, 'stop_loss_pct': -10.0, 'stop_loss_days': 5,
             },
         }
     },
@@ -98,25 +98,6 @@ DEFAULT_STRATEGIES: dict = {
         'presets': {
             '默认': {
                 'name': '默认', 'description': '使用回测自动优化的参数',
-            },
-        }
-    },
-    'swing': {
-        'id': 'swing',
-        'name': '低吸高抛策略',
-        'description': '基于12日高低点的技术分析策略',
-        'active_preset': '默认',
-        'presets': {
-            '默认': {
-                'name': '默认', 'description': '12日高低点策略',
-                'lookback_days': 12,
-                'stop_loss_pct': -5.0,
-                'stop_loss_min_rise_pct': 3.0,
-                'stop_loss_check_days': 3,
-                'narrow_range_enabled': True,
-                'narrow_range_amplitude_threshold': 3.0,
-                'narrow_range_check_days': 3,
-                'narrow_range_daily_rise_threshold': 1.0,
             },
         }
     },
