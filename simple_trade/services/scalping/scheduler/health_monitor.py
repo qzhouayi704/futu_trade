@@ -226,16 +226,12 @@ class HealthMonitor:
                             f"{resubscribe_stocks[:5]}",
                             "error",
                         )
+                        # 使用后台任务并发重连，避免阻塞事件循环和HTTP服务
                         for code in resubscribe_stocks:
-                            original_count = self._health_fail_counts.get(code, 0)
                             self._health_fail_counts[code] = 0
-                            try:
-                                await self._engine._reconnect(code)
-                                logger.info(f"[{code}] 自动重新订阅成功")
-                            except Exception as e:
-                                logger.error(f"[{code}] 自动重新订阅失败: {e}")
-                                # 恢复计数，下次健康检查会再次尝试
-                                self._health_fail_counts[code] = original_count
+                        asyncio.create_task(
+                            self._batch_reconnect(resubscribe_stocks)
+                        )
 
                     try:
                         from simple_trade.websocket.events import SocketEvent
@@ -255,6 +251,23 @@ class HealthMonitor:
                 raise
             except Exception as e:
                 logger.warning(f"健康检查异常: {e}")
+
+    async def _batch_reconnect(self, stock_codes: list[str]) -> None:
+        """后台批量重连（串行执行但不阻塞主事件循环）"""
+        success_count = 0
+        fail_count = 0
+        for code in stock_codes:
+            try:
+                await self._engine._reconnect(code)
+                logger.info(f"[{code}] 自动重新订阅成功")
+                success_count += 1
+            except Exception as e:
+                logger.error(f"[{code}] 自动重新订阅失败: {e}")
+                fail_count += 1
+        logger.info(
+            f"批量重连完成: 成功 {success_count}, 失败 {fail_count}, "
+            f"总计 {len(stock_codes)}"
+        )
 
     async def _run_pattern_detection(self, stock_code: str) -> None:
         """运行行为模式检测 + 行动评分"""

@@ -292,7 +292,12 @@ class LifecycleManager:
 
             try:
                 e._subscription_helper.set_priority_stocks([stock_code])
-                e._subscription_helper.subscribe_target_stocks(None)
+                # subscribe_target_stocks 是同步阻塞的 Futu API 调用，
+                # 使用 run_in_executor 避免阻塞事件循环
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None, e._subscription_helper.subscribe_target_stocks, None
+                )
                 print_status(f"【Scalping重连】[{stock_code}] 重连成功", "ok")
                 self._reconnect_attempts[stock_code] = 0
                 return
