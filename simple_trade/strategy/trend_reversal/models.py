@@ -40,9 +40,15 @@ class TrendAnalysis:
 
 @dataclass
 class StopLossCheck:
-    """止损检查结果"""
-    should_stop_loss: bool = False  # 是否应该止损
-    reason: str = ""                 # 止损原因
+    """止损/卖出检查结果"""
+    should_stop_loss: bool = False  # 是否应该卖出
+    reason: str = ""                 # 卖出原因
     days_held: int = 0               # 持有天数
-    return_pct: float = 0.0          # 收益率
+    return_pct: float = 0.0          # 当前收益率
     trend_continued: bool = True     # 趋势是否延续
+    # 追踪止盈
+    peak_return_pct: float = 0.0     # 持有期间最高收益率
+    trailing_activated: bool = False # 追踪止盈是否已激活
+    drawdown_pct: float = 0.0       # 从峰值的回撤幅度(%)
+    exit_type: str = ""              # 退出类型: stop_loss/trailing/high_throw/trend_fail/timeout
+

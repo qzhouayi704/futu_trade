@@ -32,8 +32,12 @@ class TrendReversalStrategy(BaseStrategy):
     DEFAULT_MIN_REVERSAL_PCT = 2.0
     DEFAULT_MAX_UP_RATIO_BUY = 0.4
     DEFAULT_MIN_UP_RATIO_SELL = 0.6
-    DEFAULT_STOP_LOSS_PCT = -5.0
-    DEFAULT_STOP_LOSS_DAYS = 3
+    DEFAULT_STOP_LOSS_PCT = -10.0
+    DEFAULT_STOP_LOSS_DAYS = 5
+    # 追踪止盈参数（回测验证）
+    TRAILING_ACTIVATE_PCT = 8.0   # 涨幅达此值激活追踪
+    TRAILING_DRAWDOWN_PCT = 3.0   # 从峰值回撤此值卖出
+    MAX_HOLD_DAYS = 15            # 最大持有天数
 
     def __init__(self, data_service=None, config: Dict[str, Any] = None):
         super().__init__(data_service, config)
@@ -240,54 +244,106 @@ class TrendReversalStrategy(BaseStrategy):
         kline_since_buy: List[Dict[str, Any]],
         market_context: Optional[Dict[str, Any]] = None,
     ) -> StopLossCheck:
-        """检查是否需要止损
+        """组合卖出检查（回测验证的最优策略）
 
-        Args:
-            stock_code: 股票代码
-            buy_price: 买入价格
-            buy_date: 买入日期
-            current_data: 当前行情数据
-            kline_since_buy: 买入后的K线数据
-            market_context: 市场环境数据（可选），包含:
-                - market_change_pct: 大盘涨跌幅(%)
-                - volume_ratio: 量比
-                - change_pct: 个股当日涨跌幅(%)
+        卖出优先级:
+        1. 固定止损: 收益率 ≤ -10%
+        2. 市场环境加速止损
+        3. T+5 趋势未延续: 持有5天后收益为负且阳线<1天
+        4. 追踪止盈: 涨幅≥8%激活，从峰值回撤3%卖出
+        5. 高抛兜底: 未激活追踪时，今日最高<昨日最高且昨日最高=近12日最高
+        6. 超时退出: 持有≥15天
         """
         result = StopLossCheck()
 
         try:
             current_price = current_data.get('last_price', 0)
+            current_high = current_data.get('high_price', 0)
             if buy_price <= 0 or current_price <= 0:
                 return result
 
             result.return_pct = ((current_price - buy_price) / buy_price) * 100
             result.days_held = len(kline_since_buy)
 
-            # 条件1：跌幅超过止损阈值
+            # 计算持有期间峰值收益
+            peak_price = buy_price
+            for d in kline_since_buy:
+                h = d.get('high', 0)
+                if h > peak_price:
+                    peak_price = h
+            if current_high and current_high > peak_price:
+                peak_price = current_high
+            result.peak_return_pct = ((peak_price - buy_price) / buy_price) * 100
+            result.drawdown_pct = ((peak_price - current_price) / peak_price) * 100 if peak_price > 0 else 0
+            result.trailing_activated = result.peak_return_pct >= self.TRAILING_ACTIVATE_PCT
+
+            # 优先级1: 固定止损
             if result.return_pct <= self.stop_loss_pct:
                 result.should_stop_loss = True
+                result.exit_type = 'stop_loss'
                 result.reason = f"⚠️ 跌幅{result.return_pct:.1f}%已超过止损阈值{self.stop_loss_pct:.1f}%"
                 return result
 
-            # 条件1.5：市场环境加速止损
+            # 优先级1.5: 市场环境加速止损
             if self._check_market_env_stop_loss(result, current_data, market_context):
+                result.exit_type = 'stop_loss'
                 return result
 
-            # 条件2：持有N天后趋势未延续
+            # 优先级2: T+5 趋势未延续
             if result.days_held >= self.stop_loss_days:
                 up_days = sum(1 for d in kline_since_buy if d.get('close', 0) > d.get('open', 0))
                 up_ratio = up_days / result.days_held if result.days_held > 0 else 0
 
-                if up_ratio < 0.4:
+                if result.days_held == self.stop_loss_days and result.return_pct < 0 and up_days < 1:
                     result.should_stop_loss = True
                     result.trend_continued = False
+                    result.exit_type = 'trend_fail'
                     result.reason = (
                         f"⚠️ 持有{result.days_held}天后趋势未延续，"
-                        f"上涨仅{up_days}天({up_ratio:.0%})，当前收益{result.return_pct:.1f}%"
+                        f"上涨仅{up_days}天，当前收益{result.return_pct:.1f}%"
                     )
+                    return result
                 else:
-                    result.trend_continued = True
-                    result.reason = f"趋势延续中，上涨{up_days}天({up_ratio:.0%})，收益{result.return_pct:.1f}%"
+                    result.trend_continued = up_ratio >= 0.4
+
+            # 优先级3: 追踪止盈（涨≥8%激活，回撤3%卖出）
+            if result.trailing_activated and result.drawdown_pct >= self.TRAILING_DRAWDOWN_PCT:
+                result.should_stop_loss = True
+                result.exit_type = 'trailing'
+                result.reason = (
+                    f"📈 追踪止盈：峰值涨幅{result.peak_return_pct:.1f}%，"
+                    f"回撤{result.drawdown_pct:.1f}%，当前收益{result.return_pct:.1f}%"
+                )
+                return result
+
+            # 优先级4: 高抛兜底（未激活追踪时使用）
+            if not result.trailing_activated and result.days_held > self.stop_loss_days:
+                if self._check_high_throw_fallback(current_data, kline_since_buy):
+                    result.should_stop_loss = True
+                    result.exit_type = 'high_throw'
+                    result.reason = (
+                        f"📉 高抛卖出：今日最高价回落，"
+                        f"当前收益{result.return_pct:.1f}%"
+                    )
+                    return result
+
+            # 优先级5: 超时退出
+            if result.days_held >= self.MAX_HOLD_DAYS:
+                result.should_stop_loss = True
+                result.exit_type = 'timeout'
+                result.reason = (
+                    f"⏰ 持有{result.days_held}天超时退出，"
+                    f"当前收益{result.return_pct:.1f}%"
+                )
+                return result
+
+            # 未触发卖出
+            if result.trailing_activated:
+                result.reason = (
+                    f"追踪止盈已激活，峰值{result.peak_return_pct:.1f}%，"
+                    f"回撤{result.drawdown_pct:.1f}%（阈值{self.TRAILING_DRAWDOWN_PCT}%），"
+                    f"收益{result.return_pct:.1f}%"
+                )
             else:
                 result.reason = f"持有{result.days_held}天，收益{result.return_pct:.1f}%，继续观察"
 
@@ -296,6 +352,24 @@ class TrendReversalStrategy(BaseStrategy):
             result.reason = f"止损检查异常: {str(e)}"
 
         return result
+
+    def _check_high_throw_fallback(
+        self,
+        current_data: Dict[str, Any],
+        kline_since_buy: List[Dict[str, Any]],
+    ) -> bool:
+        """高抛兜底：今日最高 < 昨日最高 且 昨日最高 = 近12日最高"""
+        if not kline_since_buy:
+            return False
+        current_high = current_data.get('high_price', 0)
+        yesterday_high = kline_since_buy[-1].get('high', 0)
+        if not current_high or not yesterday_high or current_high >= yesterday_high:
+            return False
+        lookback = min(self.lookback_days, len(kline_since_buy))
+        period_highs = [d.get('high', 0) for d in kline_since_buy[-lookback:]]
+        if not period_highs:
+            return False
+        return yesterday_high == max(period_highs)
 
     def _check_market_env_stop_loss(
         self,
