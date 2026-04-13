@@ -140,6 +140,22 @@ async def lifespan(app: FastAPI):
             # 启动 Scalping 引擎自动启动任务（传递 quote_pusher 参数）
             asyncio.create_task(auto_start_scalping(container, state_manager, quote_pusher))
             print_status("【行情推送】正在后台启动订阅（HTTP 服务已就绪）...", "info")
+
+            # 自动恢复监控：如果上次关闭前监控在运行，则自动重启
+            if state_manager.was_running_before_shutdown():
+                async def _auto_resume_monitoring():
+                    """后台自动恢复监控"""
+                    try:
+                        # 等待行情推送启动完成（给 3 秒缓冲）
+                        await asyncio.sleep(3)
+                        print_status("【自动恢复】检测到上次监控未正常关闭，正在自动恢复...", "info")
+                        await system_coordinator.start()
+                        print_status("【自动恢复】监控已自动恢复", "ok")
+                    except Exception as e:
+                        logging.error(f"自动恢复监控失败: {e}", exc_info=True)
+                        print_status(f"【自动恢复】监控恢复失败: {e}", "error")
+                asyncio.create_task(_auto_resume_monitoring())
+
             # 发送企业微信启动通知
             if hasattr(container, 'wechat_alert_service') and container.wechat_alert_service:
                 try:

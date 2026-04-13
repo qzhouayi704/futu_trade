@@ -13,7 +13,9 @@
 订阅状态、系统运行状态、回调机制暂时保留在本类中。
 """
 
+import json
 import logging
+import os
 import threading
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Callable
@@ -60,7 +62,11 @@ class StateManager:
         self._subscription_version: Optional[str] = None
         self._subscription_initialized: bool = False
 
-        # ========== 系统运行状态（暂保留） ==========
+        # ========== 系统运行状态（持久化） ==========
+        self._state_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            'data', 'monitor_state.json'
+        )
         self._is_running: bool = False
         self._last_update: Optional[datetime] = None
 
@@ -242,7 +248,7 @@ class StateManager:
         """读取 Scalping 指标快照，过期返回 None（由 Strategy 系统调用）"""
         return self.scalping_metrics.get(stock_code)
 
-    # ==================== 系统运行状态（暂保留） ====================
+    # ==================== 系统运行状态（持久化） ====================
 
     def is_running(self) -> bool:
         with self._state_lock:
@@ -251,6 +257,30 @@ class StateManager:
     def set_running(self, running: bool):
         with self._state_lock:
             self._is_running = running
+            self._persist_running_state(running)
+
+    def was_running_before_shutdown(self) -> bool:
+        """检查上次关闭前监控是否在运行（用于自动恢复）"""
+        try:
+            if os.path.exists(self._state_file):
+                with open(self._state_file, 'r') as f:
+                    data = json.load(f)
+                return data.get('is_running', False)
+        except Exception as e:
+            logging.warning(f"读取监控状态文件失败: {e}")
+        return False
+
+    def _persist_running_state(self, running: bool):
+        """持久化监控运行状态到文件"""
+        try:
+            os.makedirs(os.path.dirname(self._state_file), exist_ok=True)
+            with open(self._state_file, 'w') as f:
+                json.dump({
+                    'is_running': running,
+                    'timestamp': datetime.now().isoformat()
+                }, f)
+        except Exception as e:
+            logging.warning(f"持久化监控状态失败: {e}")
 
     def get_last_update(self) -> Optional[datetime]:
         with self._state_lock:
