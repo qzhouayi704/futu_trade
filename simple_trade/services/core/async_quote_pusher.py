@@ -15,7 +15,7 @@ import logging
 import asyncio
 from typing import Optional, Dict, Any, List
 
-from ...utils.logger import print_status
+from ...utils.logger import print_status, get_flow_logger
 
 
 class AsyncQuotePusher:
@@ -70,20 +70,21 @@ class AsyncQuotePusher:
             return result
 
         try:
+            flow = get_flow_logger("行情推送启动")
+
             # 检查是否已有订阅
             subscribed_count = self.container.subscription_manager.subscribed_count
             if subscribed_count > 0:
-                print_status(f"【行情推送】已有 {subscribed_count} 只股票订阅，直接启动推送", "info")
+                flow.step("已有订阅", count=subscribed_count)
             else:
                 # 没有订阅，通过 subscription_helper 订阅目标股票
-                print_status("【行情推送】没有订阅股票，开始订阅...", "info")
+                flow.step("开始订阅")
                 from ...utils.market_helper import MarketTimeHelper
                 current_markets = MarketTimeHelper.get_current_active_markets()
                 if not current_markets:
                     current_markets = [MarketTimeHelper.get_primary_market()]
 
-                loop = asyncio.get_event_loop()
-                # 通过 subscription_helper 订阅目标股票
+                loop = asyncio.get_running_loop()
                 subscription_result = await loop.run_in_executor(
                     None,
                     self.container.subscription_helper.subscribe_target_stocks,
@@ -91,10 +92,14 @@ class AsyncQuotePusher:
                 )
 
                 if not subscription_result['success']:
+                    flow.error("订阅失败", reason=subscription_result['message'])
                     result['message'] = f"股票订阅失败: {subscription_result['message']}"
+                    flow.end(success=False)
                     return result
 
                 subscribed_count = subscription_result.get('subscribed_count', 0)
+                flow.step("订阅完成", count=subscribed_count,
+                          markets=','.join(current_markets))
 
             # 启动推送任务
             self.is_running = True
@@ -103,8 +108,7 @@ class AsyncQuotePusher:
             result['success'] = True
             result['message'] = f"行情推送服务已启动，订阅 {subscribed_count} 只股票"
             result['subscribed_count'] = subscribed_count
-
-            print_status(result['message'], "ok")
+            flow.end(success=True, subscribed=subscribed_count)
 
         except Exception as e:
             result['message'] = f"行情推送服务启动异常: {str(e)}"
@@ -140,7 +144,7 @@ class AsyncQuotePusher:
 
         first_quote_fetched = False
         first_quote_timeout = 60  # 60 秒超时
-        start_time = asyncio.get_event_loop().time()
+        start_time = asyncio.get_running_loop().time()
 
         while self.is_running:
             try:
@@ -155,7 +159,7 @@ class AsyncQuotePusher:
 
                 # 检查首次报价超时
                 if not first_quote_fetched:
-                    elapsed = asyncio.get_event_loop().time() - start_time
+                    elapsed = asyncio.get_running_loop().time() - start_time
                     if elapsed > first_quote_timeout:
                         logging.error(f"首次报价获取超时（{first_quote_timeout}秒），设置事件避免阻塞")
                         self.first_quote_ready.set()

@@ -194,9 +194,10 @@ class TradeService:
         result = {'success': False, 'message': ''}
         
         try:
-            # 获取信号详情
+            # 获取信号详情（使用明确字段名避免索引错位）
             signal_data = self.db_manager.execute_query('''
-                SELECT ts.*, s.code, s.name 
+                SELECT ts.id, ts.signal_type, ts.signal_price,
+                       s.code, s.name
                 FROM trade_signals ts
                 JOIN stocks s ON ts.stock_id = s.id
                 WHERE ts.id = ?
@@ -206,10 +207,10 @@ class TradeService:
                 result['message'] = '信号不存在'
                 return result
             
-            signal = signal_data[0]
+            sig_id, signal_type, signal_price, stock_code, stock_name = signal_data[0]
             
             # 模拟执行交易
-            logging.info(f"模拟执行交易: {signal[2]} {signal[8]}({signal[7]}) @ {signal[3]}")
+            logging.info(f"模拟执行交易: {signal_type} {stock_code}({stock_name}) @ {signal_price}")
             
             # 更新信号状态为已执行
             self.db_manager.execute_update('''
@@ -220,7 +221,7 @@ class TradeService:
             
             result.update({
                 'success': True,
-                'message': f'交易信号已执行: {signal[2]} {signal[8]} @ {signal[3]:.2f}'
+                'message': f'交易信号已执行: {signal_type} {stock_code} @ {signal_price:.2f}'
             })
             
         except Exception as e:
@@ -257,9 +258,9 @@ class TradeService:
             sell_result = self.db_manager.execute_query('SELECT COUNT(*) FROM trade_signals WHERE signal_type = "SELL"')
             performance['sell_signals'] = sell_result[0][0] if sell_result else 0
             
-            # 成功率（简化计算）
+            # 执行率（已执行 / 总信号数）
             if performance['total_signals'] > 0:
-                performance['success_rate'] = (performance['executed_signals'] / performance['total_signals']) * 100
+                performance['success_rate'] = round((performance['executed_signals'] / performance['total_signals']) * 100, 1)
             
             # 最近信号 - 使用配置中的数量而不是硬编码
             recent_signals = self.db_manager.trade_history_queries.get_recent_trade_signals(hours=24, limit=self.config.max_recent_signals)
@@ -317,27 +318,33 @@ class TradeService:
         """获取信号详情"""
         try:
             signal_data = self.db_manager.execute_query('''
-                SELECT ts.*, s.code, s.name
+                SELECT ts.id, ts.stock_id, ts.signal_type, ts.signal_price,
+                       ts.target_price, ts.stop_loss_price, ts.condition_text,
+                       ts.is_executed, ts.executed_time, ts.created_at,
+                       s.code, s.name
                 FROM trade_signals ts
                 JOIN stocks s ON ts.stock_id = s.id
                 WHERE ts.id = ?
             ''', (signal_id,))
             
             if signal_data:
-                signal = signal_data[0]
+                (sig_id, stock_id, signal_type, signal_price,
+                 target_price, stop_loss_price, condition_text,
+                 is_executed, executed_time, created_at,
+                 stock_code, stock_name) = signal_data[0]
                 return {
-                    'id': signal[0],
-                    'stock_id': signal[1],
-                    'stock_code': signal[8],
-                    'stock_name': signal[9],
-                    'signal_type': signal[2],
-                    'signal_price': signal[3],
-                    'target_price': signal[4],
-                    'stop_loss_price': signal[5],
-                    'condition_text': signal[6],
-                    'is_executed': bool(signal[7]),
-                    'executed_time': signal[8],
-                    'created_at': signal[9]
+                    'id': sig_id,
+                    'stock_id': stock_id,
+                    'stock_code': stock_code,
+                    'stock_name': stock_name,
+                    'signal_type': signal_type,
+                    'signal_price': signal_price,
+                    'target_price': target_price,
+                    'stop_loss_price': stop_loss_price,
+                    'condition_text': condition_text,
+                    'is_executed': bool(is_executed),
+                    'executed_time': executed_time,
+                    'created_at': created_at
                 }
                 
         except Exception as e:

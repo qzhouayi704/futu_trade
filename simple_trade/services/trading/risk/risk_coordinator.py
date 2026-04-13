@@ -192,7 +192,7 @@ class RiskCoordinator:
                     turnover_rate=quote.get('turnover_rate', 0.0),
                 )
                 risk_config = self.dynamic_stop_loss.calculate_dynamic_risk_config(
-                    code, context=None  # 让它自动构建完整上下文
+                    code, context=context
                 )
 
                 # 检查是否触发动态止损

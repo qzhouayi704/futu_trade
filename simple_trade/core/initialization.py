@@ -16,7 +16,7 @@ import asyncio
 import logging
 
 from ..core.container.service_container import ServiceContainer
-from ..utils.logger import print_status
+from ..utils.logger import print_status, get_flow_logger
 
 
 async def _sync_positions_on_startup(container: ServiceContainer):
@@ -68,15 +68,15 @@ async def initialize_system_data(container: ServiceContainer, state_manager) -> 
         bool: 初始化是否成功（关键组件初始化成功返回 True）
     """
     success = True
+    flow = get_flow_logger("系统初始化")
 
     # 1. 优化数据库索引（非关键）
     try:
         await asyncio.to_thread(container.db_manager.create_indexes)
         await asyncio.to_thread(container.db_manager.system_queries.analyze_tables)
-        print_status("数据库索引优化完成", "ok")
+        flow.step("数据库索引优化")
     except Exception as e:
-        logging.warning(f"数据库索引优化失败: {e}")
-        # 不影响启动
+        flow.warn("数据库索引优化失败", error=str(e))
 
     # 2. 初始化股票池数据（关键）- 使用异步线程
     try:
@@ -85,22 +85,20 @@ async def initialize_system_data(container: ServiceContainer, state_manager) -> 
             force_refresh=False
         )
         if pool_result['success']:
-            print_status(
-                f"股票池: {pool_result['plates_count']}板块, {pool_result['stocks_count']}股票",
-                "ok"
-            )
+            flow.step("股票池初始化",
+                      plates=pool_result['plates_count'],
+                      stocks=pool_result['stocks_count'])
 
             # 3. 预热缓存
             stock_pool_data = state_manager.get_stock_pool()
             if not stock_pool_data['initialized']:
-                logging.warning("缓存预热失败")
+                flow.warn("缓存预热失败")
         else:
-            print_status(f"股票池初始化失败: {pool_result['message']}", "error")
-            success = False  # 关键失败
+            flow.error("股票池初始化失败", reason=pool_result['message'])
+            success = False
     except Exception as e:
-        print_status(f"股票池初始化异常: {e}", "error")
-        logging.error(f"股票池初始化异常: {e}", exc_info=True)
-        success = False  # 关键失败
+        flow.error("股票池初始化异常", err=e)
+        success = False
 
     # 4. 清理当天不完整K线数据（非关键）- 使用异步线程
     if container.futu_client.is_available():
@@ -108,25 +106,22 @@ async def initialize_system_data(container: ServiceContainer, state_manager) -> 
             await asyncio.to_thread(
                 container.kline_service.clean_today_incomplete_kline
             )
+            flow.step("K线数据清理")
         except Exception as e:
-            logging.warning(f"K线数据清理异常: {e}")
+            flow.warn("K线数据清理异常", error=str(e))
 
     # 5. 同步持仓股票到股票池（非关键）
     await _sync_positions_on_startup(container)
+    flow.step("持仓同步")
 
     # 6. 如果系统未运行，清空所有订阅（关键）
-    # 注意：订阅目标股票由 AsyncQuotePusher 负责，此处不再重复订阅
     if not state_manager.is_running():
         if container.subscription_helper:
             try:
                 container.subscription_helper.unsubscribe_all()
-                logging.info("系统初始化：已清空所有订阅")
+                flow.step("清空订阅")
             except Exception as e:
                 logging.debug(f"清空订阅失败（可能已为空）: {e}")
 
-    if success:
-        print_status("FastAPI 系统数据初始化完成", "ok")
-    else:
-        print_status("FastAPI 系统数据初始化失败", "error")
-
+    flow.end(success=success)
     return success

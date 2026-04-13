@@ -65,7 +65,7 @@ class PipelineBroadcast:
                 'price': action['price'],
                 'reason': action['reason'],
                 'timestamp': action['timestamp'],
-                'strategy_name': '低吸高抛策略',
+                'strategy_name': action.get('strategy_id', '未知策略'),
                 'preset_name': ''
             })
 

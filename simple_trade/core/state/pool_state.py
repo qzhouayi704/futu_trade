@@ -64,8 +64,8 @@ class PoolState:
                 stocks = stocks[:limit]
 
             return [
-                (i + 1, s['code'], s['name'], s['market'], s.get('plate_name', ''))
-                for i, s in enumerate(stocks)
+                (s.get('id', 0), s['code'], s['name'], s['market'], s.get('plate_name', ''))
+                for s in stocks
             ]
 
     def is_stock_pool_initialized(self) -> bool:

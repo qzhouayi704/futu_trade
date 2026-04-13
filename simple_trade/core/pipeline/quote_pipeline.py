@@ -10,6 +10,7 @@
 import logging
 import asyncio
 from typing import List, Dict, Tuple
+from ...utils.logger import get_flow_logger
 
 from .pipeline_broadcast import PipelineBroadcast
 
@@ -108,6 +109,13 @@ class QuotePipeline:
 
         await self._update_signal_tracking(quotes)
 
+        if trade_actions:
+            flow = get_flow_logger("策略信号")
+            for a in trade_actions:
+                flow.step(f"{a['signal_type']} {a['stock_code']}",
+                          price=a['price'], reason=a.get('reason', '')[:40])
+            flow.end(signals=len(trade_actions))
+
         if trade_actions or conditions or conditions_updated:
             await self._broadcaster.broadcast(quotes, trade_actions, conditions)
 
@@ -123,7 +131,7 @@ class QuotePipeline:
 
     def _get_target_stocks(self) -> List[Dict]:
         """获取已订阅的目标股票列表"""
-        subscribed_codes = list(self.container.subscription_manager.subscribed_stocks)
+        subscribed_codes = self.container.subscription_manager.subscribed_stocks
         if not subscribed_codes:
             return []
         stock_pool_data = self.state_manager.get_stock_pool()
@@ -137,7 +145,7 @@ class QuotePipeline:
                 logging.debug("没有订阅股票，跳过本次管道执行")
                 return []
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
                 None,
                 self.container.stock_data_service.get_real_quotes_from_subscribed,
@@ -149,7 +157,7 @@ class QuotePipeline:
 
     async def _run_in_executor(self, func, *args):
         """在线程池中执行同步方法的通用包装"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, func, *args)
 
     async def _check_price_triggers(self, quotes: List[Dict]):

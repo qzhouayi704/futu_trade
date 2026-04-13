@@ -37,15 +37,11 @@ def setup_logging(log_file: Optional[str] = None, log_level: str = 'INFO', conso
         os.makedirs('data', exist_ok=True)
         log_file = 'data/system.log'
 
-    # Windows 多进程环境下禁用日志轮转，避免文件锁冲突
-    # TimedRotatingFileHandler 在 Windows 下多进程同时轮转会导致 PermissionError
+    # Windows 多进程环境下 TimedRotatingFileHandler 会导致 PermissionError
+    # 改用 RotatingFileHandler 按大小轮转，避免文件锁冲突
     is_windows = platform.system() == 'Windows'
     if is_windows and use_rotation:
-        use_rotation = False
-        # 只在主进程输出警告（避免多进程重复输出）
-        if not hasattr(setup_logging, '_warned'):
-            print(f"[警告] Windows 环境下已禁用日志轮转以避免多进程文件锁冲突", file=sys.stderr)
-            setup_logging._warned = True
+        use_rotation = False  # 标记禁用时间轮转，下面改用大小轮转
 
     # 设置日志级别
     level_map = {
@@ -72,13 +68,10 @@ def setup_logging(log_file: Optional[str] = None, log_level: str = 'INFO', conso
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # 文件处理器 - 使用按日期轮转或普通文件处理器
+    # 文件处理器
     try:
         if use_rotation:
-            # 使用 TimedRotatingFileHandler 按日期轮转
-            # when='midnight' 表示每天午夜轮转
-            # interval=1 表示每1天轮转一次
-            # backupCount=30 表示保留最近30天的日志
+            # 非 Windows：按日期轮转，保留30天
             file_handler = TimedRotatingFileHandler(
                 log_file,
                 when='midnight',
@@ -86,10 +79,21 @@ def setup_logging(log_file: Optional[str] = None, log_level: str = 'INFO', conso
                 backupCount=30,
                 encoding='utf-8'
             )
-            # 设置日志文件名后缀格式为 .YYYY-MM-DD
             file_handler.suffix = "%Y-%m-%d"
+            rotation_info = "按日期轮转(30天)"
+        elif is_windows:
+            # Windows：按大小轮转，10MB × 7个备份 ≈ 最大80MB
+            from logging.handlers import RotatingFileHandler
+            file_handler = RotatingFileHandler(
+                log_file,
+                maxBytes=10 * 1024 * 1024,  # 10MB
+                backupCount=7,
+                encoding='utf-8'
+            )
+            rotation_info = "按大小轮转(10MB×7)"
         else:
             file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            rotation_info = "单文件(无轮转)"
 
         file_handler.setLevel(file_level)
         file_handler.setFormatter(file_formatter)
@@ -111,7 +115,14 @@ def setup_logging(log_file: Optional[str] = None, log_level: str = 'INFO', conso
                 'uvicorn.access']:
         logging.getLogger(lib).setLevel(logging.ERROR)
 
-    rotation_info = "按日期轮转" if use_rotation else "单文件"
+    # 降级高频模块日志（每5秒执行一次的模块只记录WARNING+）
+    for noisy_module in [
+        'simple_trade.api.subscription_optimizer',
+        'simple_trade.api.quote_service',
+        'scalping.health_monitor',
+    ]:
+        logging.getLogger(noisy_module).setLevel(logging.WARNING)
+
     logging.info(f"日志系统已初始化 - 文件级别: {log_level}, 控制台级别: {console_level}, 模式: {rotation_info}, 文件: {log_file}")
 
 
@@ -162,3 +173,82 @@ def print_status(message: str, status: str = 'info') -> None:
     # 同时写入日志文件
     log_level = {'info': logging.INFO, 'ok': logging.INFO, 'warn': logging.WARNING, 'error': logging.ERROR}
     logging.log(log_level.get(status, logging.INFO), message)
+
+
+class FlowLogger:
+    """流程日志器 - 在关键节点输出结构化摘要
+
+    用法:
+        flow = FlowLogger("系统启动")
+        flow.step("数据库初始化", stocks=120, plates=8)
+        flow.step("订阅完成", subscribed=50, failed=3)
+        flow.end(success=True)
+
+    输出格式:
+        ▶ [系统启动] 开始
+        ├ [系统启动] 数据库初始化 | stocks=120 plates=8 (1.2s)
+        ├ [系统启动] 订阅完成 | subscribed=50 failed=3 (3.4s)
+        ◀ [系统启动] 完成 | 总耗时=4.6s steps=2
+    """
+
+    def __init__(self, flow_name: str, logger_name: str = None):
+        self.flow_name = flow_name
+        self.logger = logging.getLogger(logger_name or 'flow')
+        self._start_time = datetime.now()
+        self._step_time = self._start_time
+        self._step_count = 0
+        self._errors = []
+        self.logger.info(f"▶ [{self.flow_name}] 开始")
+
+    def step(self, action: str, **metrics):
+        """记录流程步骤及关键指标"""
+        now = datetime.now()
+        elapsed = (now - self._step_time).total_seconds()
+        self._step_time = now
+        self._step_count += 1
+
+        metrics_str = ' '.join(f"{k}={v}" for k, v in metrics.items())
+        msg = f"├ [{self.flow_name}] {action}"
+        if metrics_str:
+            msg += f" | {metrics_str}"
+        msg += f" ({elapsed:.1f}s)"
+        self.logger.info(msg)
+
+    def warn(self, action: str, **metrics):
+        """记录流程警告"""
+        metrics_str = ' '.join(f"{k}={v}" for k, v in metrics.items())
+        msg = f"├ [{self.flow_name}] ⚠ {action}"
+        if metrics_str:
+            msg += f" | {metrics_str}"
+        self.logger.warning(msg)
+
+    def error(self, action: str, err: Exception = None, **metrics):
+        """记录流程错误"""
+        self._errors.append(action)
+        metrics_str = ' '.join(f"{k}={v}" for k, v in metrics.items())
+        msg = f"├ [{self.flow_name}] ✖ {action}"
+        if metrics_str:
+            msg += f" | {metrics_str}"
+        if err:
+            msg += f" | error={err}"
+        self.logger.error(msg)
+
+    def end(self, success: bool = True, **metrics):
+        """结束流程并输出摘要"""
+        total = (datetime.now() - self._start_time).total_seconds()
+        status = "完成" if success else "失败"
+        metrics_str = ' '.join(f"{k}={v}" for k, v in metrics.items())
+        msg = f"◀ [{self.flow_name}] {status} | 总耗时={total:.1f}s steps={self._step_count}"
+        if self._errors:
+            msg += f" errors={len(self._errors)}"
+        if metrics_str:
+            msg += f" {metrics_str}"
+        level = logging.INFO if success else logging.ERROR
+        self.logger.log(level, msg)
+        # 同时输出到控制台
+        print_status(msg, 'ok' if success else 'error')
+
+
+def get_flow_logger(flow_name: str) -> FlowLogger:
+    """快捷获取流程日志器"""
+    return FlowLogger(flow_name)
