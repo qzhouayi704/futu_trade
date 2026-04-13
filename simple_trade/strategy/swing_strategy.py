@@ -33,7 +33,8 @@ class KlineDateMeta:
     days_since_last: int = 0        # 距今自然日数
 
 
-@register_strategy("swing", is_default=True)
+# 已停用：低吸高抛策略不再注册到策略面板
+# @register_strategy("swing", is_default=True)
 class SwingStrategy(SwingStrategyHelpers, BaseStrategy):
     """
     低吸高抛策略

@@ -18,7 +18,7 @@ from .models import TrendAnalysis, StopLossCheck
 from .analysis import analyze_trend, analyze_plate_sentiment, adjust_signal_by_sentiment
 
 
-@register_strategy("trend_reversal", is_default=False)
+@register_strategy("trend_reversal", is_default=True)
 class TrendReversalStrategy(BaseStrategy):
     """趋势反转策略"""
 
