@@ -15,6 +15,7 @@ from ...services import (
     PriceMonitorService,
 )
 from ...services.alert.alert_checker import AlertChecker
+from ...services.alert.wechat_alert import WeChatAlertService
 from ...services.market_data.hot_stock import HotStockCoordinator
 from ...services.trading import (
     AggressiveTradeService,
@@ -53,6 +54,7 @@ class BusinessServices:
         self.risk_coordinator: Optional[RiskCoordinator] = None
         self.dynamic_stop_loss_strategy: Optional[DynamicStopLossStrategy] = None
         self.signal_tracker = None
+        self.wechat_alert_service: Optional[WeChatAlertService] = None
 
         # 策略相关
         self.strategy_registry: Optional[StrategyRegistry] = None
@@ -217,6 +219,10 @@ class BusinessServices:
 
         # 18. 日内超短线引擎（Scalping Engine）
         self._init_scalping_engine()
+
+        # 19. 企业微信群机器人告警服务
+        self.wechat_alert_service = WeChatAlertService()
+        logging.info("企业微信告警服务初始化完成")
 
         logging.info("业务服务初始化完成")
 

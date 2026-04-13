@@ -140,6 +140,12 @@ async def lifespan(app: FastAPI):
             # 启动 Scalping 引擎自动启动任务（传递 quote_pusher 参数）
             asyncio.create_task(auto_start_scalping(container, state_manager, quote_pusher))
             print_status("【行情推送】正在后台启动订阅（HTTP 服务已就绪）...", "info")
+            # 发送企业微信启动通知
+            if hasattr(container, 'wechat_alert_service') and container.wechat_alert_service:
+                try:
+                    await container.wechat_alert_service.alert_system_started()
+                except Exception as e:
+                    logging.warning(f"企业微信启动通知发送失败: {e}")
         else:
             logging.warning("系统数据初始化失败，跳过行情推送启动")
             print_status("【行情推送】跳过启动（初始化失败）", "warn")
@@ -177,6 +183,9 @@ async def lifespan(app: FastAPI):
 
             try:
                 container = dependencies.get_container()
+                # 关闭企业微信告警服务会话
+                if hasattr(container, 'wechat_alert_service') and container.wechat_alert_service:
+                    await container.wechat_alert_service.close()
                 container.cleanup()
             except Exception:
                 pass

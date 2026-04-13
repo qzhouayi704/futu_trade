@@ -115,6 +115,8 @@ class QuotePipeline:
                 flow.step(f"{a['signal_type']} {a['stock_code']}",
                           price=a['price'], reason=a.get('reason', '')[:40])
             flow.end(signals=len(trade_actions))
+            # 异步发送企业微信通知（不阻塞管道）
+            self._notify_trade_signals(trade_actions)
 
         if trade_actions or conditions or conditions_updated:
             await self._broadcaster.broadcast(quotes, trade_actions, conditions)
@@ -262,6 +264,21 @@ class QuotePipeline:
         except Exception as e:
             logging.error(f"【行情管道】多策略信号检测异常: {e}")
 
+
+    def _notify_trade_signals(self, trade_actions: List[Dict]):
+        """异步发送交易信号的企业微信通知"""
+        wechat = getattr(self.container, 'wechat_alert_service', None)
+        if not wechat or not wechat.enabled:
+            return
+        for action in trade_actions:
+            asyncio.create_task(
+                wechat.alert_trade_signal(
+                    stock_code=action['stock_code'],
+                    signal_type=action['signal_type'],
+                    price=action['price'],
+                    reason=action.get('reason', ''),
+                )
+            )
 
     def _init_signal_tracker(self):
         """初始化信号追踪器"""

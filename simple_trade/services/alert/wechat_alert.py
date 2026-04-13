@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Server酱告警服务
+企业微信群机器人告警服务
 
-通过 Server酱 (sct.ftqq.com) 推送系统告警通知到微信。
+通过企业微信群机器人 Webhook 推送系统告警通知。
 支持三级告警（紧急/警告/通知）、防抖去重、异步发送。
 """
 
@@ -28,32 +28,32 @@ class AlertLevel(Enum):
 
 class WeChatAlertService:
     """
-    Server酱告警服务
+    企业微信群机器人告警服务
 
     功能：
-    - 通过 Server酱推送 Markdown 格式告警到微信
+    - 通过企业微信群机器人 Webhook 推送 Markdown 格式告警
     - 防抖去重：相同告警在冷却期内不重复发送
     - 异步 HTTP 调用，不阻塞主业务逻辑
     """
 
-    SERVERCHAN_API = "https://sctapi.ftqq.com/{}.send"
+    WEBHOOK_API = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send"
 
     def __init__(
         self,
-        send_key: Optional[str] = None,
+        webhook_key: Optional[str] = None,
         cooldown_seconds: int = 300,
         enabled: bool = True,
     ):
-        self.send_key = send_key or os.environ.get("SERVERCHAN_SENDKEY", "")
-        self.enabled = enabled and bool(self.send_key)
+        self.webhook_key = webhook_key or os.environ.get("WECHAT_WEBHOOK_KEY", "")
+        self.enabled = enabled and bool(self.webhook_key)
         self._cooldown = cooldown_seconds
         self._sent_cache: dict[str, float] = {}
         self._session: Optional[aiohttp.ClientSession] = None
 
         if self.enabled:
-            logger.info("Server酱告警服务已启用")
+            logger.info("企业微信群机器人告警服务已启用")
         else:
-            logger.info("Server酱告警服务未启用（缺少 SERVERCHAN_SENDKEY）")
+            logger.info("企业微信群机器人告警服务未启用（缺少 WECHAT_WEBHOOK_KEY）")
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """获取或创建 HTTP 会话"""
@@ -87,7 +87,7 @@ class WeChatAlertService:
         Args:
             level: 告警级别
             title: 告警标题
-            content: 告警详情（支持 Markdown）
+            content: 告警详情（支持企业微信 Markdown 子集）
             dedup_key: 去重键（为空则用 level+title）
 
         Returns:
@@ -101,34 +101,36 @@ class WeChatAlertService:
         if not self._check_cooldown(cache_key):
             return False
 
-        # 构建 Markdown 消息体
+        # 构建企业微信 Markdown 消息体
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        send_title = f"{level.value} {title}"
-        markdown_body = (
-            f"{content}\n\n"
+        markdown_content = (
+            f"## {level.value} {title}\n"
+            f"{content}\n"
             f"> 时间：{timestamp}"
         )
 
-        url = self.SERVERCHAN_API.format(self.send_key)
+        url = f"{self.WEBHOOK_API}?key={self.webhook_key}"
         payload = {
-            "title": send_title,
-            "desp": markdown_body,
+            "msgtype": "markdown",
+            "markdown": {
+                "content": markdown_content,
+            },
         }
 
         try:
             session = await self._get_session()
-            async with session.post(url, data=payload) as resp:
+            async with session.post(url, json=payload) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    if data.get("code") == 0:
+                    if data.get("errcode") == 0:
                         logger.info(f"告警已发送: [{level.name}] {title}")
                         return True
                     else:
-                        logger.error(f"Server酱 API 返回错误: {data}")
+                        logger.error(f"企业微信 API 返回错误: {data}")
                 else:
-                    logger.error(f"Server酱 HTTP 错误: {resp.status}")
+                    logger.error(f"企业微信 HTTP 错误: {resp.status}")
         except Exception as e:
-            logger.error(f"Server酱告警发送异常: {e}")
+            logger.error(f"企业微信告警发送异常: {e}")
 
         return False
 
@@ -154,24 +156,29 @@ class WeChatAlertService:
 
     async def alert_system_failed(self, error: str):
         """系统启动失败"""
-        await self.critical("系统启动失败", f"后端启动异常：\n```\n{error}\n```")
+        await self.critical("系统启动失败", f"后端启动异常：\n> {error}")
 
     async def alert_futu_disconnected(self, error: str):
         """FutuOpenD 断连"""
-        await self.critical("FutuOpenD 断连", f"与 FutuOpenD 的连接已断开：\n{error}")
+        await self.critical("FutuOpenD 断连", f"与 FutuOpenD 的连接已断开：\n> {error}")
 
-    async def alert_trade_signal(self, stock_code: str, signal_type: str, reason: str):
+    async def alert_trade_signal(self, stock_code: str, signal_type: str,
+                                  price: float, reason: str):
         """交易信号触发"""
+        color = "info" if signal_type == "BUY" else "warning"
+        type_text = "买入" if signal_type == "BUY" else "卖出"
         await self.info(
             f"交易信号 - {stock_code}",
-            f"- 类型：**{signal_type}**\n- 原因：{reason}",
+            f"- 类型：<font color=\"{color}\">**{type_text}**</font>\n"
+            f"- 价格：**{price:.2f}**\n"
+            f"- 原因：{reason}",
         )
 
     async def alert_trade_failed(self, stock_code: str, error: str):
         """交易执行失败"""
         await self.critical(
             f"交易执行失败 - {stock_code}",
-            f"订单执行异常：\n```\n{error}\n```",
+            f"订单执行异常：\n> {error}",
         )
 
     async def alert_quote_interrupted(self):
