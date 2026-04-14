@@ -105,11 +105,11 @@ class NewsQueries:
             FROM news
         '''
 
-        # 添加时间过滤条件
+        # 添加时间过滤条件（使用 created_at 而非 publish_time，因为 publish_time 仅存储 HH:MM 格式）
         params = []
         if hours > 0:
             cutoff_time = datetime.now() - timedelta(hours=hours)
-            sql += " WHERE publish_time >= ?"
+            sql += " WHERE created_at >= ?"
             params.append(cutoff_time.isoformat())
 
         sql += '''
@@ -177,7 +177,7 @@ class NewsQueries:
                    SUM(CASE WHEN ns.impact_type = 'negative' THEN 1 ELSE 0 END) as negative_count
             FROM news_stocks ns
             JOIN news n ON ns.news_id = n.id
-            WHERE n.publish_time >= ?
+            WHERE n.created_at >= ?
             GROUP BY ns.stock_code, ns.stock_name
             ORDER BY mention_count DESC
             LIMIT ?
@@ -207,7 +207,7 @@ class NewsQueries:
                    SUM(CASE WHEN np.impact_type = 'negative' THEN 1 ELSE 0 END) as negative_count
             FROM news_plates np
             JOIN news n ON np.news_id = n.id
-            WHERE n.publish_time >= ?
+            WHERE n.created_at >= ?
             GROUP BY np.plate_name
             ORDER BY mention_count DESC
             LIMIT ?
