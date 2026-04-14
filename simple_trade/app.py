@@ -190,10 +190,12 @@ async def lifespan(app: FastAPI):
                 logging.error(f"ScalpingEngine 停止失败: {e}", exc_info=True)
 
             try:
-                coordinator = dependencies.get_system_coordinator()
                 state = dependencies.get_state()
                 if state.is_running():
-                    await coordinator.stop()
+                    # 进程关闭时只清理内存状态，不持久化 is_running=false
+                    # 这样重启后 was_running_before_shutdown() 仍返回 true，可以自动恢复
+                    state._is_running = False
+                    print_status("【系统协调器】进程关闭，保留持久化状态以便重启恢复", "info")
             except Exception:
                 pass
 
