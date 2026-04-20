@@ -160,7 +160,7 @@ class TickerPoller:
                     await asyncio.sleep(interval_per_stock)
 
                 # 每 6 个周期输出一次诊断摘要
-                if cycle_count % 6 == 1:
+                if cycle_count % 3 == 1:
                     cycle_duration = time.time() - cycle_start
                     # 统计有持续错误的股票
                     problem_stocks = [

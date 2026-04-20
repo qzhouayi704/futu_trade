@@ -260,12 +260,26 @@ class DataDispatcher:
             f"{code}:{cnt}" for code, cnt in top_stocks
         )
 
-        print_status(
+        # 零数据股票
+        zero_stocks = [code for code, cnt in self._tick_counts.items() if cnt == 0]
+        zero_str = f" | 零数据:{len(zero_stocks)}只" if zero_stocks else ""
+
+        # 计算器异常统计
+        error_stocks = [
+            f"{code}:{','.join(f'{c}:{n}' for c, n in calcs.items() if n > 0)}"
+            for code, calcs in self._calc_error_counts.items()
+            if any(n > 0 for n in calcs.values())
+        ]
+        error_str = f" | 计算器异常:{error_stocks[:3]}" if error_stocks else ""
+
+        summary = (
             f"【Scalping数据】{stock_count}只股票 | "
             f"Tick:{total_ticks} OB:{total_obs} | "
-            f"Top: {top_str}",
-            "info"
+            f"Top: {top_str}{zero_str}{error_str}"
         )
+
+        print_status(summary, "info")
+        logger.info(f"[数据分发诊断] {summary}")
 
         # 重置计数
         active = self._engine._lifecycle._active_stocks

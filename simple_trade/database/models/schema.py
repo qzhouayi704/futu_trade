@@ -93,6 +93,9 @@ class DatabaseSchema(BaseTables, BusinessTables):
         'CREATE INDEX IF NOT EXISTS idx_capital_flow_time ON capital_flow_cache(timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_capital_flow_score ON capital_flow_cache(capital_score DESC)',
 
+        # === 资金流向日线表索引 ===
+        'CREATE INDEX IF NOT EXISTS idx_capital_flow_daily_code_date ON capital_flow_daily(stock_code, date DESC)',
+
         # === 大单追踪表索引 ===
         'CREATE INDEX IF NOT EXISTS idx_big_order_code ON big_order_tracking(stock_code)',
         'CREATE INDEX IF NOT EXISTS idx_big_order_time ON big_order_tracking(timestamp)',
@@ -136,6 +139,7 @@ class DatabaseSchema(BaseTables, BusinessTables):
             cls.TAKE_PROFIT_TASKS_TABLE,
             cls.TAKE_PROFIT_EXECUTIONS_TABLE,
             cls.CAPITAL_FLOW_CACHE_TABLE,
+            cls.CAPITAL_FLOW_DAILY_TABLE,
             cls.BIG_ORDER_TRACKING_TABLE,
             cls.AUTO_TRADE_TASKS_TABLE,
             cls.SIGNAL_PERFORMANCE_TABLE,
@@ -180,6 +184,7 @@ class TableNames:
     TAKE_PROFIT_TASKS = "take_profit_tasks"
     TAKE_PROFIT_EXECUTIONS = "take_profit_executions"
     CAPITAL_FLOW_CACHE = "capital_flow_cache"
+    CAPITAL_FLOW_DAILY = "capital_flow_daily"
     BIG_ORDER_TRACKING = "big_order_tracking"
     AUTO_TRADE_TASKS = "auto_trade_tasks"
     SIGNAL_PERFORMANCE = "signal_performance"

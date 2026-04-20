@@ -206,6 +206,19 @@ class BusinessTables:
         )
     '''
 
+    # 资金流向日线缓存表（每只股票每天一条，真实多日历史）
+    CAPITAL_FLOW_DAILY_TABLE = '''
+        CREATE TABLE IF NOT EXISTS capital_flow_daily (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_code VARCHAR(20) NOT NULL,
+            date DATE NOT NULL,
+            net_inflow DECIMAL(15,2),
+            net_inflow_ratio DECIMAL(5,4),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(stock_code, date)
+        )
+    '''
+
     # 大单追踪表
     BIG_ORDER_TRACKING_TABLE = '''
         CREATE TABLE IF NOT EXISTS big_order_tracking (
