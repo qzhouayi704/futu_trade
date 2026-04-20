@@ -110,7 +110,10 @@ class StockDataService:
                             except Exception as e:
                                 logging.error(f"处理报价数据失败 {row.get('code', 'unknown')}: {e}")
                 else:
-                    logging.warning(f"获取实时报价失败: ret={ret}, 可能需要先订阅股票")
+                    logging.warning(
+                        f"获取实时报价失败: ret={ret}, 请求{len(stock_codes)}只股票, "
+                        f"可能需要先订阅股票. 错误: {data}"
+                    )
             else:
                 logging.warning("富途API客户端不可用")
             
@@ -127,7 +130,11 @@ class StockDataService:
                         quotes.extend(fallback_quotes)
                         logging.info(f"K线fallback补充了 {len(fallback_quotes)} 条报价")
                     else:
-                        logging.warning(f"交易时间内有 {len(missing_stocks)} 只股票未获取到报价")
+                        missing_codes = [s.get('code', '?') for s in missing_stocks]
+                        logging.warning(
+                            f"交易时间内有 {len(missing_stocks)} 只股票未获取到报价: "
+                            f"{missing_codes[:15]}{'...' if len(missing_codes) > 15 else ''}"
+                        )
                 
         except Exception as e:
             logging.error(f"从已订阅股票获取实时报价失败: {e}")

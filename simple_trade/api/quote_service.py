@@ -78,15 +78,23 @@ class QuoteService:
             self.logger.debug(f"过滤后无可用股票，原始请求: {len(stock_codes)} 只")
             return RET_ERROR, "所有请求的股票均未订阅"
 
-        # 记录被过滤的股票
+        # 记录被过滤的股票（含订阅状态快照）
         filtered_count = len(stock_codes) - len(subscribed_codes)
         if filtered_count > 0:
-            # 只在过滤比例较高时记录 INFO
+            filtered_codes = [c for c in stock_codes if c not in subscribed_codes]
             filter_ratio = filtered_count / len(stock_codes)
-            if filter_ratio > 0.3:
+            if filter_ratio > 0.5:
+                # 过滤比例过高，可能存在订阅状态不一致
+                self.logger.warning(
+                    f"报价过滤比例异常: {filtered_count}/{len(stock_codes)} "
+                    f"({filter_ratio:.0%})，被过滤: {filtered_codes[:10]}"
+                )
+            elif filter_ratio > 0.3:
                 self.logger.info(f"过滤了 {filtered_count}/{len(stock_codes)} 只未订阅股票")
             else:
-                self.logger.debug(f"过滤了 {filtered_count} 只未订阅股票")
+                self.logger.debug(
+                    f"过滤了 {filtered_count} 只未订阅股票: {filtered_codes[:5]}"
+                )
 
         return self._fetch_quote(subscribed_codes)
 
@@ -112,7 +120,7 @@ class QuoteService:
             if self._enable_debug or (self._quote_call_count % self._log_interval == 1):
                 self.logger.debug(f"正在获取 {len(stock_codes)} 只股票的报价 (第{self._quote_call_count}次)")
 
-            ret, data = self._futu_client.client.get_stock_quote(stock_codes)
+            ret, data = self._futu_client.get_stock_quote(stock_codes)
 
             if ret == RET_OK:
                 if data is not None and not data.empty:
@@ -125,9 +133,15 @@ class QuoteService:
             is_subscribe_error = 'subscribe' in error_str.lower() or '订阅' in error_str
 
             if is_subscribe_error:
-                self.logger.warning(f"获取报价失败(订阅问题): {error_str[:100]}")
+                self.logger.warning(
+                    f"获取报价失败(订阅问题): 请求{len(stock_codes)}只, "
+                    f"股票={stock_codes[:10]}, 错误: {error_str[:200]}"
+                )
             else:
-                self.logger.warning(f"获取报价失败: {error_str[:100]}")
+                self.logger.warning(
+                    f"获取报价失败: 请求{len(stock_codes)}只, "
+                    f"股票={stock_codes[:10]}, 错误: {error_str[:200]}"
+                )
 
             return ret, data
 

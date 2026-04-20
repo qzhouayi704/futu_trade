@@ -42,7 +42,8 @@ class AggressiveTradeService:
         config: Config,
         realtime_service,
         plate_manager,
-        kline_service
+        kline_service,
+        quote_cache=None
     ):
         """
         初始化激进策略交易服务
@@ -53,12 +54,14 @@ class AggressiveTradeService:
             realtime_service: 实时行情服务
             plate_manager: 板块管理服务
             kline_service: K线数据服务
+            quote_cache: 全局报价缓存（可选，用于板块强势度计算）
         """
         self.db_manager = db_manager
         self.config = config
         self.realtime_service = realtime_service
         self.plate_manager = plate_manager
         self.kline_service = kline_service
+        self.quote_cache = quote_cache
         self.logger = logging.getLogger(__name__)
 
         # 获取激进策略配置
@@ -218,6 +221,8 @@ class AggressiveTradeService:
         """
         获取强势板块（前3名）
 
+        优先从全局报价缓存读取数据，避免对未订阅股票发起API请求。
+
         Returns:
             强势板块列表，按强势度排序
         """
@@ -233,22 +238,32 @@ class AggressiveTradeService:
 
             # 计算每个板块的强势度
             plate_scores = []
+            cache_hit = 0
+            cache_miss = 0
             for plate in plates:
-                # 获取板块内股票的实时行情
+                # 获取板块内股票列表
                 stocks = self.db_manager.stock_queries.get_stocks_by_plate(plate['code'])
                 if not stocks:
                     continue
 
                 stock_codes = [s['code'] for s in stocks]
-                quotes_result = self.realtime_service.get_realtime_quotes(stock_codes)
-                if not quotes_result or not quotes_result.get('success'):
-                    continue
 
-                # 将 quotes 列表转换为字典格式 {stock_code: quote_data}
+                # 优先从全局报价缓存读取
                 quotes_dict = {}
-                for quote in quotes_result.get('quotes', []):
-                    if quote and isinstance(quote, dict) and 'code' in quote:
-                        quotes_dict[quote['code']] = quote
+                if self.quote_cache:
+                    cached = self.quote_cache.get_quotes_for_codes(stock_codes)
+                    if cached:
+                        quotes_dict = cached
+                        cache_hit += 1
+
+                # 缓存未命中时回退到实时API（向后兼容）
+                if not quotes_dict:
+                    cache_miss += 1
+                    quotes_result = self.realtime_service.get_realtime_quotes(stock_codes)
+                    if quotes_result and quotes_result.get('success'):
+                        for quote in quotes_result.get('quotes', []):
+                            if quote and isinstance(quote, dict) and 'code' in quote:
+                                quotes_dict[quote['code']] = quote
 
                 if not quotes_dict:
                     continue
@@ -263,6 +278,12 @@ class AggressiveTradeService:
 
                 if score and score.strength_score >= 70:  # 强势度阈值
                     plate_scores.append(score)
+
+            if cache_hit > 0 or cache_miss > 0:
+                self.logger.info(
+                    f"板块强势度计算: 缓存命中 {cache_hit} 个板块, "
+                    f"缓存未命中 {cache_miss} 个板块"
+                )
 
             # 按强势度排序，取前3名
             plate_scores.sort(key=lambda x: x.strength_score, reverse=True)

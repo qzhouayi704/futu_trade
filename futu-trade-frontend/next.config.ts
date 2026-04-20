@@ -12,6 +12,10 @@ const nextConfig: NextConfig = {
         source: "/api/:path*",
         destination: `${FLASK_API_URL}/api/:path*`,
       },
+      {
+        source: "/health",
+        destination: `${FLASK_API_URL}/health`,
+      },
     ];
   },
 

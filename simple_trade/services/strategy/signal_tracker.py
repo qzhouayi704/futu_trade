@@ -9,6 +9,7 @@
 Requirements: 10.1, 10.2
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -250,7 +251,7 @@ class SignalTracker:
     # ---- 异步方法（供 QuotePipeline 直接调用，避免 run_in_executor） ----
 
     async def async_update_tracking(self, quotes: List[Dict]):
-        """异步版本：根据最新报价更新所有活跃追踪"""
+        """异步版本：根据最新报价更新所有活跃追踪（批量写入）"""
         if not quotes or not self._has_async:
             # 无异步能力时回退到同步
             if quotes:
@@ -270,26 +271,52 @@ class SignalTracker:
         active_tracks = [TrackingRecord.from_db_row(r) for r in active_rows]
         quote_map = {q.get('code', ''): q for q in quotes}
         now = datetime.now()
+        now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+        # 收集所有需要更新的 SQL 语句和参数（批量提交）
+        pending_updates: list[tuple[str, tuple]] = []
 
         for track in active_tracks:
             quote = quote_map.get(track.stock_code)
             if not quote:
                 continue
-            await self._async_update_single_track(track, quote, now)
+            update = self._compute_track_update(track, quote, now, now_str)
+            if update:
+                pending_updates.append(update)
 
-    async def _async_update_single_track(self, track: TrackingRecord,
-                                         quote: Dict, now: datetime):
-        """异步更新单条追踪记录"""
+        if not pending_updates:
+            return
+
+        # 单次提交所有更新到 write_queue（大幅减少队列竞争）
+        def _batch_write():
+            for sql, params in pending_updates:
+                self.db_manager.execute_update(sql, params)
+
+        try:
+            future = self.db_manager.write_queue.submit(_batch_write)
+            await asyncio.wait_for(
+                asyncio.to_thread(future.result), timeout=30.0,
+            )
+        except Exception as e:
+            logging.warning(
+                f"批量更新追踪记录失败({len(pending_updates)}条): {e}"
+            )
+
+    def _compute_track_update(
+        self, track: TrackingRecord, quote: Dict,
+        now: datetime, now_str: str,
+    ) -> Optional[tuple[str, tuple]]:
+        """计算单条追踪记录的更新（纯计算，无 I/O）"""
         current_price = quote.get('last_price', 0)
         if current_price <= 0 or track.signal_price <= 0:
-            return
+            return None
 
         change_pct = (current_price - track.signal_price) / track.signal_price * 100
 
         try:
             created = datetime.strptime(track.created_at.split('.')[0], '%Y-%m-%d %H:%M:%S')
         except (ValueError, AttributeError):
-            return
+            return None
         days_elapsed = (now - created).days
 
         updates = {}
@@ -308,7 +335,7 @@ class SignalTracker:
             updates['tracking_status'] = new_status
 
         if not updates:
-            return
+            return None
 
         set_clauses = []
         params = []
@@ -316,11 +343,8 @@ class SignalTracker:
             set_clauses.append(f"{col} = ?")
             params.append(val)
         set_clauses.append("updated_at = ?")
-        params.append(now.strftime('%Y-%m-%d %H:%M:%S'))
+        params.append(now_str)
         params.append(track.id)
 
         sql = f"UPDATE signal_performance SET {', '.join(set_clauses)} WHERE id = ?"
-        try:
-            await self.db_manager.async_execute_update(sql, tuple(params))
-        except Exception as e:
-            logging.error(f"异步更新追踪记录 {track.id} 失败: {e}")
+        return (sql, tuple(params))

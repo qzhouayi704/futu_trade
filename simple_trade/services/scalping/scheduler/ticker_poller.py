@@ -57,6 +57,14 @@ class TickerPoller:
         self._last_ticker_idx.pop(stock_code, None)
         self._fetch_errors.pop(stock_code, None)
 
+    @property
+    def _interval(self):
+        return self._ticker_interval
+
+    @_interval.setter
+    def _interval(self, value):
+        self._ticker_interval = value
+
     async def poll_loop(
         self, stocks_getter, running_checker, data_time_updater
     ) -> None:
@@ -78,20 +86,70 @@ class TickerPoller:
         if not stocks_getter():
             logger.warning("Ticker 轮询循环启动超时：无股票需要监控")
 
+        empty_cycle_count = 0  # 连续空数据计数器
+        empty_alerted = False  # 是否已发送告警
+        cycle_count = 0  # 总周期计数
+
         while running_checker():
             try:
                 stocks = stocks_getter()
                 if not stocks:
+                    empty_cycle_count += 1
+                    if empty_cycle_count >= 5 and not empty_alerted:
+                        empty_alerted = True
+                        logger.error(
+                            f"[Scalping告警] Ticker 轮询连续 {empty_cycle_count} 个"
+                            f"周期无股票数据，引擎可能处于空转状态"
+                        )
                     await asyncio.sleep(1.0)
                     continue
 
+                # 有数据时重置计数器
+                if empty_cycle_count > 0:
+                    empty_cycle_count = 0
+                    empty_alerted = False
+
+                cycle_count += 1
+                cycle_start = time.time()
+                success_count = 0
+                fail_count = 0
+                empty_count = 0
+                new_tick_total = 0
+
                 interval_per_stock = self._ticker_interval / len(stocks)
+                # 最小间隔 300ms，避免股票数量多时请求过于密集
+                interval_per_stock = max(interval_per_stock, 0.3)
                 for stock_code in stocks:
                     if not running_checker() or stock_code not in stocks_getter():
                         break
                     await self._rate_limiter.acquire()
-                    await self._poll_ticker(stock_code, data_time_updater)
+                    result = await self._poll_ticker(stock_code, data_time_updater)
+                    if result == 'ok':
+                        success_count += 1
+                    elif result == 'empty':
+                        empty_count += 1
+                    else:
+                        fail_count += 1
                     await asyncio.sleep(interval_per_stock)
+
+                # 每 6 个周期输出一次诊断摘要
+                if cycle_count % 6 == 1:
+                    cycle_duration = time.time() - cycle_start
+                    # 统计有持续错误的股票
+                    problem_stocks = [
+                        f"{code}:{cnt}"
+                        for code, cnt in self._fetch_errors.items()
+                        if cnt >= 3
+                    ]
+                    problem_str = f" | 问题股: {problem_stocks[:5]}" if problem_stocks else ""
+                    logger.info(
+                        f"[Ticker诊断] 周期#{cycle_count} | "
+                        f"{len(stocks)}只 | "
+                        f"成功:{success_count} 空:{empty_count} 失败:{fail_count} | "
+                        f"耗时:{cycle_duration:.1f}s | "
+                        f"间隔:{interval_per_stock:.2f}s/只"
+                        f"{problem_str}"
+                    )
 
             except asyncio.CancelledError:
                 raise
@@ -99,12 +157,16 @@ class TickerPoller:
                 logger.warning(f"Ticker 轮询循环异常: {e}")
                 await asyncio.sleep(1.0)
 
-    async def _poll_ticker(self, stock_code: str, data_time_updater) -> None:
-        """单次 Ticker 拉取与分发"""
+    async def _poll_ticker(self, stock_code: str, data_time_updater) -> str:
+        """单次 Ticker 拉取与分发
+
+        Returns:
+            'ok' - 成功获取新数据, 'empty' - 无新数据, 'fail' - 获取失败
+        """
         loop = asyncio.get_running_loop()
         try:
             ret, data = await loop.run_in_executor(
-                None,
+                self._futu_client.executor,
                 lambda: self._futu_client.get_rt_ticker(
                     stock_code, num=_TICKER_NUM
                 ),
@@ -120,10 +182,10 @@ class TickerPoller:
                     f"({type(e).__name__}), 累计{err_count}次",
                     "error",
                 )
-            return
+            return 'fail'
 
         if ret != RET_OK or data is None or data.empty:
-            return
+            return 'empty'
 
         # 收到数据，重置错误计数
         self._fetch_errors[stock_code] = 0
@@ -138,7 +200,7 @@ class TickerPoller:
         last_idx = self._last_ticker_idx.get(stock_code, -1)
         new_rows = data[data.index > last_idx] if last_idx >= 0 else data
         if new_rows.empty:
-            return
+            return 'empty'
 
         self._last_ticker_idx[stock_code] = int(new_rows.index[-1])
         data_time_updater(stock_code, time.time())
@@ -147,3 +209,5 @@ class TickerPoller:
             tick = row_to_tick(stock_code, row)
             if tick is not None:
                 await self._engine.on_tick(stock_code, tick)
+
+        return 'ok'

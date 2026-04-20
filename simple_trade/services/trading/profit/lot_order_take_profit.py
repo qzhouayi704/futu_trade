@@ -240,7 +240,7 @@ class LotOrderTakeProfitService:
             if not rows or not self.futu_trade_service:
                 return
 
-            orders_result = self.futu_trade_service.order_manager.get_orders()
+            orders_result = self.futu_trade_service.get_orders()
             if not orders_result.get('success'):
                 return
 

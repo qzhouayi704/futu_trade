@@ -26,17 +26,26 @@ class QuotePipeline:
         risk_coordinator=None,
         price_monitor=None,
         strategy_monitor=None,
+        # A6: 显式依赖注入（逐步替代 container.xxx）
+        subscription_manager=None,
+        stock_data_service=None,
+        alert_service=None,
+        kline_service=None,
     ):
         """
         初始化行情管道
 
         Args:
-            container: 服务容器
+            container: 服务容器（逐步废弃，仅用于向后兼容）
             socket_manager: WebSocket管理器
             state_manager: 状态管理器
             risk_coordinator: 风控协调器（可选）
             price_monitor: 价格监控服务（可选）
             strategy_monitor: 策略监控服务（可选）
+            subscription_manager: 订阅管理器（显式注入）
+            stock_data_service: 股票数据服务（显式注入）
+            alert_service: 告警服务（显式注入）
+            kline_service: K线服务（显式注入）
         """
         self.container = container
         self.socket_manager = socket_manager
@@ -47,13 +56,25 @@ class QuotePipeline:
         self.price_monitor = price_monitor
         self.strategy_monitor = strategy_monitor
 
-        self.push_interval = 5
+        # A6: 新增显式依赖（优先使用，fallback 到 container）
+        self.subscription_manager = subscription_manager or getattr(container, 'subscription_manager', None)
+        self.stock_data_service = stock_data_service or getattr(container, 'stock_data_service', None)
+        self.alert_service = alert_service or getattr(container, 'alert_service', None)
+        self.kline_service = kline_service or getattr(container, 'kline_service', None)
+
+        self.push_interval = 10
         self.strategy_check_interval = 60
         self._loop_count = 0
         self.signal_tracker = None
+        # 异步任务引用（防止 GC 回收和异常丢失）
+        self._pending_tasks: set = set()
 
         # 广播处理器（提取的广播和状态更新逻辑）
-        self._broadcaster = PipelineBroadcast(container, socket_manager, state_manager)
+        self._broadcaster = PipelineBroadcast(
+            container, socket_manager, state_manager,
+            alert_service=self.alert_service,
+            kline_service=self.kline_service
+        )
 
         if container.config:
             self.push_interval = getattr(container.config, 'quote_push_interval', 5)
@@ -78,6 +99,12 @@ class QuotePipeline:
             return []
 
         self.state_manager.update_quotes_cache(quotes)
+
+        # 更新全局报价缓存（供板块热度等消费方使用）
+        quote_cache = getattr(self.container, 'quote_cache', None)
+        if quote_cache:
+            quote_cache.update_from_quotes(quotes)
+
         await self._broadcaster.broadcast(quotes, [], [])
         self.state_manager.set_last_update()
 
@@ -99,13 +126,18 @@ class QuotePipeline:
 
         await self._check_price_triggers(quotes)
 
+        # 日内高抛低吸信号检查（仅持仓股）
+        intraday_signals = await self._check_intraday_profit(quotes)
+
         trade_actions: List[Dict] = []
+        trade_actions.extend(intraday_signals)
         conditions: List[Dict] = []
         conditions_updated = False
         if self._should_run_strategy():
-            trade_actions, conditions = await self._run_strategy_detection(quotes)
+            trade_actions_strategy, conditions = await self._run_strategy_detection(quotes)
+            trade_actions.extend(trade_actions_strategy)
             conditions_updated = True
-            self._start_signal_tracking(trade_actions)
+            self._start_signal_tracking(trade_actions_strategy)
 
         await self._update_signal_tracking(quotes)
 
@@ -127,35 +159,62 @@ class QuotePipeline:
         await self.run_monitoring_cycle(quotes)
 
     def _should_run_strategy(self) -> bool:
-        """判断是否应该执行策略条件检测（与 auto_trade 开关解耦，条件展示始终可用）"""
+        """判断是否应该执行策略条件检测（与 auto_trade 开关解耦，条件展示始终可用）
+
+        启动预热期（前 180 秒 / 36 个循环）跳过策略检测，
+        避免 fetch_kline 与 Scalping 订阅/CentralScheduler 同时竞争 OpenD 资源。
+        """
+        # 启动预热：前 36 个周期 (约 180 秒) 不执行策略，等 OpenD 稳定
+        warmup_cycles = max(1, 180 // self.push_interval)
+        if self._loop_count <= warmup_cycles:
+            if self._loop_count == 1:
+                logging.info(
+                    f"【策略预热】跳过前 {warmup_cycles} 个周期的策略检测 "
+                    f"(约 {warmup_cycles * self.push_interval} 秒)，等待 OpenD 稳定"
+                )
+            return False
+
         cycles = max(1, self.strategy_check_interval // self.push_interval)
         return cycles == 1 or self._loop_count % cycles == 1
 
     def _get_target_stocks(self) -> List[Dict]:
         """获取已订阅的目标股票列表"""
-        subscribed_codes = self.container.subscription_manager.subscribed_stocks
+        subscribed_codes = self.subscription_manager.subscribed_stocks
         if not subscribed_codes:
             return []
         stock_pool_data = self.state_manager.get_stock_pool()
         return [s for s in stock_pool_data['stocks'] if s['code'] in subscribed_codes]
 
     async def _fetch_quotes(self) -> List[Dict]:
-        """获取实时报价（唯一的报价获取点）"""
-        try:
-            target_stocks = self._get_target_stocks()
-            if not target_stocks:
-                logging.debug("没有订阅股票，跳过本次管道执行")
-                return []
-
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None,
-                self.container.stock_data_service.get_real_quotes_from_subscribed,
-                target_stocks
-            )
-        except Exception as e:
-            logging.error(f"【行情管道】获取报价异常: {e}")
+        """获取实时报价（唯一的报价获取点，含重试）"""
+        target_stocks = self._get_target_stocks()
+        if not target_stocks:
+            logging.debug("没有订阅股票，跳过本次管道执行")
             return []
+
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    self.stock_data_service.get_real_quotes_from_subscribed,
+                    target_stocks
+                )
+                if result:
+                    return result
+                # 返回空但没有异常，不重试
+                return []
+            except Exception as e:
+                if attempt < max_retries:
+                    backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                    logging.warning(
+                        f"【行情管道】获取报价失败(第{attempt+1}次)，{backoff}s后重试: {e}"
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logging.error(f"【行情管道】获取报价异常({max_retries+1}次均失败): {e}")
+        return []
 
     async def _run_in_executor(self, func, *args):
         """在线程池中执行同步方法的通用包装"""
@@ -205,6 +264,20 @@ class QuotePipeline:
         if getattr(svc, 'lot_order_take_profit_service', None):
             await self._run_in_executor(svc.lot_order_take_profit_service.check_prices, quotes)
             await self._run_in_executor(svc.lot_order_take_profit_service.check_triggered_orders)
+
+    async def _check_intraday_profit(self, quotes: List[Dict]) -> List[Dict]:
+        """检查日内高抛低吸信号（仅持仓股）"""
+        taker = getattr(self.container, 'intraday_profit_taker', None)
+        if not taker:
+            return []
+        try:
+            positions = await self._get_positions_dict()
+            if not positions:
+                return []
+            return await self._run_in_executor(taker.check, quotes, positions)
+        except Exception as e:
+            logging.debug(f"日内高抛低吸检查异常: {e}")
+            return []
 
     async def _run_strategy_detection(self, quotes: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
         """执行策略检测（自动交易 + 多策略信号），返回 (trade_actions, conditions)"""
@@ -266,18 +339,29 @@ class QuotePipeline:
 
 
     def _notify_trade_signals(self, trade_actions: List[Dict]):
-        """异步发送交易信号的企业微信通知"""
+        """异步发送交易信号的企业微信通知（保存 task 引用）"""
         wechat = getattr(self.container, 'wechat_alert_service', None)
         if not wechat or not wechat.enabled:
             return
         for action in trade_actions:
-            asyncio.create_task(
+            task = asyncio.create_task(
                 wechat.alert_trade_signal(
                     stock_code=action['stock_code'],
                     signal_type=action['signal_type'],
                     price=action['price'],
                     reason=action.get('reason', ''),
                 )
+            )
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, task):
+        """异步任务完成回调：移除引用 + 记录异常"""
+        self._pending_tasks.discard(task)
+        if not task.cancelled() and task.exception():
+            logging.error(
+                f"企业微信通知任务异常: {task.exception()}",
+                exc_info=task.exception()
             )
 
     def _init_signal_tracker(self):

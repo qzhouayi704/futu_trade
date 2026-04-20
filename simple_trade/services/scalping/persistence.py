@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 # flush 间隔（秒）
 FLUSH_INTERVAL = 5
+# 逐笔数据每次 INSERT 的最大行数（避免长时间占用 write_queue worker）
+_TICKER_CHUNK_SIZE = 500
+# 逐笔数据队列上限（超过后丢弃最旧数据，防止内存无限增长）
+_TICKER_QUEUE_MAX = 50000
 
 
 class ScalpingPersistence:
@@ -148,6 +152,14 @@ class ScalpingPersistence:
 
     def enqueue_ticker(self, tick: TickData) -> None:
         """入队逐笔成交数据"""
+        # 队列上限保护：超过阈值时丢弃最旧的 10% 数据
+        if len(self._ticker_queue) >= _TICKER_QUEUE_MAX:
+            drop_count = _TICKER_QUEUE_MAX // 10
+            self._ticker_queue = self._ticker_queue[drop_count:]
+            logger.warning(
+                "逐笔数据队列溢出，丢弃最旧 %d 条（剩余 %d 条）",
+                drop_count, len(self._ticker_queue),
+            )
         trade_date = datetime.now().strftime("%Y-%m-%d")
         self._ticker_queue.append((
             tick.stock_code,
@@ -201,87 +213,127 @@ class ScalpingPersistence:
         if not batch:
             return
         try:
-            await asyncio.to_thread(
+            future = self._db_manager.write_queue.submit(
                 self._db_manager.execute_many,
                 "INSERT INTO scalping_signals "
                 "(stock_code, signal_type, trigger_price, support_price, conditions, trade_date) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 batch,
             )
+            await asyncio.wait_for(
+                asyncio.to_thread(future.result),
+                timeout=20.0
+            )
         except Exception as e:
-            logger.error("Scalping 信号 flush 失败: %s", e)
+            logger.error("Scalping 信号 flush 失败: %s", e, exc_info=True)
 
     async def _flush_deltas(self, batch: list[tuple]) -> None:
         if not batch:
             return
         try:
-            await asyncio.to_thread(
+            future = self._db_manager.write_queue.submit(
                 self._db_manager.execute_many,
                 "INSERT INTO scalping_delta_history "
                 "(stock_code, delta, volume, period_seconds, trade_date) "
                 "VALUES (?, ?, ?, ?, ?)",
                 batch,
             )
+            await asyncio.wait_for(
+                asyncio.to_thread(future.result),
+                timeout=20.0
+            )
         except Exception as e:
-            logger.error("Scalping Delta flush 失败: %s", e)
+            logger.error("Scalping Delta flush 失败: %s", e, exc_info=True)
 
     async def _flush_pocs(self, batch: list[tuple]) -> None:
         if not batch:
             return
         try:
-            await asyncio.to_thread(
+            future = self._db_manager.write_queue.submit(
                 self._db_manager.execute_many,
                 "INSERT OR REPLACE INTO scalping_poc_snapshot "
                 "(stock_code, poc_price, volume_profile, trade_date, updated_at) "
                 "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
                 batch,
             )
+            await asyncio.wait_for(
+                asyncio.to_thread(future.result),
+                timeout=20.0
+            )
         except Exception as e:
-            logger.error("Scalping POC flush 失败: %s", e)
+            logger.error("Scalping POC flush 失败: %s", e, exc_info=True)
 
     async def _flush_levels(self, batch: list[tuple]) -> None:
         if not batch:
             return
         try:
-            await asyncio.to_thread(
+            future = self._db_manager.write_queue.submit(
                 self._db_manager.execute_many,
                 "INSERT INTO scalping_price_levels "
                 "(stock_code, price, volume, side, action, trade_date) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 batch,
             )
+            await asyncio.wait_for(
+                asyncio.to_thread(future.result),
+                timeout=30.0
+            )
         except Exception as e:
-            logger.error("Scalping 阻力/支撑线 flush 失败: %s", e)
+            logger.warning("Scalping 阻力/支撑线 flush 失败: %s", e)
 
     async def _flush_tickers(self, batch: list[tuple]) -> None:
-        """批量写入逐笔数据（使用 INSERT OR IGNORE 去重）"""
+        """批量写入逐笔数据（分块写入，避免长时间占用 write_queue）"""
         if not batch:
             return
-        try:
-            await asyncio.to_thread(
-                self._db_manager.execute_many,
-                "INSERT OR IGNORE INTO ticker_data "
-                "(stock_code, price, volume, turnover, direction, timestamp, trade_date) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                batch,
-            )
-            # 成功的flush不输出日志，减少控制台噪音
-        except Exception as e:
-            logger.error("逐笔数据 flush 失败: %s", e)
+        sql = (
+            "INSERT OR IGNORE INTO ticker_data "
+            "(stock_code, price, volume, turnover, direction, timestamp, trade_date) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        total = len(batch)
+        written = 0
+        for i in range(0, total, _TICKER_CHUNK_SIZE):
+            chunk = batch[i : i + _TICKER_CHUNK_SIZE]
+            try:
+                future = self._db_manager.write_queue.submit(
+                    self._db_manager.execute_many, sql, chunk,
+                )
+                await asyncio.wait_for(
+                    asyncio.to_thread(future.result),
+                    timeout=30.0,
+                )
+                written += len(chunk)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "逐笔数据 flush 超时（chunk %d-%d / %d），跳过剩余",
+                    i, i + len(chunk), total,
+                )
+                break
+            except Exception as e:
+                logger.error(
+                    "逐笔数据 flush 失败（chunk %d-%d / %d）: %s",
+                    i, i + len(chunk), total, e,
+                )
+        if written > 0 and total > _TICKER_CHUNK_SIZE:
+            logger.debug("逐笔数据 flush 完成: %d / %d 条", written, total)
 
     async def _flush_events(self, batch: list[tuple]) -> None:
         if not batch:
             return
         try:
-            await asyncio.to_thread(
+            future = self._db_manager.write_queue.submit(
                 self._db_manager.execute_many,
                 "INSERT INTO scalping_events "
                 "(stock_code, event_type, event_data, trade_date) "
                 "VALUES (?, ?, ?, ?)",
                 batch,
             )
+            await asyncio.wait_for(
+                asyncio.to_thread(future.result),
+                timeout=60.0
+            )
         except Exception as e:
-            logger.error("Scalping 事件 flush 失败: %s", e)
+            logger.error("Scalping 事件 flush 失败: %s", e, exc_info=True)
 
     # ================================================================
     # 数据恢复（Task 4.1 实现）
@@ -502,11 +554,96 @@ class ScalpingPersistence:
             logger.error("恢复交易信号失败: %s", e)
 
     # ================================================================
+    # 快照查询（从 engine._get_db_snapshot 移入）
+    # ================================================================
+
+    async def get_today_snapshot(self, stock_code: str) -> dict | None:
+        """从数据库查询当日快照数据
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            快照字典或 None
+        """
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+        params = (stock_code, trade_date)
+
+        try:
+            # Delta 历史
+            delta_rows = await self._db_manager.async_execute_query(
+                "SELECT stock_code, delta, volume, period_seconds "
+                "FROM scalping_delta_history "
+                "WHERE stock_code = ? AND trade_date = ? "
+                "ORDER BY id DESC LIMIT 60",
+                params,
+            )
+            delta_data = [
+                {"stock_code": r[0], "delta": r[1], "volume": r[2],
+                 "period_seconds": r[3], "timestamp": datetime.now().isoformat()}
+                for r in reversed(delta_rows)
+            ]
+
+            # POC 快照
+            poc_rows = await self._db_manager.async_execute_query(
+                "SELECT poc_price, volume_profile "
+                "FROM scalping_poc_snapshot "
+                "WHERE stock_code = ? AND trade_date = ?",
+                params,
+            )
+            poc_data = None
+            if poc_rows:
+                poc_price = poc_rows[0][0]
+                volume_profile = json.loads(poc_rows[0][1])
+                poc_data = {
+                    "stock_code": stock_code,
+                    "poc_price": poc_price,
+                    "poc_volume": volume_profile.get(str(poc_price), 0),
+                    "volume_profile": volume_profile,
+                    "timestamp": datetime.now().isoformat(),
+                }
+
+            # 活跃阻力/支撑位
+            level_rows = await self._db_manager.async_execute_query(
+                "SELECT stock_code, price, volume, side, action "
+                "FROM scalping_price_levels "
+                "WHERE stock_code = ? AND trade_date = ? "
+                "ORDER BY id ASC",
+                params,
+            )
+            final: dict[float, tuple] = {}
+            for r in level_rows:
+                if r[4] == "create":
+                    final[r[1]] = r
+                else:
+                    final.pop(r[1], None)
+            price_levels = [
+                {"stock_code": r[0], "price": r[1], "volume": r[2],
+                 "side": r[3], "action": "create",
+                 "timestamp": datetime.now().isoformat()}
+                for r in final.values()
+            ]
+
+            if not delta_data and poc_data is None and not price_levels:
+                return None
+
+            return {
+                "stock_code": stock_code,
+                "delta_data": delta_data,
+                "poc_data": poc_data,
+                "price_levels": price_levels,
+                "vwap_value": None,
+            }
+        except Exception as e:
+            logger.error(f"[{stock_code}] 从数据库获取快照失败: {e}")
+            return None
+
+    # ================================================================
     # 数据清理（Task 7.1 实现）
     # ================================================================
 
     async def cleanup_old_data(self, days: int = 7) -> None:
-        """删除 N 天前的历史数据"""
+        """删除 N 天前的历史数据（通过 write_queue 序列化，避免锁冲突）"""
         try:
             cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         except Exception as e:
@@ -524,10 +661,13 @@ class ScalpingPersistence:
         for table in tables:
             try:
                 sql = f"DELETE FROM {table} WHERE trade_date < ?"
-                deleted = await self._db_manager.async_execute_update(
-                    sql, (cutoff_date,),
+                future = self._db_manager.write_queue.submit(
+                    self._db_manager.execute_update, sql, (cutoff_date,),
                 )
-                if deleted:
+                deleted = await asyncio.wait_for(
+                    asyncio.to_thread(future.result), timeout=30.0,
+                )
+                if deleted and deleted > 0:
                     logger.info("清理 %s: 删除 %d 条过期记录", table, deleted)
             except Exception as e:
                 logger.error("清理 %s 失败: %s", table, e)
@@ -539,13 +679,38 @@ class ScalpingPersistence:
 
     async def _flush_loop(self) -> None:
         """后台定时 flush 循环"""
+        flush_count = 0
         while self._running:
             try:
                 await asyncio.sleep(FLUSH_INTERVAL)
+                flush_count += 1
+
+                # 记录 flush 前队列大小
+                q_sizes = {
+                    "signal": len(self._signal_queue),
+                    "delta": len(self._delta_queue),
+                    "poc": len(self._poc_queue),
+                    "level": len(self._level_queue),
+                    "ticker": len(self._ticker_queue),
+                    "event": len(self._event_queue),
+                }
+                total_pending = sum(q_sizes.values())
+
+                import time
+                t0 = time.time()
                 await self.flush()
+                flush_duration = time.time() - t0
+
+                # 每 12 次（约 60 秒）输出一次诊断
+                if flush_count % 12 == 1 or flush_duration > 5.0:
+                    non_zero = {k: v for k, v in q_sizes.items() if v > 0}
+                    logger.info(
+                        f"[Persistence诊断] flush#{flush_count} | "
+                        f"待写入:{total_pending}条 {non_zero} | "
+                        f"耗时:{flush_duration:.2f}s"
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Scalping flush 循环异常: %s", e)
-
 

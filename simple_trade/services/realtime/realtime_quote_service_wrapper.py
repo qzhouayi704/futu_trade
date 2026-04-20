@@ -104,8 +104,10 @@ class RealtimeQuoteServiceWrapper:
                 })
 
             else:
-                result['message'] = f'获取实时行情失败: ret={ret}'
-                result['errors'].append(f'API返回错误: {ret}')
+                result['message'] = f'获取实时行情失败: ret={ret}, 请求{len(stock_codes)}只'
+                result['errors'].append(
+                    f'API返回错误: ret={ret}, 股票={stock_codes[:10]}, data={str(quote_data)[:200]}'
+                )
 
         except Exception as e:
             logging.error(f"获取实时行情失败: {e}")

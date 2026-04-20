@@ -284,4 +284,17 @@ async def get_subscription_status(container=Depends(get_container)):
     )
 
 
+@router.get("/quotes/trade-signals", response_model=APIResponse)
+async def get_trade_signals():
+    """获取当前交易信号（来自内存状态，实时更新）"""
+    state = get_state_manager()
+    signals = state.get_trade_signals()
+
+    return APIResponse(
+        success=True,
+        message="获取交易信号成功",
+        data=signals
+    )
+
+
 logging.info("报价行情路由已注册")

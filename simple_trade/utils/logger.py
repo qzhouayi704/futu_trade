@@ -101,6 +101,32 @@ def setup_logging(log_file: Optional[str] = None, log_level: str = 'INFO', conso
     except Exception as e:
         print(f"无法创建文件日志处理器: {e}")
 
+    # 独立的错误日志文件（只记录 ERROR+，方便快速定位问题）
+    try:
+        error_log_file = log_file.replace('.log', '.error.log') if log_file else 'data/system.error.log'
+        if is_windows:
+            from logging.handlers import RotatingFileHandler as _RotatingFileHandler
+            error_handler = _RotatingFileHandler(
+                error_log_file,
+                maxBytes=5 * 1024 * 1024,  # 5MB
+                backupCount=5,
+                encoding='utf-8'
+            )
+        else:
+            error_handler = TimedRotatingFileHandler(
+                error_log_file,
+                when='midnight',
+                interval=1,
+                backupCount=30,
+                encoding='utf-8'
+            )
+            error_handler.suffix = "%Y-%m-%d"
+        error_handler.setLevel(logging.ERROR)
+        error_handler.setFormatter(file_formatter)
+        root_logger.addHandler(error_handler)
+    except Exception as e:
+        print(f"无法创建错误日志处理器: {e}")
+
     # 控制台处理器 - 临时使用INFO级别用于调试监控问题
     console_handler = logging.StreamHandler()
     console_handler.setLevel(console_log_level)

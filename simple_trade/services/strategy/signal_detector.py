@@ -136,7 +136,7 @@ class SignalDetector:
         if skipped_stocks:
             preview = ', '.join(skipped_stocks[:5])
             suffix = f' 等共 {len(skipped_stocks)} 只' if len(skipped_stocks) > 5 else ''
-            logging.warning(
+            logging.debug(
                 f"[{self.strategy_name}] K线数据不足被跳过: {preview}{suffix}"
             )
 

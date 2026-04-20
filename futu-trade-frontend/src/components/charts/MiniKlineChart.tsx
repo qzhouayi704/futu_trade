@@ -33,7 +33,7 @@ export function MiniKlineChart({
       setError(null);
 
       const response = await fetch(
-        `/api/stocks/kline/${stockCode}?days=30`
+        `/api/kline/${stockCode}?days=30`
       );
 
       if (!response.ok) {

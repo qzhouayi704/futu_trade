@@ -30,16 +30,18 @@ class SubscriptionOptimizer:
     MAX_QUOTE_RETRIES = 3  # 获取报价最大重试次数
     MAX_QUOTA = 300  # 富途API订阅额度限制
 
-    def __init__(self, subscription_manager, quote_service):
+    def __init__(self, subscription_manager, quote_service, quote_cache=None):
         """
         初始化订阅优化器
 
         Args:
             subscription_manager: 订阅管理器
             quote_service: 报价服务
+            quote_cache: 全局报价缓存（可选）
         """
         self.subscription_manager = subscription_manager
         self.quote_service = quote_service
+        self.quote_cache = quote_cache
         self.logger = logging.getLogger(__name__)
 
     def process_batches(
@@ -206,6 +208,10 @@ class SubscriptionOptimizer:
 
             if ReturnCode.is_ok(ret) and data is not None and not data.empty:
                 self.logger.info(f"[步骤2] 成功获取 {len(data)} 只股票的报价")
+                # 写入全局报价缓存
+                if self.quote_cache:
+                    cached = self.quote_cache.bulk_update_from_dataframe(data)
+                    self.logger.debug(f"[步骤2] 已缓存 {cached} 只股票报价")
                 return data
 
             self.logger.warning(

@@ -8,7 +8,6 @@ FastAPI 路由模块
 - trading/: 交易相关（trade, position_order, take_profit, strategy）
 - data/: 数据管理（stock, analysis, hot_stock, enhanced_heat）
 - system/: 系统管理（config, system, monitor, news）
-- compat/: 兼容路由接口
 """
 
 from fastapi import FastAPI
@@ -47,8 +46,6 @@ from .data.activity_refilter import router as activity_refilter_router
 from .data.high_turnover import router as high_turnover_router
 from .data.ticker import router as ticker_analysis_router
 
-# compat/ - 兼容路由
-from .compat import router as compat_router
 
 
 def register_routers(app: FastAPI) -> None:
@@ -86,6 +83,3 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(activity_refilter_router)
     app.include_router(high_turnover_router)
     app.include_router(ticker_analysis_router)
-
-    # 兼容路由
-    app.include_router(compat_router)

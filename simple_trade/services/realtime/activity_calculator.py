@@ -374,7 +374,7 @@ class ActivityCalculator:
         if check_failed:
             is_active = False
             activity_score = -1
-            self.logger.warning(f"股票 {code} 活跃度检查失败，标记为检查失败状态 (activity_score=-1)")
+            self.logger.debug(f"股票 {code} 活跃度检查失败，标记为检查失败状态 (activity_score=-1)")
 
         try:
             today = datetime.now().strftime('%Y-%m-%d')

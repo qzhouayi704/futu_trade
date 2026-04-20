@@ -51,6 +51,12 @@ class AsyncConnectionManager:
                 await conn.execute("PRAGMA foreign_keys = ON")
                 # 设置WAL模式提高并发性能
                 await conn.execute("PRAGMA journal_mode = WAL")
+                # 写锁等待 15 秒再报错（跨进程场景需要更长等待）
+                await conn.execute("PRAGMA busy_timeout = 15000")
+                # WAL 模式下 NORMAL 足够安全且显著提升写入速度
+                await conn.execute("PRAGMA synchronous = NORMAL")
+                # 16MB 缓存
+                await conn.execute("PRAGMA cache_size = -16000")
                 self._local.set(conn)
                 logging.debug(f"为异步上下文创建新数据库连接")
 

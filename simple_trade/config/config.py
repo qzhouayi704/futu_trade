@@ -18,6 +18,130 @@ from dataclasses import dataclass, asdict, field, fields
 from typing import Dict, Any, List, Optional, Tuple
 
 
+# ------------------------------------------------------------------
+# 嵌套配置 dataclass（支持 .get() 兼容旧代码的 dict 访问方式）
+# ------------------------------------------------------------------
+
+class _ConfigMixin:
+    """为配置 dataclass 提供 dict 兼容的 .get() 方法"""
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
+    def __getitem__(self, key: str):
+        return getattr(self, key)
+
+    def __contains__(self, key: str):
+        return hasattr(self, key)
+
+
+@dataclass
+class KlineRateLimitConfig(_ConfigMixin):
+    """K线请求频率控制配置"""
+    enabled: bool = True
+    max_requests: int = 60
+    time_window: int = 30
+    request_delay: float = 1.0
+    fast_mode_delay: float = 0.5
+    batch_delay: float = 0.5
+
+
+@dataclass
+class KlineRetryConfig(_ConfigMixin):
+    """K线请求重试配置"""
+    enabled: bool = True
+    max_retries: int = 3
+    initial_backoff: float = 1.0
+    max_backoff: float = 32.0
+    backoff_multiplier: float = 2.0
+
+
+@dataclass
+class RealtimeActivityFilterConfig(_ConfigMixin):
+    """实时活跃度筛选配置"""
+    enabled: bool = True
+    min_turnover_rate: float = 0.2
+    min_turnover_amount: int = 5000000
+    low_activity_recheck_days: int = 7
+
+
+@dataclass
+class RealtimeHotFilterConfig(_ConfigMixin):
+    """实时热门股筛选配置"""
+    enabled: bool = True
+    min_volume: int = 100000
+    turnover_rate_weight: float = 0.4
+    turnover_weight: float = 0.6
+    turnover_rate_max_threshold: float = 5.0
+    turnover_max_threshold: int = 50000000
+
+
+@dataclass
+class GeminiConfig(_ConfigMixin):
+    """Gemini AI 配置"""
+    api_key: str = "AIzaSyAEYkoUaP2kYhhKY2BuoBHO704vWjh0DwI"
+    model: str = "gemini-3-flash-preview"
+    enabled: bool = True
+    timeout: int = 30
+    max_retries: int = 3
+
+
+@dataclass
+class GeminiAnalystConfig(_ConfigMixin):
+    """Gemini 量化分析师配置"""
+    enabled: bool = False
+    min_urgency: int = 8
+    price_surge_threshold: float = 2.0
+    price_plunge_threshold: float = -2.0
+    capital_anomaly_threshold: float = 0.5
+    cooldown_seconds: int = 300
+    max_triggers_per_cycle: int = 3
+    cache_ttl: int = 300
+
+
+@dataclass
+class SubscriptionConfig(_ConfigMixin):
+    """订阅配置"""
+    max_quote_subscription: int = 300
+    max_ticker_subscription: int = 100
+    max_orderbook_subscription: int = 100
+    scalping_max_stocks: int = 15
+    enable_auto_replace: bool = True
+
+
+@dataclass
+class ScalpingProcessConfig(_ConfigMixin):
+    """Scalping 多进程超时配置"""
+    spawn_timeout: float = 60.0       # 子进程初始化超时（秒）
+    start_timeout: float = 60.0       # start 命令超时（秒）
+    stop_timeout: float = 5.0         # stop 命令超时（秒）
+    snapshot_timeout: float = 5.0     # snapshot 命令超时（秒）
+    heartbeat_interval: float = 30.0  # 子进程心跳间隔（秒）
+    heartbeat_timeout: float = 60.0   # 心跳超时判定（秒）
+    max_restarts: int = 3             # 最大自动重启次数
+
+
+@dataclass
+class LoggingConfig(_ConfigMixin):
+    """日志配置"""
+    console_level: str = "WARNING"
+    file_level: str = "INFO"
+    enable_quote_debug: bool = False
+    enable_scalping_debug: bool = False
+    quote_log_interval: int = 10
+
+
+def _to_config_obj(cls, value):
+    """将 dict 转换为对应的配置 dataclass 实例（兼容 JSON 加载）"""
+    if isinstance(value, cls):
+        return value
+    if isinstance(value, dict):
+        # 只传入 dataclass 中定义的字段，忽略多余的 key
+        valid_keys = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in value.items() if k in valid_keys}
+        return cls(**filtered)
+    return cls()
+
+
 @dataclass
 class Config:
     """
@@ -51,7 +175,7 @@ class Config:
     max_stocks_monitor: int = 800           # 最大监控股票数
     max_subscription_stocks: int = 300      # 最大订阅股票数量
     monitor_stocks_limit_by_market: dict = field(default_factory=lambda: {
-        "HK": 50,
+        "HK": 25,
         "US": 50
     })                                      # 按市场的订阅数量限制
     kline_priority_enabled: bool = True     # K线优先订阅开关
@@ -85,62 +209,22 @@ class Config:
     kline_init_max_stocks: int = 500        # K线初始化最大股票数量
 
     # ==================== K线请求频率控制配置 ====================
-    kline_rate_limit: dict = field(default_factory=lambda: {
-        "enabled": True,                    # 是否启用频率控制
-        "max_requests": 60,                 # 时间窗口内最大请求数
-        "time_window": 30,                  # 时间窗口（秒）
-        "request_delay": 1.0,               # 基础请求间隔（秒）
-        "fast_mode_delay": 0.5,             # 快速模式延迟（秒，不低于0.5）
-        "batch_delay": 0.5                  # 批次间延迟（秒）
-    })
+    kline_rate_limit: KlineRateLimitConfig = field(default_factory=KlineRateLimitConfig)
 
     # ==================== K线请求重试配置 ====================
-    kline_retry: dict = field(default_factory=lambda: {
-        "enabled": True,                    # 是否启用自动重试
-        "max_retries": 3,                   # 最大重试次数
-        "initial_backoff": 1.0,             # 初始退避时间（秒）
-        "max_backoff": 32.0,                # 最大退避时间（秒）
-        "backoff_multiplier": 2.0           # 退避倍数
-    })
+    kline_retry: KlineRetryConfig = field(default_factory=KlineRetryConfig)
 
     # ==================== 实时活跃度筛选配置 ====================
-    realtime_activity_filter: dict = field(default_factory=lambda: {
-        "enabled": True,                     # 是否启用活跃度筛选
-        "min_turnover_rate": 0.2,            # 最低换手率(%)
-        "min_turnover_amount": 5000000,      # 最低成交额(元)
-        "low_activity_recheck_days": 7       # 低活跃度重新检查天数
-    })
+    realtime_activity_filter: RealtimeActivityFilterConfig = field(default_factory=RealtimeActivityFilterConfig)
 
     # ==================== 实时热门股筛选配置 ====================
-    realtime_hot_filter: dict = field(default_factory=lambda: {
-        "enabled": True,                     # 是否启用筛选
-        "min_volume": 100000,                # 最小成交量（股）
-        "turnover_rate_weight": 0.4,         # 换手率评分权重
-        "turnover_weight": 0.6,              # 成交额评分权重
-        "turnover_rate_max_threshold": 5.0,  # 换手率满分阈值(%)
-        "turnover_max_threshold": 50000000   # 成交额满分阈值(元)
-    })
+    realtime_hot_filter: RealtimeHotFilterConfig = field(default_factory=RealtimeHotFilterConfig)
 
     # ==================== Gemini AI 配置 ====================
-    gemini: dict = field(default_factory=lambda: {
-        "api_key": "AIzaSyAEYkoUaP2kYhhKY2BuoBHO704vWjh0DwI",
-        "model": "gemini-3-flash-preview",
-        "enabled": True,
-        "timeout": 30,
-        "max_retries": 3
-    })
+    gemini: GeminiConfig = field(default_factory=GeminiConfig)
 
     # ==================== Gemini 量化分析师配置 ====================
-    gemini_analyst: dict = field(default_factory=lambda: {
-        "enabled": False,
-        "min_urgency": 8,
-        "price_surge_threshold": 2.0,
-        "price_plunge_threshold": -2.0,
-        "capital_anomaly_threshold": 0.5,
-        "cooldown_seconds": 300,
-        "max_triggers_per_cycle": 3,
-        "cache_ttl": 300
-    })
+    gemini_analyst: GeminiAnalystConfig = field(default_factory=GeminiAnalystConfig)
 
     # ==================== 策略配置 ====================
     strategies: dict = field(default_factory=lambda: {
@@ -149,22 +233,31 @@ class Config:
     })
 
     # ==================== 日志配置 ====================
-    logging: dict = field(default_factory=lambda: {
-        "console_level": "WARNING",      # 控制台日志级别
-        "file_level": "INFO",            # 文件日志级别
-        "enable_quote_debug": False,     # 报价服务调试日志
-        "enable_scalping_debug": False,  # Scalping引擎调试日志
-        "quote_log_interval": 10         # 报价日志输出间隔（每N次输出一次）
-    })
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     # ==================== 订阅配置 ====================
-    subscription_config: dict = field(default_factory=lambda: {
-        "max_quote_subscription": 300,      # QUOTE 订阅额度
-        "max_ticker_subscription": 100,     # TICKER 订阅额度
-        "max_orderbook_subscription": 100,  # ORDER_BOOK 订阅额度
-        "scalping_max_stocks": 50,          # Scalping 引擎最大监控数量
-        "enable_auto_replace": True,        # 是否启用自动替换订阅
-    })
+    subscription_config: SubscriptionConfig = field(default_factory=SubscriptionConfig)
+
+    # ==================== Scalping 多进程配置 ====================
+    scalping_process: ScalpingProcessConfig = field(default_factory=ScalpingProcessConfig)
+
+    def __post_init__(self):
+        """JSON 加载时自动将 dict 转换为嵌套 dataclass"""
+        _conversions = {
+            'kline_rate_limit': KlineRateLimitConfig,
+            'kline_retry': KlineRetryConfig,
+            'realtime_activity_filter': RealtimeActivityFilterConfig,
+            'realtime_hot_filter': RealtimeHotFilterConfig,
+            'gemini': GeminiConfig,
+            'gemini_analyst': GeminiAnalystConfig,
+            'logging': LoggingConfig,
+            'subscription_config': SubscriptionConfig,
+            'scalping_process': ScalpingProcessConfig,
+        }
+        for attr, cls in _conversions.items():
+            val = getattr(self, attr)
+            if isinstance(val, dict):
+                object.__setattr__(self, attr, _to_config_obj(cls, val))
 
 
 class ConfigValidator:

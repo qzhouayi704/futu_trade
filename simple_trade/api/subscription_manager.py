@@ -13,6 +13,7 @@
 """
 
 import logging
+import time
 from typing import List, Set, Dict, Any, Callable
 
 from .subscription_validator import SubscriptionValidator
@@ -58,6 +59,9 @@ class SubscriptionManager:
         # 向后兼容：_subscribed_stocks 指向 _quote_subscribed
         self._subscribed_stocks = self._quote_subscribed
 
+        # 订阅时间戳：stock_code -> 订阅时间（用于尊重富途1分钟最短订阅限制）
+        self._subscribe_times: Dict[str, float] = {}
+
         # 订阅额度限制（从配置读取）
         if config and hasattr(config, 'subscription_config'):
             sub_cfg = config.subscription_config
@@ -71,6 +75,8 @@ class SubscriptionManager:
 
         # 订阅变化回调
         self._on_change_callbacks: List[Callable] = []
+        # 异步回调任务引用（防止 GC 回收和异常丢失）
+        self._pending_tasks: set = set()
         self.logger = logging.getLogger(__name__)
 
         # 初始化验证器和优化器
@@ -117,13 +123,17 @@ class SubscriptionManager:
         """检查股票是否已订阅"""
         return stock_code in self._subscribed_stocks
 
+    def get_subscribe_time(self, stock_code: str) -> float:
+        """获取股票的订阅时间戳（unix timestamp），未记录则返回 0"""
+        return self._subscribe_times.get(stock_code, 0)
+
     def add_change_callback(self, callback: Callable):
         """添加状态变更回调"""
         if callback not in self._on_change_callbacks:
             self._on_change_callbacks.append(callback)
 
     def _notify_change(self):
-        """通知状态变更（支持异步回调）"""
+        """通知状态变更（支持异步回调，保存 task 引用）"""
         import asyncio
         import inspect
 
@@ -133,7 +143,9 @@ class SubscriptionManager:
                     # 异步回调：尝试在当前事件循环中调度
                     try:
                         loop = asyncio.get_running_loop()
-                        asyncio.create_task(callback(self._subscribed_stocks.copy()))
+                        task = asyncio.create_task(callback(self._subscribed_stocks.copy()))
+                        self._pending_tasks.add(task)
+                        task.add_done_callback(self._on_task_done)
                     except RuntimeError:
                         # 没有运行中的事件循环，记录警告
                         self.logger.warning(f"异步回调无法执行（无事件循环）: {callback}")
@@ -142,6 +154,22 @@ class SubscriptionManager:
                     callback(self._subscribed_stocks.copy())
             except Exception as e:
                 self.logger.warning(f"订阅状态回调执行失败: {e}")
+
+    def _on_task_done(self, task: 'asyncio.Task'):
+        """异步回调任务完成回调：移除引用 + 记录异常"""
+        self._pending_tasks.discard(task)
+        if not task.cancelled() and task.exception():
+            self.logger.error(
+                f"订阅变更异步回调异常: {task.exception()}",
+                exc_info=task.exception()
+            )
+
+    def remove_change_callback(self, callback: Callable):
+        """移除状态变更回调"""
+        try:
+            self._on_change_callbacks.remove(callback)
+        except ValueError:
+            pass
 
     def subscribe(self, stock_codes: List[str]) -> Dict[str, Any]:
         """
@@ -182,6 +210,10 @@ class SubscriptionManager:
             self._subscribed_stocks.update(new_successful)
             # 同步更新 QUOTE 订阅集合（subscribe 方法默认订阅 QUOTE 类型）
             self._quote_subscribed.update(new_successful)
+            # 记录订阅时间
+            now = time.time()
+            for code in new_successful:
+                self._subscribe_times[code] = now
             self._notify_change()
 
         # 构建结果消息
@@ -207,6 +239,8 @@ class SubscriptionManager:
                 self._subscribed_stocks.difference_update(stocks_to_unsub)
                 # 同步更新 QUOTE 订阅集合
                 self._quote_subscribed.difference_update(stocks_to_unsub)
+                for code in stocks_to_unsub:
+                    self._subscribe_times.pop(code, None)
                 self._notify_change()
                 self.logger.debug(f"成功取消订阅 {len(stocks_to_unsub)} 只股票")
                 return True
@@ -365,12 +399,18 @@ class SubscriptionManager:
 
         return result
 
+    # 订阅分批大小（避免单次请求过大触发 Futu 频率限制）
+    _SUBSCRIBE_BATCH_SIZE = 10
+
     def _subscribe_by_type(self, stock_codes: List[str], sub_type) -> Dict[str, List[str]]:
-        """按类型订阅
+        """按类型分批订阅（内置频率控制）
+
+        所有订阅调用（主进程/子进程/个股分析）都经过此方法，
+        内置分批 + 全局频率控制确保不触发 Futu API 频率限制。
 
         Args:
             stock_codes: 股票代码列表
-            sub_type: 订阅类型 (SubType.QUOTE/TICKER/ORDER_BOOK，实际上是字符串)
+            sub_type: 订阅类型 (SubType.QUOTE/TICKER/ORDER_BOOK)
 
         Returns:
             {'success': [...], 'failed': [...]}
@@ -407,26 +447,40 @@ class SubscriptionManager:
             )
             to_subscribe = to_subscribe[:available_quota]
 
-        # 批量订阅
+        # 分批订阅（内置频率控制）
+        from ..utils.rate_limiter import wait_for_api
+
         success_stocks = []
         failed_stocks = []
 
-        if to_subscribe:
+        for i in range(0, len(to_subscribe), self._SUBSCRIBE_BATCH_SIZE):
+            batch = to_subscribe[i:i + self._SUBSCRIBE_BATCH_SIZE]
+
+            # 全局频率控制（与其他 Futu API 调用共享限流窗口）
+            wait_for_api('subscribe')
+            # 批间间隔，避免瞬间大量订阅请求冲击 OpenD
+            if i > 0:
+                time.sleep(0.5)
+
             try:
-                # SubType 的属性本身就是字符串，可以直接传递给 API
-                ret, err = self._futu_client.client.subscribe(to_subscribe, [sub_type])
-                if ret == RET_OK:
-                    success_stocks = to_subscribe
-                    subscribed_set.update(to_subscribe)
-                    self.logger.info(
-                        f"订阅 {type_name} 成功: {len(success_stocks)} 只股票"
-                    )
+                # TICKER/ORDER_BOOK 走 scalping_client（与拉取侧同 context）
+                if type_name in ('TICKER', 'ORDER_BOOK') and hasattr(self._futu_client, 'scalping_client') and self._futu_client.scalping_client:
+                    ctx = self._futu_client.scalping_client
                 else:
-                    failed_stocks = to_subscribe
-                    self.logger.warning(f"订阅 {type_name} 失败: {err}")
+                    ctx = self._futu_client.client
+                ret, err = ctx.subscribe(batch, [sub_type])
+                if ret == RET_OK:
+                    success_stocks.extend(batch)
+                    subscribed_set.update(batch)
+                else:
+                    failed_stocks.extend(batch)
+                    self.logger.warning(f"订阅 {type_name} 批次失败: {err}")
             except Exception as e:
-                failed_stocks = to_subscribe
-                self.logger.error(f"订阅 {type_name} 异常: {e}")
+                failed_stocks.extend(batch)
+                self.logger.error(f"订阅 {type_name} 批次异常: {e}")
+
+        if success_stocks:
+            self.logger.info(f"订阅 {type_name} 成功: {len(success_stocks)} 只股票")
 
         return {'success': success_stocks, 'failed': failed_stocks}
 
@@ -477,8 +531,12 @@ class SubscriptionManager:
             return
 
         try:
-            # SubType 的属性本身就是字符串，可以直接传递给 API
-            ret, err = self._futu_client.client.unsubscribe(to_unsubscribe, [sub_type])
+            # TICKER/ORDER_BOOK 走 scalping_client（与订阅侧同 context）
+            if type_name in ('TICKER', 'ORDER_BOOK') and hasattr(self._futu_client, 'scalping_client') and self._futu_client.scalping_client:
+                ctx = self._futu_client.scalping_client
+            else:
+                ctx = self._futu_client.client
+            ret, err = ctx.unsubscribe(to_unsubscribe, [sub_type])
             if ret == RET_OK:
                 subscribed_set.difference_update(to_unsubscribe)
                 self.logger.info(

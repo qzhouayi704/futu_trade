@@ -46,11 +46,7 @@ class StockInitializerService:
 
         for attempt in range(max_retries + 1):
             try:
-                # 使用频率控制器
-                wait_time = wait_for_api('get_plate_stock')
-                if wait_time > 0:
-                    self.logger.info(f"频率限制等待: {wait_time:.1f}秒")
-
+                # 频率控制已由 futu_client.get_plate_stock() 统一处理
                 ret, stock_data = self.futu_client.get_plate_stock(plate_code)
 
                 if not ReturnCode.is_ok(ret):

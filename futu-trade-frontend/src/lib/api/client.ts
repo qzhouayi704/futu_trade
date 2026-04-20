@@ -20,9 +20,9 @@ const TIMEOUT_RULES: Array<{ match: (url: string) => boolean; timeout: number }>
   // 长耗时接口 → 60s
   { match: (u) => /\/(news\/crawl|monitor\/start|advisor\/evaluate)/.test(u), timeout: 60000 },
   // 中等耗时接口 → 30s
-  { match: (u) => /\/(enhanced-heat|high-turnover)/.test(u), timeout: 30000 },
-  // 交易条件页面相关接口 → 20s（后端繁忙时容易超 10s）
-  { match: (u) => /\/(quotes\/(conditions|quota|trading-conditions)|system\/status|strategy\/(active|indicators))/.test(u), timeout: 20000 },
+  { match: (u) => /\/(enhanced-heat|high-turnover|top-hot|plate-strength)/.test(u), timeout: 30000 },
+  // 启动期可能排队等待 FutuOpenD 的接口 → 20s
+  { match: (u) => /\/(quotes\/(conditions|quota|trading-conditions|alerts)|system\/status|strategy\/(active|indicators|presets)|trading\/positions|signals|stocks\/)/.test(u), timeout: 20000 },
 ];
 
 // 请求拦截器

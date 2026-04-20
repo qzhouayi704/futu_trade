@@ -5,13 +5,14 @@ import { io, Socket } from "socket.io-client";
 let socket: Socket | null = null;
 let isInitializing = false;
 
-const socketUrl = typeof window !== "undefined" ? window.location.origin : (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000");
+// Socket.IO 必须直连后端（Next.js rewrites 不支持 WebSocket）
+const socketUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001";
 
 /**
  * 健康检查：轮询后端直到就绪
  */
 async function waitForBackend(
-  maxAttempts: number = 30,
+  maxAttempts: number = 5,
   interval: number = 1000
 ): Promise<boolean> {
   console.log("[Socket.IO] Waiting for backend to be ready...");

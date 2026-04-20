@@ -146,16 +146,37 @@ class HealthMonitor:
     ) -> None:
         """定期检查各股票数据流健康状态"""
         logger.info("健康检查循环启动")
+        check_count = 0
         while running_checker():
             try:
                 await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
                 now = time.time()
+                check_count += 1
                 unhealthy = []
+                healthy_count = 0
+                # 诊断：按间隔分桶统计
+                gap_buckets = {"<10s": 0, "10-30s": 0, "30-60s": 0, "60-120s": 0, ">120s": 0, "无数据": 0}
+
                 for stock_code in stocks_getter():
                     last = last_data_time_getter(stock_code)
                     if last is None:
                         last = 0.0
                     gap = now - last
+
+                    # 分桶统计
+                    if last == 0.0:
+                        gap_buckets["无数据"] += 1
+                    elif gap < 10:
+                        gap_buckets["<10s"] += 1
+                    elif gap < 30:
+                        gap_buckets["10-30s"] += 1
+                    elif gap < 60:
+                        gap_buckets["30-60s"] += 1
+                    elif gap < 120:
+                        gap_buckets["60-120s"] += 1
+                    else:
+                        gap_buckets[">120s"] += 1
+
                     if gap > _DATA_TIMEOUT:
                         unhealthy.append(stock_code)
                         fail_count = (
@@ -163,75 +184,95 @@ class HealthMonitor:
                         )
                         self._health_fail_counts[stock_code] = fail_count
 
-                        # 检查订阅状态
-                        is_ticker_subscribed = (
-                            stock_code
-                            in self._subscription_manager.ticker_subscribed_stocks
-                        )
-                        is_orderbook_subscribed = (
-                            stock_code
-                            in self._subscription_manager.orderbook_subscribed_stocks
-                        )
+                        # 子进程模式：不检查订阅状态（子进程的 subscription_manager 是空的）
+                        is_subprocess = self._engine._subscription_helper is None
 
-                        # 输出详细的诊断信息
-                        logger.warning(
-                            f"[健康检查] {stock_code} 超过 {_DATA_TIMEOUT}秒 无数据 "
-                            f"(最后数据时间: {last:.1f}, 当前时间: {now:.1f}, 间隔: {gap:.1f}秒)"
-                        )
-                        logger.info(
-                            f"[订阅状态] {stock_code} - TICKER: {is_ticker_subscribed}, ORDER_BOOK: {is_orderbook_subscribed}"
-                        )
-
-                        if not is_ticker_subscribed or not is_orderbook_subscribed:
-                            logger.warning(
-                                f"[诊断结果] {stock_code} 订阅状态异常，尝试重新订阅"
-                            )
+                        if is_subprocess:
+                            # 子进程仅在首次和每 _HEALTH_FAIL_THRESHOLD 次时告警，避免刷屏
+                            if fail_count == 1 or fail_count % _HEALTH_FAIL_THRESHOLD == 0:
+                                logger.warning(
+                                    f"[健康检查] {stock_code} 超过 {_DATA_TIMEOUT:.0f}秒 无数据 "
+                                    f"(间隔: {gap:.0f}秒, 连续{fail_count}次)"
+                                )
                         else:
-                            logger.warning(
-                                f"[诊断结果] {stock_code} 已订阅但无数据 (失败次数: {fail_count}/{_HEALTH_FAIL_THRESHOLD}) "
-                                f"(可能原因: 停牌/休市/API限流/市场无成交)"
+                            # 主进程模式：检查订阅状态
+                            is_ticker_subscribed = (
+                                stock_code
+                                in self._subscription_manager.ticker_subscribed_stocks
+                            )
+                            is_orderbook_subscribed = (
+                                stock_code
+                                in self._subscription_manager.orderbook_subscribed_stocks
                             )
 
-                            # 连续失败超过阈值，输出更详细的信息
-                            if fail_count >= _HEALTH_FAIL_THRESHOLD:
-                                logger.error(
-                                    f"[严重警告] {stock_code} 连续 {fail_count} 次健康检查失败，建议人工检查: "
-                                    f"1. 股票是否停牌？ 2. 市场是否休市？ 3. API 是否限流？"
+                            logger.warning(
+                                f"[健康检查] {stock_code} 超过 {_DATA_TIMEOUT}秒 无数据 "
+                                f"(最后数据时间: {last:.1f}, 当前时间: {now:.1f}, 间隔: {gap:.1f}秒)"
+                            )
+                            logger.info(
+                                f"[订阅状态] {stock_code} - TICKER: {is_ticker_subscribed}, ORDER_BOOK: {is_orderbook_subscribed}"
+                            )
+
+                            if not is_ticker_subscribed or not is_orderbook_subscribed:
+                                logger.warning(
+                                    f"[诊断结果] {stock_code} 订阅状态异常，尝试重新订阅"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[诊断结果] {stock_code} 已订阅但无数据 (失败次数: {fail_count}/{_HEALTH_FAIL_THRESHOLD}) "
+                                    f"(可能原因: 停牌/休市/API限流/市场无成交)"
                                 )
 
-                        # 超过60秒无数据：控制台告警
-                        print_status(
-                            f"【Scalping告警】[{stock_code}] 已 {gap:.0f}秒无数据！"
-                            f"(连续{fail_count}次失败)",
-                            "warn",
-                        )
+                                if fail_count >= _HEALTH_FAIL_THRESHOLD:
+                                    logger.error(
+                                        f"[严重警告] {stock_code} 连续 {fail_count} 次健康检查失败，建议人工检查: "
+                                        f"1. 股票是否停牌？ 2. 市场是否休市？ 3. API 是否限流？"
+                                    )
+
+                            # 控制台告警
+                            print_status(
+                                f"【Scalping告警】[{stock_code}] 已 {gap:.0f}秒无数据！"
+                                f"(连续{fail_count}次失败)",
+                                "warn",
+                            )
                     else:
                         # 恢复健康，重置计数
+                        healthy_count += 1
                         self._health_fail_counts[stock_code] = 0
+
+                # 每次健康检查输出诊断摘要
+                total = healthy_count + len(unhealthy)
+                bucket_str = " ".join(f"{k}:{v}" for k, v in gap_buckets.items() if v > 0)
+                logger.info(
+                    f"[健康诊断] 第{check_count}次 | "
+                    f"总计:{total}只 健康:{healthy_count} 超时:{len(unhealthy)} | "
+                    f"间隔分布: {bucket_str}"
+                )
 
                 if unhealthy:
                     logger.warning(f"数据流不健康的股票: {unhealthy}")
 
-                    # 连续3次健康检查失败，自动触发重新订阅
-                    resubscribe_stocks = [
-                        code
-                        for code in unhealthy
-                        if self._health_fail_counts.get(code, 0)
-                        >= _HEALTH_FAIL_THRESHOLD
-                    ]
-                    if resubscribe_stocks:
-                        print_status(
-                            f"【Scalping告警】{len(resubscribe_stocks)}只股票连续"
-                            f"{_HEALTH_FAIL_THRESHOLD}次健康检查失败，触发重新订阅: "
-                            f"{resubscribe_stocks[:5]}",
-                            "error",
-                        )
-                        # 使用后台任务并发重连，避免阻塞事件循环和HTTP服务
-                        for code in resubscribe_stocks:
-                            self._health_fail_counts[code] = 0
-                        asyncio.create_task(
-                            self._batch_reconnect(resubscribe_stocks)
-                        )
+                    # 连续3次健康检查失败，自动触发重新订阅（仅主进程模式）
+                    is_subprocess = self._engine._subscription_helper is None
+                    if not is_subprocess:
+                        resubscribe_stocks = [
+                            code
+                            for code in unhealthy
+                            if self._health_fail_counts.get(code, 0)
+                            >= _HEALTH_FAIL_THRESHOLD
+                        ]
+                        if resubscribe_stocks:
+                            print_status(
+                                f"【Scalping告警】{len(resubscribe_stocks)}只股票连续"
+                                f"{_HEALTH_FAIL_THRESHOLD}次健康检查失败，触发重新订阅: "
+                                f"{resubscribe_stocks[:5]}",
+                                "error",
+                            )
+                            for code in resubscribe_stocks:
+                                self._health_fail_counts[code] = 0
+                            asyncio.create_task(
+                                self._batch_reconnect(resubscribe_stocks)
+                            )
 
                     try:
                         from simple_trade.websocket.events import SocketEvent
@@ -253,21 +294,47 @@ class HealthMonitor:
                 logger.warning(f"健康检查异常: {e}")
 
     async def _batch_reconnect(self, stock_codes: list[str]) -> None:
-        """后台批量重连（串行执行但不阻塞主事件循环）"""
-        success_count = 0
-        fail_count = 0
-        for code in stock_codes:
-            try:
-                await self._engine._reconnect(code)
-                logger.info(f"[{code}] 自动重新订阅成功")
-                success_count += 1
-            except Exception as e:
-                logger.error(f"[{code}] 自动重新订阅失败: {e}")
-                fail_count += 1
-        logger.info(
-            f"批量重连完成: 成功 {success_count}, 失败 {fail_count}, "
-            f"总计 {len(stock_codes)}"
-        )
+        """批量重连：一次性订阅所有掉线的股票（比逐只重连快得多）"""
+        e = self._engine
+        if e._subscription_helper is None:
+            logger.info("批量重连跳过（子进程模式）")
+            return
+
+        logger.info(f"[批量重连] 开始批量订阅 {len(stock_codes)} 只股票")
+        try:
+            # 设置所有需要重连的股票为优先订阅
+            e._subscription_helper.set_priority_stocks(stock_codes)
+            # 一次性批量订阅（而不是逐只轮询）
+            loop = asyncio.get_running_loop()
+            sub_result = await loop.run_in_executor(
+                None, e._subscription_helper.subscribe_target_stocks, None
+            )
+            logger.info(f"[批量重连] 批量订阅完成: {sub_result}")
+
+            # 重置所有重连计数和数据时间
+            now = time.time()
+            for code in stock_codes:
+                self._engine._lifecycle._reconnect_attempts[code] = 0
+                self._engine._lifecycle._last_data_time[code] = now
+
+            print_status(
+                f"【Scalping重连】批量订阅 {len(stock_codes)} 只股票完成",
+                "ok",
+            )
+        except Exception as exc:
+            logger.error(f"[批量重连] 批量订阅失败: {exc}，降级为逐只重连")
+            # 降级：逐只重连
+            success_count = 0
+            fail_count = 0
+            for code in stock_codes:
+                try:
+                    await self._engine._reconnect(code)
+                    success_count += 1
+                except Exception:
+                    fail_count += 1
+            logger.info(
+                f"[批量重连] 降级逐只重连完成: 成功 {success_count}, 失败 {fail_count}"
+            )
 
     async def _run_pattern_detection(self, stock_code: str) -> None:
         """运行行为模式检测 + 行动评分"""

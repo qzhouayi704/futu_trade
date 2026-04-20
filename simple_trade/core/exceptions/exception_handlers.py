@@ -23,7 +23,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(APIException)
     async def api_exception_handler(request: Request, exc: APIException):
         """处理自定义 API 异常"""
-        logging.warning(f"API异常 [{exc.error_code}]: {exc.message}")
+        logging.warning(f"API异常 {request.method} {request.url.path} [{exc.error_code}]: {exc.message}")
         return JSONResponse(
             status_code=exc.status_code,
             content={
@@ -50,7 +50,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             }
             for err in errors
         ]
-        logging.warning(f"参数验证失败: {details}")
+        logging.warning(f"参数验证失败 {request.method} {request.url.path}: {details}")
         return JSONResponse(
             status_code=422,
             content={
@@ -77,7 +77,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             }
             for err in errors
         ]
-        logging.warning(f"Pydantic验证失败: {details}")
+        logging.warning(f"Pydantic验证失败 {request.method} {request.url.path}: {details}")
         return JSONResponse(
             status_code=422,
             content={
@@ -95,7 +95,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError):
         """处理值错误"""
-        logging.warning(f"值错误: {str(exc)}")
+        logging.warning(f"值错误 {request.method} {request.url.path}: {str(exc)}")
         return JSONResponse(
             status_code=400,
             content={
@@ -113,7 +113,11 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def general_exception_handler(request: Request, exc: Exception):
         """处理未捕获的异常"""
-        logging.error(f"未处理异常: {type(exc).__name__}: {str(exc)}", exc_info=True)
+        logging.error(
+            f"未处理异常 {request.method} {request.url.path} → "
+            f"{type(exc).__name__}: {str(exc)}",
+            exc_info=True
+        )
         return JSONResponse(
             status_code=500,
             content={

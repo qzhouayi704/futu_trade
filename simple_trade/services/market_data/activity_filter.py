@@ -30,7 +30,7 @@ class ActivityFilterService:
     负责协调活跃度计算和订阅优化，提供统一的筛选接口
     """
 
-    def __init__(self, subscription_manager, quote_service, config=None, db_manager=None, container=None):
+    def __init__(self, subscription_manager, quote_service, config=None, db_manager=None, container=None, quote_cache=None):
         """
         初始化活跃度筛选服务
 
@@ -40,6 +40,7 @@ class ActivityFilterService:
             config: 配置对象
             db_manager: 数据库管理器（用于缓存）
             container: 服务容器（保留以便向后兼容）
+            quote_cache: 全局报价缓存（可选）
         """
         self.logger = logging.getLogger(__name__)
 
@@ -47,7 +48,8 @@ class ActivityFilterService:
         self.calculator = ActivityCalculator(config=config, db_manager=db_manager)
         self.optimizer = SubscriptionOptimizer(
             subscription_manager=subscription_manager,
-            quote_service=quote_service
+            quote_service=quote_service,
+            quote_cache=quote_cache
         )
 
         # 保留引用以便向后兼容

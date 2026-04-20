@@ -73,7 +73,7 @@ class BackgroundKlineTask:
         """
         start_time = time.time()
         kline_service = self._container.kline_service
-        request_delay = kline_service.config.kline_rate_limit.get("request_delay", 1.0)
+        request_delay = max(kline_service.config.kline_rate_limit.get("request_delay", 1.0), 3.0)
 
         total = len(stocks)
         skipped = 0

@@ -40,6 +40,7 @@ class OrderManager:
         """
         self.db_manager = db_manager
         self.trade_client = trade_client
+        self.trd_env = TrdEnv.REAL if TrdEnv else None  # 由 futu_trade_service 传入
 
         # 初始化数据库表
         self._init_trade_tables()
@@ -90,9 +91,11 @@ class OrderManager:
         except Exception as e:
             logging.error(f"初始化订单数据库表失败: {e}")
 
-    def set_trade_client(self, trade_client):
+    def set_trade_client(self, trade_client, trd_env=None):
         """设置富途交易客户端"""
         self.trade_client = trade_client
+        if trd_env is not None:
+            self.trd_env = trd_env
 
     def place_order(self, stock_code: str, trade_type: str, price: float,
                    quantity: int) -> Dict[str, Any]:
@@ -140,7 +143,7 @@ class OrderManager:
                 trd_side=trd_side,
                 order_type=order_type,
                 adjust_limit=0,
-                trd_env=TrdEnv.REAL,
+                trd_env=self.trd_env,
                 acc_id=0,
                 acc_index=0,
                 remark="量化交易系统自动下单",
@@ -299,9 +302,17 @@ class OrderManager:
             return result
 
         try:
-            ret, data = self.trade_client.order_list_query(
-                status_filter_list=status_filter_list
+            filter_list = status_filter_list if status_filter_list is not None else []
+            query_result = self.trade_client.order_list_query(
+                status_filter_list=filter_list,
+                trd_env=self.trd_env
             )
+
+            if query_result is None:
+                result['message'] = "交易连接已断开(order_list_query返回None)"
+                return result
+
+            ret, data = query_result
 
             if ret == RET_OK and data is not None:
                 orders = []

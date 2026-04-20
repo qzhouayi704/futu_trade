@@ -59,7 +59,8 @@ class WeChatAlertService:
         """获取或创建 HTTP 会话"""
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=10),
+                trust_env=True  # 读取系统代理(HTTP_PROXY/HTTPS_PROXY)
             )
         return self._session
 
@@ -130,7 +131,7 @@ class WeChatAlertService:
                 else:
                     logger.error(f"企业微信 HTTP 错误: {resp.status}")
         except Exception as e:
-            logger.error(f"企业微信告警发送异常: {e}")
+            logger.error(f"企业微信告警发送异常: {type(e).__name__}: {e}")
 
         return False
 

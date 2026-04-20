@@ -48,18 +48,14 @@ class KlineParser:
 
         同时检查：
         1. 数据量是否足够
-        2. 最新K线日期是否是最近的交易日（不包括当天）
-
-        【修复】更严格的日期判断：
-        - 如果最新K线日期不等于预期的最近交易日，就需要更新
-        - 考虑港股和美股可能有不同的交易日历
+        2. 最新K线日期是否足够新（3个自然日内）
 
         Args:
             stock_code: 股票代码
             required_days: 需要的天数
 
         Returns:
-            是否有足够的K线数据
+            是否有足够且新鲜的K线数据
         """
         try:
             # 获取股票所属市场
@@ -68,65 +64,50 @@ class KlineParser:
             # 获取该市场的"今天"日期（考虑时区）
             today_str = MarketTimeHelper.get_market_today(market)
 
-            # 计算需要的最早日期
-            start_date = (datetime.now() - timedelta(days=required_days)).strftime('%Y-%m-%d')
-
-            # 查询该日期范围内的K线记录数和最新日期（排除当天）
+            # 查询：排除当天，按日期降序取 required_days 条
             result = self.db_manager.execute_query('''
-                SELECT COUNT(*), MAX(time_key) FROM kline_data
-                WHERE stock_code = ? AND time_key >= ? AND time_key < ?
-            ''', (stock_code, start_date, today_str))
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM kline_data
+                    WHERE stock_code = ? AND time_key < ?
+                    ORDER BY time_key DESC
+                    LIMIT ?
+                )
+            ''', (stock_code, today_str, required_days))
 
             if not result or result[0][0] == 0:
                 logging.debug(f"[K线检查] {stock_code}: 无数据，需要下载")
                 return False
 
             count = result[0][0]
-            latest_date_str = result[0][1]
 
-            # 假设交易日约占70%（去除周末和节假日）
-            expected_trading_days = int(required_days * 0.7)
-            min_required_count = int(expected_trading_days * 0.8)
-
-            # 检查数量是否足够
-            if count < min_required_count:
-                logging.debug(f"[K线检查] {stock_code}: 数量不足 {count}/{min_required_count}，需要下载")
+            if count < required_days:
+                logging.debug(f"[K线检查] {stock_code}: 数量不足 {count}/{required_days}，需要下载")
                 return False
 
-            # 检查最新K线日期是否是最近的交易日
-            if latest_date_str:
+            # 【新增】时效性检查：最新K线不能太旧（超过3个自然日就认为过期）
+            newest_result = self.db_manager.execute_query('''
+                SELECT MAX(time_key) FROM kline_data
+                WHERE stock_code = ? AND time_key < ?
+            ''', (stock_code, today_str))
+
+            if newest_result and newest_result[0][0]:
+                newest_date_str = newest_result[0][0][:10]  # 取 YYYY-MM-DD
                 try:
-                    latest_date = datetime.strptime(latest_date_str.split()[0], '%Y-%m-%d').date()
-                    today = datetime.strptime(today_str, '%Y-%m-%d').date()
-
-                    # 计算预期的最近交易日（不包括当天）
-                    # 使用更严格的逻辑：直接回溯找到最近的工作日
-                    expected_last_trading_day = today - timedelta(days=1)
-
-                    # 跳过周末
-                    while expected_last_trading_day.weekday() >= 5:  # 5=周六, 6=周日
-                        expected_last_trading_day = expected_last_trading_day - timedelta(days=1)
-
-                    # 【关键修复】更严格的日期判断
-                    # 如果最新K线日期比预期的最近交易日早（哪怕只差1天），就需要更新
-                    days_diff = (expected_last_trading_day - latest_date).days
-
-                    if days_diff >= 1:
-                        # 数据不是最新的，需要下载
-                        logging.debug(f"[K线检查] {stock_code}: 数据过旧，最新={latest_date}, 预期={expected_last_trading_day}, 差{days_diff}天，需要下载")
+                    newest_date = datetime.strptime(newest_date_str, '%Y-%m-%d')
+                    today_date = datetime.strptime(today_str, '%Y-%m-%d')
+                    days_gap = (today_date - newest_date).days
+                    # 超过3个自然日（考虑周末=2天，所以3天容忍长周末）
+                    if days_gap > 3:
+                        logging.info(
+                            f"[K线检查] {stock_code}: 数据过期，最新={newest_date_str}，"
+                            f"今天={today_str}，间隔{days_gap}天，需要更新"
+                        )
                         return False
+                except ValueError:
+                    logging.warning(f"[K线检查] {stock_code}: 日期解析失败 {newest_date_str}")
 
-                    # 数据足够且日期最新
-                    logging.debug(f"[K线检查] {stock_code}: 通过，{count}条记录, 最新={latest_date}")
-                    return True
-
-                except Exception as date_err:
-                    logging.debug(f"[K线检查] {stock_code}: 解析日期失败: {date_err}，需要下载")
-                    return False  # 日期解析失败时，安全起见下载新数据
-
-            # 没有日期信息，安全起见返回需要下载
-            logging.debug(f"[K线检查] {stock_code}: 无日期信息，需要下载")
-            return False
+            logging.debug(f"[K线检查] {stock_code}: 通过，{count}条记录")
+            return True
 
         except Exception as e:
             logging.error(f"[K线检查] {stock_code}: 检查失败: {e}", exc_info=True)

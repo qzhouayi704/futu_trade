@@ -24,6 +24,12 @@ class QuoteCache:
             'ttl': 5,  # 默认5秒，可通过 set_quotes_ttl 修改
             'is_valid': False
         }
+        # 缓存过期回调（可选，用于通知推送循环立即刷新）
+        self._on_expire_callback = None
+
+    def set_on_expire_callback(self, callback):
+        """设置缓存过期时的回调函数"""
+        self._on_expire_callback = callback
 
     def set_quotes_ttl(self, ttl: int):
         """设置报价缓存TTL（秒）"""
@@ -42,11 +48,28 @@ class QuoteCache:
 
             elapsed = (datetime.now() - self._quotes_cache['timestamp']).total_seconds()
             if elapsed >= self._quotes_cache['ttl']:
-                logging.debug(
-                    f"【调试】报价缓存过期: 已过 {elapsed:.1f} 秒, "
-                    f"TTL={self._quotes_cache['ttl']}"
-                )
+                ttl = self._quotes_cache['ttl']
                 self._quotes_cache['is_valid'] = False
+
+                # 过期时长超过 TTL 的 3 倍时告警（推送循环可能卡住）
+                if elapsed > ttl * 3:
+                    logging.warning(
+                        f"【报价缓存】过期时间异常: {elapsed:.1f}秒 "
+                        f"(TTL={ttl}s)，推送循环可能卡住"
+                    )
+                else:
+                    logging.debug(
+                        f"【调试】报价缓存过期: 已过 {elapsed:.1f} 秒, "
+                        f"TTL={ttl}"
+                    )
+
+                # 触发过期回调（通知 AsyncQuotePusher 立即刷新）
+                if self._on_expire_callback:
+                    try:
+                        self._on_expire_callback()
+                    except Exception as e:
+                        logging.debug(f"报价缓存过期回调执行失败: {e}")
+
                 return None
 
             logging.info(

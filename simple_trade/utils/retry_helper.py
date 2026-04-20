@@ -149,11 +149,24 @@ def retry_with_backoff(config: Optional[RetryConfig] = None):
                     )
 
                     error_type = parse_error_type(error_msg)
-                    logger.warning(
+                    retry_msg = (
                         f"{func.__name__} 失败（第 {attempt + 1}/{config.max_retries + 1} 次），"
                         f"错误类型: {error_type}，{backoff_time:.2f} 秒后重试，"
                         f"错误: {error_msg}"
                     )
+                    # 频率限制：首次 WARNING，后续 DEBUG，避免批量初始化时刷屏
+                    if error_type == ErrorType.RATE_LIMIT and attempt > 0:
+                        logger.debug(retry_msg)
+                    else:
+                        logger.warning(retry_msg)
+
+                    # 频率限制错误：额外等待全局限流器，避免重试风暴
+                    if error_type == ErrorType.RATE_LIMIT:
+                        try:
+                            from .rate_limiter import get_global_rate_limiter
+                            get_global_rate_limiter().wait_if_needed()
+                        except Exception:
+                            pass
 
                     time.sleep(backoff_time)
 

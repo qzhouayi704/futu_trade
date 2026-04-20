@@ -121,7 +121,8 @@ async def initialize_system_data(container: ServiceContainer, state_manager) -> 
                 container.subscription_helper.unsubscribe_all()
                 flow.step("清空订阅")
             except Exception as e:
-                logging.debug(f"清空订阅失败（可能已为空）: {e}")
+                # 快速重启时富途 API 可能拒绝（1分钟最短订阅限制），不影响后续订阅
+                logging.debug(f"清空旧订阅跳过（可能快速重启）: {e}")
 
     flow.end(success=success)
     return success

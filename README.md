@@ -126,52 +126,49 @@ npm run dev
 ```
 futu_trade_sys/
 ├── simple_trade/              # 后端核心代码
-│   ├── api/                   # 富途API封装
-│   ├── core/                  # 核心模块
-│   │   ├── coordination/      # 协调器（广播、监控、策略调度）
-│   │   ├── pipeline/          # 数据管道（行情处理）
-│   │   ├── validation/        # 验证模块（风险、信号评分）
-│   │   ├── exceptions/        # 异常处理
-│   │   ├── state/             # 状态管理
-│   │   ├── models/            # 数据模型
-│   │   ├── events/            # 事件系统
-│   │   └── container/         # 服务容器
-│   ├── services/              # 业务服务
-│   │   ├── initialization/    # 初始化服务
-│   │   ├── core/              # 核心服务
-│   │   ├── coordination/      # 协调服务
-│   │   ├── trading/           # 交易服务
-│   │   │   ├── execution/     # 订单执行
-│   │   │   ├── risk/          # 风险管理
-│   │   │   ├── profit/        # 止盈管理
-│   │   │   └── aggressive/    # 激进策略
-│   │   ├── analysis/          # 分析服务
-│   │   │   ├── kline/         # K线分析
-│   │   │   ├── heat/          # 热度分析
-│   │   │   └── flow/          # 资金流向
-│   │   ├── market_data/       # 行情数据
-│   │   ├── realtime/          # 实时服务
-│   │   ├── subscription/      # 订阅管理
-│   │   ├── pool/              # 股票池
-│   │   ├── alert/             # 告警服务
-│   │   └── strategy/          # 策略服务
-│   ├── strategy/              # 策略实现
-│   ├── backtest/              # 回测系统
-│   ├── database/              # 数据库
-│   │   ├── core/              # 核心数据库
-│   │   ├── models/            # 数据模型
-│   │   └── migrations/        # 数据迁移
-│   ├── routers/               # API路由
-│   ├── websocket/             # WebSocket
+│   ├── app.py                 # FastAPI 入口 + lifespan
+│   ├── api/                   # 富途 API 封装（FutuClient、SubscriptionManager）
+│   ├── core/                  # 核心框架层
+│   │   ├── container/         # ServiceContainer（三层服务容器）
+│   │   ├── pipeline/          # QuotePipeline（行情处理管道）
+│   │   ├── coordination/      # SystemCoordinator + StrategyDispatcher
+│   │   ├── state/             # StateManager（全局状态）
+│   │   ├── events/            # EventBus（事件总线）
+│   │   ├── validation/        # 风险验证、信号评分
+│   │   ├── models/            # 核心数据模型
+│   │   └── exceptions/        # 统一异常处理
+│   ├── services/              # 业务服务层（12 个子模块）
+│   │   ├── core/              # AsyncQuotePusher、数据初始化
+│   │   ├── trading/           # 交易执行、风控、止盈、激进策略
+│   │   │   ├── execution/     # 订单执行（OrderManager、PositionManager）
+│   │   │   ├── risk/          # 风险管理（RiskCoordinator、动态止损）
+│   │   │   ├── profit/        # 止盈管理（分仓止盈、订单止盈）
+│   │   │   └── aggressive/    # 激进策略（自动交易）
+│   │   ├── scalping/          # 日内超短线引擎
+│   │   │   ├── calculators/   # Delta、POC、VWAP、OFI 等计算器
+│   │   │   ├── detectors/     # 虚假挂单、背离、突破等检测器
+│   │   │   └── scheduler/     # 调度器（轮询、健康监控）
+│   │   ├── strategy/          # 多策略管理、筛选引擎
+│   │   ├── market_data/       # 热门股票、板块、K线、盘口
+│   │   ├── analysis/          # 分析服务（热度、资金流、K线）
+│   │   ├── alert/             # 价格预警 + 企业微信告警
+│   │   ├── advisor/           # AI 决策助理（Gemini）
+│   │   ├── news/              # 新闻爬虫 + Gemini 分析
+│   │   ├── pool/              # 股票池管理
+│   │   ├── realtime/          # 实时数据查询
+│   │   └── subscription/      # 订阅管理
+│   ├── strategy/              # 策略实现（高抛低吸、波段、激进、趋势反转）
+│   ├── database/              # SQLite 数据库层
+│   ├── routers/               # API 路由（27 个路由模块）
+│   │   ├── system/            # 系统管理
+│   │   ├── market/            # 行情
+│   │   ├── trading/           # 交易
+│   │   └── data/              # 数据管理
+│   ├── websocket/             # Socket.IO（实时推送）
 │   ├── config/                # 配置管理
 │   └── utils/                 # 工具函数
-│       ├── converters.py      # 类型转换
-│       ├── error_parsers.py   # 错误解析
-│       ├── error_handling.py  # 错误处理装饰器
-│       ├── base_model.py      # 数据转换基类
-│       └── script_helper.py   # 脚本工具
-├── futu-trade-frontend/       # 前端代码
-├── scripts/                   # 脚本工具
+├── futu-trade-frontend/       # 前端代码（React 19 + Next.js 15 + Tailwind v4）
+├── scripts/                   # 运维脚本
 ├── tests/                     # 测试代码
 └── docs/                      # 文档
 ```
@@ -229,15 +226,16 @@ trading_config = TradingConfig(
 
 遵循 `CLAUDE.md` 中的编码规范：
 
-1. **文件大小限制**
-   - Python文件不超过300行
-   - 每个目录不超过8个文件
+1. **文件拆分原则**
+   - 核心原则：功能颗粒度拆分，而非固定行数
+   - 超过约 400 行时审视是否存在职责混杂
+   - 每层文件夹中的文件尽可能不超过 12 个
 
 2. **架构原则**
    - 避免循环依赖
    - 使用事件驱动解耦
    - 单一职责原则
-   - 依赖注入
+   - 依赖注入（ServiceContainer）
 
 3. **错误处理**
    - 使用装饰器统一处理错误

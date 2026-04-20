@@ -30,6 +30,19 @@ class CalculationScheduler:
         self._last_delta_flush: dict[str, float] = {}
 
     # ------------------------------------------------------------------
+    # 股票管理（供 LifecycleManager 调用）
+    # ------------------------------------------------------------------
+
+    def add_stock(self, stock_code: str) -> None:
+        """初始化指定股票的调度状态（可选，get 默认值会自动处理）"""
+        pass
+
+    def remove_stock(self, stock_code: str) -> None:
+        """清理指定股票的调度状态"""
+        self._last_poc_calc.pop(stock_code, None)
+        self._last_delta_flush.pop(stock_code, None)
+
+    # ------------------------------------------------------------------
     # POC 定期计算
     # ------------------------------------------------------------------
 

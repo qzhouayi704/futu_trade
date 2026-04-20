@@ -96,8 +96,7 @@ class KlineFetcher:
             logging.debug(f"获取K线失败: {stock_code}, 富途API不可用")
             return []
 
-        # 频率控制：请求前等待
-        self.rate_limiter.wait_if_needed()
+        # 频率控制已由 futu_client.request_history_kline() 统一处理
 
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=days + 30)).strftime('%Y-%m-%d')
@@ -112,8 +111,26 @@ class KlineFetcher:
 
         # 错误处理
         error_msg, error_type = self._parse_error(ret, data)
-        if self.retry_config and error_type in ('rate_limit', 'timeout'):
-            raise Exception(error_msg)
+
+        if error_type == 'rate_limit':
+            # FutuOpenD 服务端频率限制：同步等待限流器冷却后本地重试一次
+            # 不抛异常给 retry_with_backoff，避免96只股票各自重试产生风暴
+            logging.debug(f"K线频率限制，等待冷却后重试: {stock_code}")
+            self.rate_limiter.wait_if_needed()
+            ret, data, _ = self.futu_client.request_history_kline(
+                code=stock_code, start=start_date, end=end_date, max_count=1000
+            )
+            if ReturnCode.is_ok(ret) and data is not None and not data.empty:
+                df = data.tail(limit_days) if limit_days else data
+                return self._parse_dataframe(df)
+            # 重试仍失败：静默返回空，不再重试
+            logging.debug(f"K线重试仍失败: {stock_code}")
+            return []
+
+        if error_type == 'timeout':
+            # 超时不重试 — OpenD 过载时重试只会加重负担，快速跳过让后续请求有机会成功
+            logging.warning(f"K线获取超时: {stock_code}，跳过（下次周期再试）")
+            return []
 
         if ret == 0:
             logging.debug(f"K线无数据: {stock_code}, {error_msg}")

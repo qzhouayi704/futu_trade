@@ -163,9 +163,7 @@ class Kline5MinFetcher:
 
         try:
             self.logger.info(f"  请求API: {stock_code} ({start_date} ~ {end_date})")
-            # 使用频率控制器
-            if self.rate_limiter:
-                self.rate_limiter.wait_if_needed()
+            # 频率控制已由 futu_client.request_history_kline() 统一处理
 
             request_start = time.time()
             ret, data, page_req_key = self.futu_client.request_history_kline(
@@ -188,9 +186,7 @@ class Kline5MinFetcher:
                     page_num += 1
                     self.logger.info(f"  {stock_code} 分页请求第{page_num}页...")
 
-                    # 使用频率控制器
-                    if self.rate_limiter:
-                        self.rate_limiter.wait_if_needed()
+                    # 频率控制已由 futu_client.request_history_kline() 统一处理
                     time.sleep(self.request_delay)
 
                     ret, data, page_req_key = self.futu_client.request_history_kline(

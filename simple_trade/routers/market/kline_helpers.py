@@ -3,7 +3,7 @@
 """
 K线路由共享辅助函数
 
-供 routers/kline.py 和 routers/compat/ 共用，
+供 routers/kline.py 使用，
 避免代码重复。
 """
 

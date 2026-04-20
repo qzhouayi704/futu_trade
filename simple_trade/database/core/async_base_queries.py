@@ -3,7 +3,11 @@
 """
 异步数据库查询基类
 提供统一的异步CRUD操作，避免在多个查询类中重复实现
+
+⚠️ 写操作（update/insert/delete）已标记为 deprecated，
+   请通过 db_manager.write_queue.submit() 提交写操作以避免 SQLite 锁冲突。
 """
+import warnings
 from typing import List, Tuple, Optional
 from simple_trade.database.core.async_connection_manager import AsyncConnectionManager
 import logging
@@ -38,13 +42,15 @@ class AsyncBaseQueries:
         """
         执行异步更新操作
 
-        Args:
-            query: SQL更新语句
-            params: 更新参数
-
-        Returns:
-            影响的行数，失败返回-1
+        .. deprecated::
+            请使用 db_manager.write_queue.submit(db_manager.execute_update, sql, params)
+            以避免 SQLite 锁冲突。
         """
+        warnings.warn(
+            "async_execute_update 可能导致 SQLite 锁冲突，"
+            "请通过 db_manager.write_queue.submit() 提交写操作",
+            DeprecationWarning, stacklevel=3,
+        )
         try:
             async with self.conn_manager.lock:
                 async with self.conn_manager.get_connection() as conn:
@@ -59,13 +65,14 @@ class AsyncBaseQueries:
         """
         执行异步插入操作
 
-        Args:
-            query: SQL插入语句
-            params: 插入参数
-
-        Returns:
-            新插入记录的ID，失败返回-1
+        .. deprecated::
+            请使用 db_manager.write_queue.submit(db_manager.execute_insert, sql, params)
         """
+        warnings.warn(
+            "async_execute_insert 可能导致 SQLite 锁冲突，"
+            "请通过 db_manager.write_queue.submit() 提交写操作",
+            DeprecationWarning, stacklevel=3,
+        )
         try:
             async with self.conn_manager.lock:
                 async with self.conn_manager.get_connection() as conn:
@@ -80,13 +87,14 @@ class AsyncBaseQueries:
         """
         执行异步删除操作
 
-        Args:
-            query: SQL删除语句
-            params: 删除参数
-
-        Returns:
-            删除的行数，失败返回-1
+        .. deprecated::
+            请使用 db_manager.write_queue.submit(db_manager.execute_update, sql, params)
         """
+        warnings.warn(
+            "async_execute_delete 可能导致 SQLite 锁冲突，"
+            "请通过 db_manager.write_queue.submit() 提交写操作",
+            DeprecationWarning, stacklevel=3,
+        )
         try:
             async with self.conn_manager.lock:
                 async with self.conn_manager.get_connection() as conn:

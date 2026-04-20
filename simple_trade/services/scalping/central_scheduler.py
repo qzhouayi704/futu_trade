@@ -41,8 +41,8 @@ class CentralScheduler:
         engine: "ScalpingEngine",
         subscription_manager,
         rate_limiter: Optional[RateLimiter] = None,
-        ticker_interval: float = 10.0,
-        order_book_interval: float = 15.0,
+        ticker_interval: float = 15.0,
+        order_book_interval: float = 25.0,
         state_manager=None,
     ):
         self._futu_client = futu_client
@@ -80,6 +80,31 @@ class CentralScheduler:
         if self._running:
             return
         self._running = True
+
+        # 延迟启动：等待 Quote Pipeline 先稳定，避免初始并发请求压垮 OpenD
+        logger.info("CentralScheduler 延迟 15 秒启动，等待行情管道稳定...")
+        await asyncio.sleep(15)
+
+        # 注册推送处理器（推送为主，轮询为 fallback）
+        try:
+            from .scheduler.push_handlers import (
+                ScalpingTickerHandler, ScalpingOrderBookHandler
+            )
+            ticker_handler = ScalpingTickerHandler(
+                data_time_updater=self._update_data_time
+            )
+            ob_handler = ScalpingOrderBookHandler(
+                data_time_updater=self._update_data_time
+            )
+            if self._futu_client.register_scalping_handlers(ticker_handler, ob_handler):
+                # 推送注册成功，大幅提高轮询间隔（轮询仅作 fallback）
+                self._ticker_poller._interval = 60.0
+                self._orderbook_poller._interval = 90.0
+                logger.info("推送模式已启用，轮询降级为 fallback (60s/90s)")
+            else:
+                logger.info("推送注册失败，保持原轮询模式")
+        except Exception as e:
+            logger.warning(f"推送处理器初始化失败，保持原轮询模式: {e}")
 
         # 创建4个共享循环任务
         self._tasks = [

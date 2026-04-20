@@ -32,10 +32,10 @@ from .rate_limiter import (
     RateLimiter,
     get_rate_limiter,
     wait_for_api,
-    record_api_call,
     can_call_api,
     get_api_status
 )
+
 
 # 市场工具
 from .market_helper import (
@@ -58,7 +58,7 @@ __all__ = [
 
     # 频率限制器
     'RateLimiter', 'get_rate_limiter', 'wait_for_api',
-    'record_api_call', 'can_call_api', 'get_api_status',
+    'can_call_api', 'get_api_status',
 
     # 市场工具
     'MarketTimeHelper', 'get_current_primary_market', 'get_current_active_markets',

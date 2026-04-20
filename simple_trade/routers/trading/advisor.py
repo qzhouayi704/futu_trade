@@ -110,8 +110,8 @@ async def _build_evaluation_context(container) -> EvaluationContext:
     # 获取报价、信号
     from ...core import get_state_manager
     state = get_state_manager()
-    quotes = state.get_cached_quotes() or [] if state else []
-    signals = state.get_trade_signals() if state and hasattr(state, 'get_trade_signals') else []
+    quotes = (state.get_cached_quotes() or []) if state else []
+    signals = state.get_trade_signals() if (state and hasattr(state, 'get_trade_signals')) else []
 
     # 获取 K线数据（从数据库）
     kline_cache: dict = {}

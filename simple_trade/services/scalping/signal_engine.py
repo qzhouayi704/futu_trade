@@ -110,6 +110,11 @@ class SignalEngine:
         # 价格停滞跟踪：stock_code -> _StallTracker
         self._stall_trackers: dict[str, _StallTracker] = {}
 
+        # 信号冷却：同类信号 30s 内不重复触发
+        self._SIGNAL_COOLDOWN = 30.0
+        # key: (stock_code, signal_type) -> last_emit_time
+        self._last_signal_time: dict[tuple[str, str], float] = {}
+
     def _get_stall_tracker(self, stock_code: str) -> _StallTracker:
         """获取或创建停滞跟踪器"""
         if stock_code not in self._stall_trackers:
@@ -251,7 +256,7 @@ class SignalEngine:
         # 2. 获取 OFI 评分
         ofi_score = 0
         if self._ofi_calculator is not None:
-            ofi_score = self._ofi_calculator.get_ofi_score()
+            ofi_score = self._ofi_calculator.get_ofi_score(stock_code)
 
         # 3. 获取成交加速度评分
         acceleration = self._tape_velocity.calculate_acceleration(stock_code)
@@ -429,7 +434,19 @@ class SignalEngine:
         return signal
 
     async def _emit_signal(self, signal: ScalpingSignalData) -> None:
-        """通过 SocketManager 推送信号事件"""
+        """通过 SocketManager 推送信号事件（含冷却去重）"""
+        # 冷却检查：同一股票同类信号 30s 内不重复触发
+        cooldown_key = (signal.stock_code, signal.signal_type.value)
+        now = time.time()
+        last_time = self._last_signal_time.get(cooldown_key, 0.0)
+        if now - last_time < self._SIGNAL_COOLDOWN:
+            logger.debug(
+                f"[{signal.stock_code}] {signal.signal_type.value} 信号冷却中 "
+                f"({now - last_time:.1f}s < {self._SIGNAL_COOLDOWN}s)，跳过"
+            )
+            return
+        self._last_signal_time[cooldown_key] = now
+
         try:
             await self._socket_manager.emit_to_all(
                 SocketEvent.SCALPING_SIGNAL,
@@ -452,4 +469,8 @@ class SignalEngine:
     def reset(self, stock_code: str) -> None:
         """重置指定股票的信号引擎状态"""
         self._stall_trackers.pop(stock_code, None)
+        # 清理该股票的冷却记录
+        keys_to_remove = [k for k in self._last_signal_time if k[0] == stock_code]
+        for k in keys_to_remove:
+            del self._last_signal_time[k]
         logger.info(f"已重置 {stock_code} 的 SignalEngine 状态")

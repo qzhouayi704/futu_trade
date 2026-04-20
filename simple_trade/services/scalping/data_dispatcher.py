@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from simple_trade.services.scalping.models import OrderBookData, TickData
 from simple_trade.utils.logger import print_status
+from simple_trade.utils.metrics import get_metrics
 
 if TYPE_CHECKING:
     from simple_trade.services.scalping.engine import ScalpingEngine
@@ -32,6 +33,24 @@ class DataDispatcher:
         self._tick_counts: dict[str, int] = {}
         self._ob_counts: dict[str, int] = {}
         self._last_summary_time: float = 0.0
+        # 计算器连续异常计数：{stock_code: {calc_name: count}}
+        self._calc_error_counts: dict[str, dict[str, int]] = {}
+        # 已告警的计算器（防止重复告警）：{"stock_code:calc_name"}
+        self._alerted_calcs: set[str] = set()
+
+    # ------------------------------------------------------------------
+    # 股票管理（供 LifecycleManager 调用）
+    # ------------------------------------------------------------------
+
+    def add_stock(self, stock_code: str) -> None:
+        """初始化指定股票的计数器"""
+        self._tick_counts[stock_code] = 0
+        self._ob_counts[stock_code] = 0
+
+    def remove_stock(self, stock_code: str) -> None:
+        """清理指定股票的计数器"""
+        self._tick_counts.pop(stock_code, None)
+        self._ob_counts.pop(stock_code, None)
 
     # ------------------------------------------------------------------
     # Tick 数据回调
@@ -71,6 +90,7 @@ class DataDispatcher:
 
         # 汇总统计
         self._tick_counts[stock_code] = self._tick_counts.get(stock_code, 0) + 1
+        get_metrics().rate("scalping.ticks_per_sec", window_seconds=60).inc()
 
         # 每 100 条数据输出一次统计
         if self._tick_counts[stock_code] % 100 == 0:
@@ -98,18 +118,21 @@ class DataDispatcher:
         direction = None
         try:
             direction = e._delta_calculator.on_tick(stock_code, tick)
+            self._reset_calc_error(stock_code, 'DeltaCalculator')
         except Exception as exc:
-            logger.warning(f"[{stock_code}] DeltaCalculator 异常: {exc}")
+            self._record_calc_error(stock_code, 'DeltaCalculator', exc)
 
         try:
             e._tape_velocity.on_tick(stock_code, tick)
+            self._reset_calc_error(stock_code, 'TapeVelocityMonitor')
         except Exception as exc:
-            logger.warning(f"[{stock_code}] TapeVelocityMonitor 异常: {exc}")
+            self._record_calc_error(stock_code, 'TapeVelocityMonitor', exc)
 
         try:
             e._poc_calculator.on_tick(stock_code, tick, direction=direction)
+            self._reset_calc_error(stock_code, 'POCCalculator')
         except Exception as exc:
-            logger.warning(f"[{stock_code}] POCCalculator 异常: {exc}")
+            self._record_calc_error(stock_code, 'POCCalculator', exc)
 
         # 分发至可选组件
         if e._divergence_detector is not None:
@@ -248,3 +271,36 @@ class DataDispatcher:
         active = self._engine._lifecycle._active_stocks
         self._tick_counts = {code: 0 for code in active}
         self._ob_counts = {code: 0 for code in active}
+
+    # ------------------------------------------------------------------
+    # 计算器异常计数与告警
+    # ------------------------------------------------------------------
+
+    _CALC_ERROR_THRESHOLD = 10  # 连续失败阈值
+
+    def _record_calc_error(self, stock_code: str, calc_name: str, exc: Exception):
+        """记录计算器异常，连续失败超阈值时升级告警"""
+        if stock_code not in self._calc_error_counts:
+            self._calc_error_counts[stock_code] = {}
+        counts = self._calc_error_counts[stock_code]
+        counts[calc_name] = counts.get(calc_name, 0) + 1
+        count = counts[calc_name]
+
+        if count <= 3 or count % 10 == 0:
+            logger.warning(f"[{stock_code}] {calc_name} 异常(连续{count}次): {exc}")
+
+        alert_key = f"{stock_code}:{calc_name}"
+        if count >= self._CALC_ERROR_THRESHOLD and alert_key not in self._alerted_calcs:
+            self._alerted_calcs.add(alert_key)
+            logger.error(
+                f"[Scalping告警] {stock_code} {calc_name} 连续异常"
+                f" {count} 次，该计算器可能已失效"
+            )
+
+    def _reset_calc_error(self, stock_code: str, calc_name: str):
+        """重置计算器异常计数"""
+        if stock_code in self._calc_error_counts:
+            if self._calc_error_counts[stock_code].get(calc_name, 0) > 0:
+                self._calc_error_counts[stock_code][calc_name] = 0
+                # 恢复后移除告警标记，下次再异常可以重新告警
+                self._alerted_calcs.discard(f"{stock_code}:{calc_name}")

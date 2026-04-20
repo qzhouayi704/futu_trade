@@ -6,6 +6,7 @@
 """
 
 import logging
+import os
 import hashlib
 from typing import Dict, Any, Optional
 
@@ -38,6 +39,11 @@ class AccountManager:
         self.is_trade_connected = False
         self.is_unlocked = False
         self.trade_password = trade_password
+
+        # 从环境变量读取交易环境：0=真实, 1=仿真（默认仿真）
+        trade_env_val = os.environ.get('FUTU_TRADE_ENV', '1')
+        self.trd_env = TrdEnv.SIMULATE if trade_env_val == '1' else TrdEnv.REAL
+        logging.info(f"交易环境: {'仿真' if self.trd_env == TrdEnv.SIMULATE else '真实'}")
 
     def connect_trade_api(self) -> Dict[str, Any]:
         """
@@ -83,7 +89,19 @@ class AccountManager:
                 result.update(unlock_result)
 
                 if result['success']:
-                    result['message'] = "富途交易API连接并解锁成功"
+                    # 验证交易查询是否真正可用（order_list_query 在连接不稳定时返回 None）
+                    verify_result = self.trade_client.order_list_query(trd_env=self.trd_env)
+                    if verify_result is None:
+                        logging.warning("富途交易API连接验证失败: order_list_query 返回 None，标记为未连接")
+                        self.is_trade_connected = False
+                        self.is_unlocked = False
+                        result['success'] = False
+                        result['is_connected'] = False
+                        result['message'] = "交易API连接验证失败，请检查OpenD交易服务是否正常"
+                        self.trade_client.close()
+                        self.trade_client = None
+                    else:
+                        result['message'] = "富途交易API连接并解锁成功"
                 else:
                     result['message'] = f"富途交易API连接成功，但解锁失败: {result['message']}"
 
@@ -144,8 +162,20 @@ class AccountManager:
                 })
                 logging.info("富途交易解锁成功")
             else:
-                result['message'] = f"交易解锁失败: ret={ret}, data={data}"
-                logging.error(result['message'])
+                error_msg = str(data) if data else ''
+                if 'GUI版本OpenD已屏蔽解锁接口' in error_msg or '解锁按钮' in error_msg:
+                    # GUI 版 OpenD 不支持程序化解锁，需要用户手动在界面上解锁
+                    # 假定用户已通过 GUI 手动解锁，标记为成功
+                    self.is_unlocked = True
+                    result.update({
+                        'success': True,
+                        'is_unlocked': True,
+                        'message': '已跳过程序解锁（GUI版OpenD需手动解锁）'
+                    })
+                    logging.warning("GUI版OpenD已屏蔽程序解锁接口，请确保已在OpenD界面手动解锁交易")
+                else:
+                    result['message'] = f"交易解锁失败: ret={ret}, data={data}"
+                    logging.error(result['message'])
 
         except Exception as e:
             logging.error(f"交易解锁异常: {e}")

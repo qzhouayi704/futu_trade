@@ -85,11 +85,12 @@ class FutuTradeService:
         """
         result = self.account_manager.connect_trade_api()
 
-        # 如果连接成功，将交易客户端传递给其他管理器
+        # 如果连接成功，将交易客户端和环境传递给其他管理器
         if result['is_connected']:
             trade_client = self.account_manager.get_trade_client()
-            self.order_manager.set_trade_client(trade_client)
-            self.position_manager.set_trade_client(trade_client)
+            trd_env = self.account_manager.trd_env
+            self.order_manager.set_trade_client(trade_client, trd_env)
+            self.position_manager.set_trade_client(trade_client, trd_env)
 
         return result
 
@@ -391,7 +392,39 @@ class FutuTradeService:
         Returns:
             包含订单列表的字典
         """
-        return self.order_manager.get_orders(status_filter_list)
+        # 如果交易API未准备好，尝试自动连接
+        if not self.is_trade_ready():
+            connect_result = self.connect_trade_api()
+            if not connect_result['success']:
+                return {
+                    'success': False,
+                    'message': f'交易API未就绪: {connect_result["message"]}',
+                    'orders': []
+                }
+
+        result = self.order_manager.get_orders(status_filter_list)
+
+        # order_list_query 瞬态失败时，先验证连接是否真正断开
+        if not result['success'] and 'NoneType' in result.get('message', ''):
+            try:
+                verify = self.account_manager.trade_client.get_acc_list()
+                if verify is not None and verify[0] == 0:  # RET_OK == 0
+                    # 连接存活，属于瞬态错误，不标记断开
+                    logging.warning(
+                        f"order_list_query 瞬态失败（连接仍存活）: {result['message']}"
+                    )
+                else:
+                    raise ValueError("验证调用返回异常")
+            except Exception:
+                # 连接确认断开，重连后重试
+                logging.warning("确认交易连接已断开，尝试重连...")
+                self.account_manager.is_trade_connected = False
+                self.account_manager.is_unlocked = False
+                connect_result = self.connect_trade_api()
+                if connect_result['success']:
+                    result = self.order_manager.get_orders(status_filter_list)
+
+        return result
 
     def get_trade_status(self) -> Dict[str, Any]:
         """

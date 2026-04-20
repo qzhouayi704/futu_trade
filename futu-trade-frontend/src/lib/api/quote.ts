@@ -16,6 +16,11 @@ export const quoteApi = {
     return apiClient.get("/quotes/conditions");
   },
 
+  // 获取交易信号
+  getTradeSignals: async (): Promise<ApiResponse<unknown[]>> => {
+    return apiClient.get("/quotes/trade-signals");
+  },
+
   // 获取预警信息
   getAlerts: async (): Promise<ApiResponse<unknown[]>> => {
     return apiClient.get("/quotes/alerts");

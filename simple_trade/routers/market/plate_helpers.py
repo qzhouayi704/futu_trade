@@ -3,7 +3,7 @@
 """
 板块路由共享辅助函数
 
-供 routers/plate.py 和 routers/compat/plate_routes.py 共用，
+供 routers/plate.py 使用，
 避免代码重复。
 """
 

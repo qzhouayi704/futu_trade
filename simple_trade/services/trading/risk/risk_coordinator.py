@@ -70,6 +70,11 @@ class RiskCoordinator:
         # 频率控制：stock_code -> 上次检查时间戳（仅用于非价格监控模块）
         self._last_check_time: Dict[str, float] = {}
 
+        # 已触发订单成交确认的频率控制（30秒间隔 + 启动冷却）
+        self._TRIGGERED_ORDER_CHECK_INTERVAL: float = 30.0
+        # 初始化为当前时间：首次检查需等待一个完整间隔（启动冷却期）
+        self._last_triggered_order_check: float = time.time()
+
     def check_all_risks(
         self,
         quotes: List[Dict[str, Any]],
@@ -272,8 +277,11 @@ class RiskCoordinator:
                             details=r,
                         ))
 
-            # 已触发订单的成交确认（不受去重限制，必须执行）
-            self.lot_order_tp_service.check_triggered_orders()
+            # 已触发订单的成交确认（频率控制：每30秒检查一次，启动后10秒冷却）
+            now = time.time()
+            if now - self._last_triggered_order_check >= self._TRIGGERED_ORDER_CHECK_INTERVAL:
+                self._last_triggered_order_check = now
+                self.lot_order_tp_service.check_triggered_orders()
 
         except Exception as e:
             self.logger.error(f"【风险协调】单笔订单止盈检查异常: {e}", exc_info=True)

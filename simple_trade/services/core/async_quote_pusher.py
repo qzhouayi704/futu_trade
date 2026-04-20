@@ -16,6 +16,7 @@ import asyncio
 from typing import Optional, Dict, Any, List
 
 from ...utils.logger import print_status, get_flow_logger
+from ...utils.market_helper import MarketTimeHelper
 
 
 class AsyncQuotePusher:
@@ -38,7 +39,8 @@ class AsyncQuotePusher:
         self.is_running = False
         self.push_task: Optional[asyncio.Task] = None
         self.push_interval = 5  # 推送间隔（秒）
-        self.last_active_markets: List[str] = []
+        # 第一层防御：构造时即获取当前市场，避免首轮推送循环误判市场切换
+        self.last_active_markets: List[str] = MarketTimeHelper.get_current_active_markets() or []
         self.first_quote_ready = asyncio.Event()  # 首次报价就绪事件
 
         # 从配置获取推送间隔
@@ -103,6 +105,10 @@ class AsyncQuotePusher:
 
             # 启动推送任务
             self.is_running = True
+            # 第二层防御：订阅完成后同步当前市场状态
+            init_markets = MarketTimeHelper.get_current_active_markets()
+            if init_markets:
+                self.last_active_markets = init_markets
             self.push_task = asyncio.create_task(self._push_loop())
 
             result['success'] = True
@@ -145,6 +151,7 @@ class AsyncQuotePusher:
         first_quote_fetched = False
         first_quote_timeout = 60  # 60 秒超时
         start_time = asyncio.get_running_loop().time()
+        consecutive_failures = 0  # 连续失败计数器
 
         while self.is_running:
             try:
@@ -176,53 +183,80 @@ class AsyncQuotePusher:
                 if self.state_manager.is_running():
                     await self._check_market_switch()
 
+                # 成功时重置连续失败计数器
+                consecutive_failures = 0
                 await asyncio.sleep(self.push_interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logging.error(f"推送循环异常: {e}", exc_info=True)
-                await asyncio.sleep(self.push_interval)
+                consecutive_failures += 1
+                backoff = min(self.push_interval * (2 ** consecutive_failures), 60)
+                logging.error(
+                    f"推送循环异常(连续{consecutive_failures}次): {e}",
+                    exc_info=(consecutive_failures <= 3)
+                )
+                await asyncio.sleep(backoff)
 
         print_status("【行情推送】推送循环结束", "info")
 
     async def _check_market_switch(self):
         """检查并处理市场切换"""
-        from ...utils.market_helper import MarketTimeHelper
-
         current_markets = MarketTimeHelper.get_current_active_markets()
         if not current_markets:
             current_markets = [MarketTimeHelper.get_primary_market()]
+
+        # 第三层防御：空列表守卫，初始状态不触发切换
+        if not self.last_active_markets:
+            self.last_active_markets = current_markets
+            return
 
         if set(current_markets) != set(self.last_active_markets):
             await self._handle_market_switch(current_markets)
 
     async def _handle_market_switch(self, current_markets: List[str]):
-        """处理市场切换 - 重新订阅新市场股票"""
+        """处理市场切换 - 重新订阅新市场股票（含重试和竞态保护）"""
+        old_markets = self.last_active_markets
         print_status(
-            f"【行情推送】市场切换: {self.last_active_markets} -> {current_markets}",
+            f"【行情推送】市场切换: {old_markets} -> {current_markets}",
             "info"
         )
 
-        try:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self.container.subscription_helper.unsubscribe_all
-            )
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self.container.subscription_helper.unsubscribe_all
+                )
 
-            self.state_manager.invalidate_quotes_cache()
-            self.state_manager.clear_trading_conditions()
+                self.state_manager.invalidate_quotes_cache()
+                self.state_manager.clear_trading_conditions()
 
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, self.container.subscription_helper.subscribe_target_stocks, current_markets
-            )
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, self.container.subscription_helper.subscribe_target_stocks, current_markets
+                )
 
-            if result['success']:
-                print_status(f"市场切换完成: {result.get('subscribed_count', 0)} 只股票已订阅", "ok")
-            else:
-                logging.warning(f"市场切换订阅失败: {result.get('message', '')}")
-        except Exception as e:
-            logging.error(f"市场切换异常: {e}")
+                if result['success']:
+                    # 订阅成功后才更新 last_active_markets
+                    self.last_active_markets = current_markets
+                    print_status(f"市场切换完成: {result.get('subscribed_count', 0)} 只股票已订阅", "ok")
+                    return
+                else:
+                    logging.warning(
+                        f"市场切换订阅失败(第{attempt}次): {result.get('message', '')}"
+                    )
+            except Exception as e:
+                logging.error(f"市场切换异常(第{attempt}次): {e}")
 
-        self.last_active_markets = current_markets
+            if attempt < max_retries:
+                backoff = 2 ** attempt
+                logging.info(f"市场切换重试，{backoff}秒后再试...")
+                await asyncio.sleep(backoff)
+
+        # 所有重试失败，不更新 last_active_markets，下次循环会重新尝试
+        logging.error(
+            f"市场切换失败（{max_retries}次重试均失败），"
+            f"保留 last_active_markets={old_markets}"
+        )
 
     def get_status(self) -> Dict[str, Any]:
         """获取行情推送服务状态

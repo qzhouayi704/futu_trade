@@ -11,6 +11,7 @@ ScalpingDataPoller - 数据轮询器
 
 import asyncio
 import logging
+import random
 import time
 from typing import TYPE_CHECKING, Optional
 
@@ -34,11 +35,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("scalping.poller")
 
-# 轮询间隔（秒）
-_TICKER_INTERVAL = 1.0
-_ORDER_BOOK_INTERVAL = 2.0
+# 基础轮询间隔（秒），实际间隔会根据股票数量动态调整
+_BASE_TICKER_INTERVAL = 1.0
+_BASE_ORDER_BOOK_INTERVAL = 2.0
 # 每次拉取的逐笔数量
 _TICKER_NUM = 200
+# QPS 上限：OpenD 每秒最多处理约 5 个请求（200ms throttle）
+_MAX_QPS = 5.0
 
 
 class ScalpingDataPoller:
@@ -48,6 +51,9 @@ class ScalpingDataPoller:
     - _poll_ticker_loop: 拉取逐笔成交
     - _poll_order_book_loop: 拉取十档盘口
     - _periodic_flush_loop: 定期 flush Delta/POC（不依赖 tick 到达）
+
+    自适应轮询间隔：根据活跃股票数量动态调整，避免超过 OpenD QPS 上限。
+    例如 29 只股票时，Ticker 间隔 ≈ 6 秒，OrderBook 间隔 ≈ 12 秒。
     """
 
     def __init__(
@@ -63,6 +69,25 @@ class ScalpingDataPoller:
         self._tasks: dict[str, tuple[asyncio.Task, asyncio.Task, asyncio.Task]] = {}
         # 去重：记录每只股票上次处理到的 ticker 序号
         self._last_ticker_idx: dict[str, int] = {}
+        # 启动序号：用于计算错开延迟
+        self._start_index: int = 0
+
+    @property
+    def _stock_count(self) -> int:
+        """当前活跃股票数量"""
+        return max(len(self._tasks), 1)
+
+    def _calc_interval(self, base_interval: float) -> float:
+        """根据股票数量动态计算轮询间隔
+
+        原理：N 只股票共享 _MAX_QPS 的吞吐量，
+        每只股票的间隔 = max(基础间隔, N / QPS上限)
+        例如 29 只 / 5 QPS = 5.8 秒，取 max(1.0, 5.8) = 5.8 秒
+        """
+        n = self._stock_count
+        min_interval = n / _MAX_QPS
+        interval = max(base_interval, min_interval)
+        return interval
 
     async def start(self, stock_code: str) -> None:
         """启动指定股票的数据轮询
@@ -75,12 +100,16 @@ class ScalpingDataPoller:
 
         self._last_ticker_idx[stock_code] = -1
 
+        # 计算错开延迟：每只股票错开一个 throttle 周期（200ms），避免同时请求
+        stagger_delay = self._start_index * 0.2
+        self._start_index += 1
+
         ticker_task = asyncio.create_task(
-            self._poll_ticker_loop(stock_code),
+            self._poll_ticker_loop(stock_code, stagger_delay),
             name=f"scalping-ticker-{stock_code}",
         )
         ob_task = asyncio.create_task(
-            self._poll_order_book_loop(stock_code),
+            self._poll_order_book_loop(stock_code, stagger_delay + 0.1),
             name=f"scalping-ob-{stock_code}",
         )
         flush_task = asyncio.create_task(
@@ -88,7 +117,11 @@ class ScalpingDataPoller:
             name=f"scalping-flush-{stock_code}",
         )
         self._tasks[stock_code] = (ticker_task, ob_task, flush_task)
-        logger.info(f"[{stock_code}] 数据轮询已启动")
+        interval = self._calc_interval(_BASE_TICKER_INTERVAL)
+        logger.info(
+            f"[{stock_code}] 数据轮询已启动 "
+            f"(错开{stagger_delay:.1f}s, 动态间隔≈{interval:.1f}s, 股票数={self._stock_count})"
+        )
 
     async def stop(self, stock_code: str) -> None:
         """停止指定股票的数据轮询"""
@@ -118,8 +151,10 @@ class ScalpingDataPoller:
     # Ticker 轮询
     # ------------------------------------------------------------------
 
-    async def _poll_ticker_loop(self, stock_code: str) -> None:
+    async def _poll_ticker_loop(self, stock_code: str, stagger_delay: float = 0) -> None:
         """Ticker 轮询主循环"""
+        if stagger_delay > 0:
+            await asyncio.sleep(stagger_delay)
         logger.info(f"[{stock_code}] Ticker 轮询循环启动")
         while True:
             try:
@@ -128,19 +163,22 @@ class ScalpingDataPoller:
                 raise
             except Exception as e:
                 logger.warning(f"[{stock_code}] Ticker 轮询异常: {e}")
-            await asyncio.sleep(_TICKER_INTERVAL)
+            # 动态间隔 + 小随机抖动避免同步
+            interval = self._calc_interval(_BASE_TICKER_INTERVAL)
+            jitter = random.uniform(0, 0.3)
+            await asyncio.sleep(interval + jitter)
 
     async def _poll_ticker(self, stock_code: str) -> None:
         """单次 Ticker 拉取与分发"""
         # futu_client 是同步调用，放到线程池执行避免阻塞事件循环
         loop = asyncio.get_running_loop()
         ret, data = await loop.run_in_executor(
-            None,
+            self._futu_client.executor,  # 使用专用线程池（4 workers），限制并发
             lambda: self._futu_client.get_rt_ticker(stock_code, num=_TICKER_NUM),
         )
 
         if ret != RET_OK:
-            logger.debug(f"[{stock_code}] get_rt_ticker 失败: {data}")
+            logger.warning(f"[{stock_code}] get_rt_ticker 失败: {data}")
             return
 
         if data is None or data.empty:
@@ -229,8 +267,10 @@ class ScalpingDataPoller:
     # OrderBook 轮询
     # ------------------------------------------------------------------
 
-    async def _poll_order_book_loop(self, stock_code: str) -> None:
+    async def _poll_order_book_loop(self, stock_code: str, stagger_delay: float = 0) -> None:
         """OrderBook 轮询主循环"""
+        if stagger_delay > 0:
+            await asyncio.sleep(stagger_delay)
         logger.info(f"[{stock_code}] OrderBook 轮询循环启动")
         while True:
             try:
@@ -239,18 +279,21 @@ class ScalpingDataPoller:
                 raise
             except Exception as e:
                 logger.warning(f"[{stock_code}] OrderBook 轮询异常: {e}")
-            await asyncio.sleep(_ORDER_BOOK_INTERVAL)
+            # 动态间隔 + 小随机抖动
+            interval = self._calc_interval(_BASE_ORDER_BOOK_INTERVAL)
+            jitter = random.uniform(0, 0.3)
+            await asyncio.sleep(interval + jitter)
 
     async def _poll_order_book(self, stock_code: str) -> None:
         """单次 OrderBook 拉取与分发"""
         loop = asyncio.get_running_loop()
         ret, data = await loop.run_in_executor(
-            None,
+            self._futu_client.executor,  # 使用专用线程池，限制并发
             lambda: self._futu_client.get_order_book(stock_code),
         )
 
         if ret != RET_OK:
-            logger.debug(f"[{stock_code}] get_order_book 失败: {data}")
+            logger.warning(f"[{stock_code}] get_order_book 失败: {data}")
             return
 
         if data is None:

@@ -125,21 +125,24 @@ class LifecycleManager:
             except Exception as exc:
                 logger.error(f"持久化服务启动失败: {exc}")
 
-        # 4. 订阅管理
+        # 4. 订阅管理（进程模式下 subscription_helper 为 None，订阅在 scalping_worker.py 中处理）
         try:
-            e._subscription_helper.set_priority_stocks(result.added)
-            sub_result = e._subscription_helper.subscribe_target_stocks(None)
-            logger.info(f"订阅结果: {sub_result}")
+            if e._subscription_helper is not None:
+                e._subscription_helper.set_priority_stocks(result.added)
+                sub_result = e._subscription_helper.subscribe_target_stocks(None)
+                logger.info(f"订阅结果: {sub_result}")
 
-            # 等待订阅状态同步（最多 5 秒）
-            if hasattr(e, '_subscription_manager') and e._subscription_manager:
-                for _ in range(50):
-                    if e._subscription_manager.ticker_subscribed_stocks:
-                        logger.info("订阅状态已同步")
-                        break
-                    await asyncio.sleep(0.1)
-                else:
-                    logger.warning("订阅状态同步超时，但继续启动")
+                # 等待订阅状态同步（最多 5 秒）
+                if hasattr(e, '_subscription_manager') and e._subscription_manager:
+                    for _ in range(50):
+                        if e._subscription_manager.ticker_subscribed_stocks:
+                            logger.info("订阅状态已同步")
+                            break
+                        await asyncio.sleep(0.1)
+                    else:
+                        logger.warning("订阅状态同步超时，但继续启动")
+            else:
+                logger.info("订阅管理跳过（子进程模式，TICKER/ORDER_BOOK 已在 worker 中订阅）")
 
         except Exception as exc:
             logger.error(f"订阅失败: {exc}")
@@ -152,8 +155,7 @@ class LifecycleManager:
             self._active_stocks.add(code)
             self._reconnect_attempts[code] = 0
             self._last_data_time[code] = time.time()
-            e._dispatcher._tick_counts[code] = 0
-            e._dispatcher._ob_counts[code] = 0
+            e._dispatcher.add_stock(code)
             logger.info(f"已启动 {code} 的 Scalping 数据流")
 
         # 控制台打印启动的股票列表
@@ -178,15 +180,27 @@ class LifecycleManager:
             if not e._scheduler._running:
                 await e._scheduler.start()
 
-            # 直接从 subscription_manager 获取已订阅 TICKER 的股票
+            # 始终使用 result.added 中已有 TICKER 订阅的股票加入调度器
+            # （未订阅 TICKER 的股票轮询 get_rt_ticker 会失败，
+            #   导致健康检查误报 + 重连风暴冲击 OpenD）
+            stocks_to_add = result.added
             if hasattr(e, '_subscription_manager') and e._subscription_manager:
-                subscribed_stocks = e._subscription_manager.ticker_subscribed_stocks
-                if subscribed_stocks:
-                    await e._scheduler.add_stocks(list(subscribed_stocks))
-                    logger.info(f"【Scalping】从订阅管理器同步 {len(subscribed_stocks)} 只股票到调度器")
-            else:
-                # 如果没有 subscription_manager，使用 result.added
-                await e._scheduler.add_stocks(result.added)
+                ticker_subs = e._subscription_manager.ticker_subscribed_stocks
+                if ticker_subs:
+                    stocks_to_add = [c for c in result.added if c in ticker_subs]
+                    skipped = len(result.added) - len(stocks_to_add)
+                    if skipped > 0:
+                        logger.info(
+                            f"【Scalping】跳过 {skipped} 只未订阅TICKER的股票，"
+                            f"仅监控 {len(stocks_to_add)} 只已订阅股票"
+                        )
+                logger.info(
+                    f"【Scalping】加入调度器 {len(stocks_to_add)} 只股票"
+                    f"（TICKER 订阅覆盖: {len(ticker_subs) if ticker_subs else 0}/{len(result.added)}）"
+                )
+
+            if stocks_to_add:
+                await e._scheduler.add_stocks(stocks_to_add)
         elif e._data_poller is not None:
             for code in result.added:
                 await e._data_poller.start(code)
@@ -236,12 +250,10 @@ class LifecycleManager:
         for code in codes_to_stop:
             self._active_stocks.discard(code)
             self._day_highs.pop(code, None)
-            e._calc_scheduler._last_poc_calc.pop(code, None)
-            e._calc_scheduler._last_delta_flush.pop(code, None)
+            e._calc_scheduler.remove_stock(code)
             self._reconnect_attempts.pop(code, None)
             self._last_data_time.pop(code, None)
-            e._dispatcher._tick_counts.pop(code, None)
-            e._dispatcher._ob_counts.pop(code, None)
+            e._dispatcher.remove_stock(code)
             # 重置各计算器状态
             e._delta_calculator.reset(code)
             e._tape_velocity.reset(code)
@@ -261,10 +273,11 @@ class LifecycleManager:
         if not self._active_stocks:
             if e._scheduler is not None:
                 await e._scheduler.stop()
-            try:
-                e._subscription_helper.unsubscribe_all()
-            except Exception as exc:
-                logger.warning(f"取消订阅失败: {exc}")
+            if e._subscription_helper is not None:
+                try:
+                    e._subscription_helper.unsubscribe_all()
+                except Exception as exc:
+                    logger.warning(f"取消订阅失败: {exc}")
             if e._persistence is not None:
                 try:
                     await e._persistence.stop()
@@ -291,6 +304,9 @@ class LifecycleManager:
             await asyncio.sleep(_RECONNECT_DELAY_SEC)
 
             try:
+                if e._subscription_helper is None:
+                    logger.info(f"[{stock_code}] 重连跳过订阅（子进程模式）")
+                    return
                 e._subscription_helper.set_priority_stocks([stock_code])
                 # subscribe_target_stocks 是同步阻塞的 Futu API 调用，
                 # 使用 run_in_executor 避免阻塞事件循环

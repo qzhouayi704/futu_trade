@@ -43,7 +43,7 @@ export function KlineChart({
       setError(null);
 
       const response = await fetch(
-        `/api/stocks/kline/${stockCode}?days=${period === 'week' ? 90 : period === 'month' ? 365 : 30}`
+        `/api/kline/${stockCode}?days=${period === 'week' ? 90 : period === 'month' ? 365 : 30}`
       );
 
       if (!response.ok) {

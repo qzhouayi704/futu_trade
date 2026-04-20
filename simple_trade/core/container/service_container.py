@@ -36,6 +36,12 @@ class ServiceContainer:
         self._data: Optional[DataServices] = None
         self._business: Optional[BusinessServices] = None
 
+        # 顶层服务引用（由 app.py lifespan 创建后注入）
+        self.quote_pipeline = None
+        self.system_coordinator = None
+        self.quote_pusher = None
+        self.state_manager = None
+
     def initialize_core(self):
         """初始化核心服务"""
         self._core = CoreServices(self.config)
@@ -56,7 +62,7 @@ class ServiceContainer:
         self._business.initialize()
 
     def initialize_all(self):
-        """初始化所有服务（向后兼容方法）"""
+        """初始化所有服务（同步版本，向后兼容）"""
         try:
             self.initialize_core()
             self.initialize_data()
@@ -65,6 +71,32 @@ class ServiceContainer:
             logging.info("服务容器初始化完成")
         except Exception as e:
             logging.error(f"服务容器初始化失败: {e}")
+            raise
+
+    async def async_initialize_all(self):
+        """异步初始化所有服务（不阻塞事件循环）
+
+        核心区别：CoreServices 使用 asyncio.sleep 替代 time.sleep 进行富途连接重试，
+        避免在 lifespan() 中阻塞事件循环最长 300 秒。
+        """
+        import asyncio
+        try:
+            # 核心服务使用异步初始化（关键：连接重试不阻塞事件循环）
+            self._core = CoreServices(self.config)
+            await self._core.async_initialize()
+
+            # 数据服务和业务服务初始化是轻量级的，放到线程池
+            loop = asyncio.get_running_loop()
+            self._data = DataServices(self._core, container=self)
+            await loop.run_in_executor(None, self._data.initialize)
+
+            self._business = BusinessServices(self._core, self._data)
+            await loop.run_in_executor(None, self._business.initialize)
+
+            self._inject_dependencies()
+            logging.info("服务容器异步初始化完成")
+        except Exception as e:
+            logging.error(f"服务容器异步初始化失败: {e}")
             raise
 
     def _inject_dependencies(self):

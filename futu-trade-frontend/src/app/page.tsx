@@ -4,7 +4,7 @@
 
 import { useState, useEffect } from "react";
 import { useSocket } from "@/lib/socket";
-import { systemApi } from "@/lib/api";
+import { systemApi, quoteApi } from "@/lib/api";
 import { alertApi } from "@/lib/api/alert";
 import { useToast } from "@/components/common/Toast";
 import { MonitorStartModal, StrategyPanel, SignalTabs } from "@/components/monitor";
@@ -86,6 +86,10 @@ export default function Dashboard() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
 
+  // 交易信号状态
+  const [tradeSignals, setTradeSignals] = useState<any[]>([]);
+  const [signalsLoading, setSignalsLoading] = useState(false);
+
   // 最后更新时间
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
@@ -118,6 +122,21 @@ export default function Dashboard() {
     }
   };
 
+  // 加载交易信号
+  const loadTradeSignals = async () => {
+    setSignalsLoading(true);
+    try {
+      const response = await quoteApi.getTradeSignals();
+      if (response.success && response.data) {
+        setTradeSignals(response.data as any[]);
+      }
+    } catch (error) {
+      console.error("加载交易信号失败:", error);
+    } finally {
+      setSignalsLoading(false);
+    }
+  };
+
   // 刷新所有数据
   const handleRefreshAll = () => {
     setLastUpdate(new Date());
@@ -125,6 +144,7 @@ export default function Dashboard() {
     refetchHotStocks();
     refetchPositions();
     loadAlerts();
+    loadTradeSignals();
   };
 
   // 加载预警数据（合并模式，不覆盖已有预警）
@@ -146,6 +166,7 @@ export default function Dashboard() {
   useEffect(() => {
     setLastUpdate(new Date());
     loadAlerts();
+    loadTradeSignals();
   }, []);
 
   // WebSocket 实时更新（优化版）
@@ -155,10 +176,35 @@ export default function Dashboard() {
     // 防抖定时器
     let positionsUpdateTimer: NodeJS.Timeout | null = null;
 
-    // 报价更新 - 累积预警信息（避免空数组覆盖已有预警）
-    socket.on("quotes_update", (data: { quotes: QuoteData[]; alerts?: Alert[] }) => {
+    // 报价更新 - 累积预警信息 + 交易信号
+    socket.on("quotes_update", (data: { quotes: QuoteData[]; alerts?: Alert[]; trade_actions?: any[] }) => {
       if (data.alerts && Array.isArray(data.alerts) && data.alerts.length > 0) {
         setAlerts(prev => mergeAlerts(prev, data.alerts!));
+      }
+      // 有新的交易信号时追加
+      if (data.trade_actions && Array.isArray(data.trade_actions) && data.trade_actions.length > 0) {
+        setTradeSignals(prev => {
+          const newSignals = data.trade_actions!.map((a: any, idx: number) => ({
+            id: Date.now() + idx,
+            stock_code: a.stock_code,
+            stock_name: a.stock_name,
+            signal_type: a.signal_type,
+            signal_price: a.price,
+            created_at: a.timestamp,
+            is_executed: false,
+            reason: a.reason,
+          }));
+          // 合并并去重（同 stock_code + signal_type 保留最新），最多保留 30 条
+          const merged = [...newSignals, ...prev];
+          const seen = new Set<string>();
+          const deduped = merged.filter(s => {
+            const key = `${s.stock_code}:${s.signal_type}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          return deduped.slice(0, 30);
+        });
       }
     });
 
@@ -254,6 +300,11 @@ export default function Dashboard() {
       {/* 活跃个股 */}
       <div className="mb-6">
         <HighTurnoverCard stocks={highTurnoverStocks} loading={highTurnoverLoading} />
+      </div>
+
+      {/* 交易信号 */}
+      <div className="mb-6">
+        <SignalsCard signals={tradeSignals} loading={signalsLoading} />
       </div>
 
       {/* 信号分组 + 持仓摘要 */}

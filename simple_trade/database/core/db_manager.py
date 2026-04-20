@@ -15,6 +15,7 @@ from ..models import DatabaseSchema
 from .connection_manager import ConnectionManager
 from .async_connection_manager import AsyncConnectionManager
 from .async_base_queries import AsyncBaseQueries
+from .write_queue import DatabaseWriteQueue
 from ..queries.stock_queries import StockQueries
 from ..queries.stock_activity_queries import StockActivityQueries
 from ..queries.plate_queries import PlateQueries
@@ -54,6 +55,10 @@ class DatabaseManager:
         self.system_queries = SystemQueries(self.conn_manager)
         self.advisor_queries = AdvisorQueries(self.conn_manager)
         self.ticker_queries = TickerQueries(self.conn_manager)
+
+        # 写入队列（序列化所有写操作，消除 "database is locked"）
+        self.write_queue = DatabaseWriteQueue()
+        self.write_queue.start()
 
         # 保留向后兼容的属性
         self._local = self.conn_manager._local
@@ -213,6 +218,9 @@ class DatabaseManager:
 
     def close_all_connections(self):
         """关闭所有连接"""
+        # 先关闭写入队列（flush 剩余任务）
+        if hasattr(self, 'write_queue') and self.write_queue.is_running:
+            self.write_queue.shutdown(timeout=10.0)
         self.conn_manager.close_all_connections()
 
     def get_cursor(self) -> sqlite3.Cursor:

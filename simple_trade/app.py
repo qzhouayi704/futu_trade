@@ -60,8 +60,24 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     quote_pusher_started = False
     quote_pusher = None
+    background_tasks: list[asyncio.Task] = []
+
+    def _track(coro, name: str) -> asyncio.Task:
+        """创建后台任务并追踪引用，注册异常回调"""
+        task = asyncio.create_task(coro, name=name)
+        background_tasks.append(task)
+        task.add_done_callback(lambda t: (
+            logging.error(f"后台任务 {t.get_name()} 异常: {t.exception()}", exc_info=t.exception())
+            if not t.cancelled() and t.exception() else None
+        ))
+        return task
 
     try:
+        # 版本标识 - 修改此值可确认代码是否正确加载
+        BUILD_VERSION = "2026.04.14-v3"
+        print_status(f"代码版本: {BUILD_VERSION}", "ok")
+        logging.info(f"===== 系统启动 BUILD={BUILD_VERSION} =====")
+
         # 启动时初始化
         config = ConfigManager.load_config("simple_trade/config.json")
         state_manager = get_state_manager()
@@ -71,9 +87,9 @@ async def lifespan(app: FastAPI):
         from .utils.market_helper import MarketTimeHelper
         MarketTimeHelper.set_force_market('HK')
 
-        # 初始化服务容器（不传入 Flask app，因为是 FastAPI 模式）
+        # 初始化服务容器（异步版本，不阻塞事件循环）
         container = ServiceContainer(config, app=None)
-        container.initialize_all()
+        await container.async_initialize_all()
 
         # 注入主事件循环到参数缓存管理器（使其能从工作线程安全提交协程）
         if hasattr(container, 'strategy_monitor_service') and container.strategy_monitor_service:
@@ -85,7 +101,7 @@ async def lifespan(app: FastAPI):
         from .websocket import get_socket_manager as _get_socket_manager
         socket_manager = _get_socket_manager()
 
-        # 初始化统一行情处理管道（显式依赖注入）
+        # 初始化统一行情处理管道（A6: 显式依赖注入）
         quote_pipeline = QuotePipeline(
             container=container,
             socket_manager=socket_manager,
@@ -93,6 +109,11 @@ async def lifespan(app: FastAPI):
             risk_coordinator=getattr(container, 'risk_coordinator', None),
             price_monitor=getattr(container, 'price_monitor_service', None),
             strategy_monitor=getattr(container, 'strategy_monitor_service', None),
+            # 显式注入核心依赖
+            subscription_manager=container.subscription_manager,
+            stock_data_service=container.stock_data_service,
+            alert_service=container.alert_service,
+            kline_service=container.kline_service,
         )
 
         # 初始化系统协调器（替代旧的 MonitorCoordinator 和 BroadcastCoordinator）
@@ -100,12 +121,13 @@ async def lifespan(app: FastAPI):
             container, state_manager
         )
 
-        # 通过 dependencies 注册所有服务实例
+        # 通过 container 统一管理所有顶层服务引用（A1 重构）
+        container.quote_pipeline = quote_pipeline
+        container.system_coordinator = system_coordinator
+        container.state_manager = state_manager
+
+        # 注册 container 到 dependencies（唯一的 setter）
         dependencies.set_container(container)
-        dependencies.set_state_manager(state_manager)
-        dependencies.set_system_coordinator(system_coordinator)
-        dependencies.set_quote_pipeline(quote_pipeline)
-        dependencies.set_socket_manager(socket_manager)
 
         # ========== 系统数据初始化（与 Flask 模式一致）==========
         init_success = await initialize_system_data(container, state_manager)
@@ -118,7 +140,12 @@ async def lifespan(app: FastAPI):
             state_manager=state_manager,
             quote_pipeline=quote_pipeline
         )
-        dependencies.set_quote_pusher(quote_pusher)
+        container.quote_pusher = quote_pusher
+
+        # P2-11: 连接缓存过期回调，过期时日志提示（推送循环自身的 sleep 间隔已足够快速刷新）
+        def _on_cache_expire():
+            logging.debug("报价缓存过期，下一次推送循环将自动刷新")
+        state_manager.quote_cache.set_on_expire_callback(_on_cache_expire)
 
         # 启动行情推送（放到后台任务，不阻塞服务器启动）
         async def _start_quote_pusher_background():
@@ -136,10 +163,22 @@ async def lifespan(app: FastAPI):
                 logging.error(f"行情推送后台启动异常: {e}", exc_info=True)
 
         if init_success:
-            asyncio.create_task(_start_quote_pusher_background())
-            # 启动 Scalping 引擎自动启动任务（传递 quote_pusher 参数）
-            asyncio.create_task(auto_start_scalping(container, state_manager, quote_pusher))
+            _track(_start_quote_pusher_background(), name="quote_pusher_startup")
+            # 启动 Scalping 引擎自动启动任务（传递 quote_pusher + socket_manager）
+            _track(auto_start_scalping(container, state_manager, quote_pusher, socket_manager), name="scalping_auto_start")
             print_status("【行情推送】正在后台启动订阅（HTTP 服务已就绪）...", "info")
+
+            # 启动活跃个股后台预计算（大单追踪 + 量比）
+            try:
+                from .services.market_data.high_turnover_enricher import HighTurnoverEnricher
+                enricher = HighTurnoverEnricher(container)
+                async def _delayed_enricher():
+                    await asyncio.sleep(60)  # 延迟 60 秒，等 OpenD 稳定后再启动
+                    await enricher.start()
+                _track(_delayed_enricher(), name="high_turnover_enricher")
+                logging.info("HighTurnoverEnricher 将在 60 秒后启动")
+            except Exception as e:
+                logging.warning(f"HighTurnoverEnricher 启动失败（活跃个股大单数据不可用）: {e}")
 
             # 自动恢复监控：如果上次关闭前监控在运行，则自动重启
             if state_manager.was_running_before_shutdown():
@@ -154,7 +193,7 @@ async def lifespan(app: FastAPI):
                     except Exception as e:
                         logging.error(f"自动恢复监控失败: {e}", exc_info=True)
                         print_status(f"【自动恢复】监控恢复失败: {e}", "error")
-                asyncio.create_task(_auto_resume_monitoring())
+                _track(_auto_resume_monitoring(), name="auto_resume_monitoring")
 
             # 发送企业微信启动通知
             if hasattr(container, 'wechat_alert_service') and container.wechat_alert_service:
@@ -174,23 +213,37 @@ async def lifespan(app: FastAPI):
         raise
 
     finally:
+        # 取消所有后台任务
+        for t in background_tasks:
+            if not t.done():
+                t.cancel()
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
+            logging.info(f"已取消 {len(background_tasks)} 个后台任务")
+
         # 确保清理所有资源
         try:
             if quote_pusher_started and quote_pusher:
                 await quote_pusher.stop()
 
-            # 停止 Scalping 引擎
+            # 停止 Scalping 引擎（含进程模式的子进程终止）
             try:
-                _container = dependencies.get_container()
-                scalping_engine = _container.scalping_engine
+                scalping_engine = container.scalping_engine if container else None
                 if scalping_engine is not None:
-                    await scalping_engine.stop()
-                    logging.info("ScalpingEngine 已停止")
+                    from .services.scalping.scalping_process_manager import ScalpingProcessManager
+                    if isinstance(scalping_engine, ScalpingProcessManager):
+                        await asyncio.wait_for(scalping_engine.shutdown(), timeout=5)
+                        logging.info("Scalping 子进程已终止")
+                    else:
+                        await asyncio.wait_for(scalping_engine.stop(), timeout=5)
+                        logging.info("ScalpingEngine 已停止")
+            except asyncio.TimeoutError:
+                logging.warning("Scalping 停止超时(5s)，强制继续")
             except Exception as e:
                 logging.error(f"ScalpingEngine 停止失败: {e}", exc_info=True)
 
             try:
-                state = dependencies.get_state()
+                state = state_manager
                 if state.is_running():
                     # 进程关闭时只清理内存状态，不持久化 is_running=false
                     # 这样重启后 was_running_before_shutdown() 仍返回 true，可以自动恢复
@@ -200,7 +253,7 @@ async def lifespan(app: FastAPI):
                 pass
 
             try:
-                container = dependencies.get_container()
+                pass  # container 已在局部作用域
                 # 关闭企业微信告警服务会话
                 if hasattr(container, 'wechat_alert_service') and container.wechat_alert_service:
                     await container.wechat_alert_service.close()

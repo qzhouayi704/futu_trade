@@ -13,10 +13,13 @@ from ...utils.logger import print_status
 class PipelineBroadcast:
     """管道广播处理器 - 负责 WebSocket 广播和交易状态更新"""
 
-    def __init__(self, container, socket_manager, state_manager):
+    def __init__(self, container, socket_manager, state_manager, alert_service=None, kline_service=None):
         self.container = container
         self.socket_manager = socket_manager
         self.state_manager = state_manager
+        # A6: 显式依赖注入
+        self.alert_service = alert_service or getattr(container, 'alert_service', None)
+        self.kline_service = kline_service or getattr(container, 'kline_service', None)
 
     async def broadcast(self, quotes: List[Dict], trade_actions: List[Dict],
                         conditions: List[Dict]):
@@ -50,43 +53,121 @@ class PipelineBroadcast:
     async def _check_alerts(self, quotes: List[Dict]) -> List[Dict]:
         """检查预警（纯内存计算）"""
         try:
-            return self.container.alert_service.check_alerts(quotes)
+            return self.alert_service.check_alerts(quotes)
         except Exception as e:
             logging.error(f"【行情管道】检查预警异常: {e}")
             return []
 
     async def _broadcast_strategy_signals(self, trade_actions: List[Dict]):
-        """广播策略信号到前端"""
+        """广播策略信号到前端（关键信号含重试）"""
+        import asyncio
         for action in trade_actions:
-            await self.socket_manager.emit_to_all(SocketEvent.STRATEGY_SIGNAL, {
+            signal_data = {
                 'stock_code': action['stock_code'],
                 'stock_name': action['stock_name'],
                 'signal_type': action['signal_type'].lower(),
                 'price': action['price'],
                 'reason': action['reason'],
-                'timestamp': action['timestamp'],
+                'timestamp': action.get('timestamp', datetime.now().isoformat()),
                 'strategy_name': action.get('strategy_id', '未知策略'),
                 'preset_name': ''
-            })
+            }
+            # 关键信号重试（最多2次）
+            for attempt in range(3):
+                try:
+                    await self.socket_manager.emit_to_all(
+                        SocketEvent.STRATEGY_SIGNAL, signal_data
+                    )
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        logging.warning(
+                            f"策略信号广播失败(第{attempt+1}次)，0.5s后重试: {e}"
+                        )
+                        await asyncio.sleep(0.5)
+                    else:
+                        logging.error(
+                            f"策略信号广播失败(3次均失败) "
+                            f"{action['stock_code']}: {e}"
+                        )
 
     async def _broadcast_conditions_page(self):
-        """广播数据到交易条件页面"""
+        """广播数据到交易条件页面（格式与 HTTP API /quotes/conditions 一致）"""
         try:
-            quota_data = self.container.kline_service.get_cached_quota_info()
+            quota_data = self.kline_service.get_cached_quota_info()
             if not quota_data:
                 quota_data = {
                     'used': 0, 'remaining': 0, 'total': 0,
                     'status': 'cache_miss',
                     'last_update': datetime.now().isoformat()
                 }
-            trading_conditions = list(self.state_manager.get_trading_conditions().values())
+            conditions_data = self.state_manager.get_trading_conditions()
+            formatted = self._format_conditions_for_frontend(conditions_data)
             await self.socket_manager.emit_to_all(SocketEvent.CONDITIONS_UPDATE, {
-                'conditions': trading_conditions,
+                'conditions': formatted,
                 'quota': quota_data,
                 'timestamp': datetime.now().isoformat()
             })
         except Exception as e:
             logging.error(f"【行情管道】广播条件页面异常: {e}")
+
+    @staticmethod
+    def _format_conditions_for_frontend(conditions_data: Dict) -> List[Dict]:
+        """将 state_manager 的条件数据转换为前端期望的格式
+
+        与 routers/market/quote.py 的 get_conditions() 保持一致。
+        """
+        result = []
+        for stock_code, cond in conditions_data.items():
+            buy_signal = cond.get('buy_signal', False)
+            sell_signal = cond.get('sell_signal', False)
+            details = cond.get('details', [])
+
+            # 格式化条件明细
+            conditions = []
+            if details:
+                for d in details:
+                    if isinstance(d, dict):
+                        conditions.append({
+                            'name': d.get('name', ''),
+                            'description': d.get('description', '') or
+                                f"当前值: {d.get('current_value', '')}, 目标值: {d.get('target_value', '')}",
+                            'passed': d.get('passed', False),
+                            'value': d.get('current_value'),
+                            'threshold': d.get('target_value'),
+                        })
+            else:
+                reason = cond.get('reason', '')
+                for part in reason.split(' | '):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    passed = part.startswith('✅')
+                    text = part.replace('✅', '').replace('❌', '').strip()
+                    if ':' in text:
+                        name, desc = text.split(':', 1)
+                        name, desc = name.strip(), desc.strip()
+                    else:
+                        name, desc = text, text
+                    conditions.append({
+                        'name': name, 'description': desc, 'passed': passed
+                    })
+
+            if buy_signal:
+                condition_type = 'buy'
+            elif sell_signal:
+                condition_type = 'sell'
+            else:
+                condition_type = 'watch'
+
+            result.append({
+                'stock_code': stock_code,
+                'stock_name': cond.get('stock_name', ''),
+                'condition_type': condition_type,
+                'conditions': conditions,
+                'all_passed': buy_signal or sell_signal,
+            })
+        return result
 
     def update_trading_conditions(self, conditions_data: Dict):
         """更新交易条件数据到状态管理器"""

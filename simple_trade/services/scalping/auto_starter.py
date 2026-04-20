@@ -75,6 +75,7 @@ async def auto_start_scalping(
     container: ServiceContainer,
     state_manager,
     quote_pusher,
+    socket_manager=None,
 ) -> None:
     """后台自动启动 Scalping 引擎
 
@@ -83,7 +84,7 @@ async def auto_start_scalping(
     PUSHER_WAIT_TIMEOUT = 300  # 等待行情推送服务启动的超时时间（5分钟）
     CACHE_WAIT_TIMEOUT = 30    # 等待缓存就绪的超时时间（缩短到30秒）
     CACHE_POLL_INTERVAL = 2
-    AUTO_START_STOCK_LIMIT = 50
+    # 不再硬编码上限，使用全部订阅股票（引擎自身有 MAX_STOCKS 上限保护）
 
     # 1. 等待 AsyncQuotePusher 完成首次报价
     logging.info("Scalping 自动启动：等待行情推送服务完成首次报价...")
@@ -129,14 +130,24 @@ async def auto_start_scalping(
         "HK": 1.0, "US": 0
     }
     stock_codes, turnover_rates = build_stock_list_for_scalping(
-        cached_quotes, AUTO_START_STOCK_LIMIT, min_price_map
+        cached_quotes, len(cached_quotes), min_price_map
     )
 
     if not stock_codes:
         logging.info("Scalping 自动启动：筛选后无有效股票")
         return
 
-    # 6. 启动引擎
+    # 6. 进程模式：确保 spawn 在 start 之前完成（消除竞态）
+    from .scalping_process_manager import ScalpingProcessManager
+    if isinstance(scalping_engine, ScalpingProcessManager):
+        try:
+            await scalping_engine.spawn(socket_manager)
+            logging.info("Scalping 自动启动：子进程 spawn 完成")
+        except Exception as e:
+            logging.error(f"Scalping 子进程 spawn 失败: {e}", exc_info=True)
+            return
+
+    # 7. 启动引擎
     try:
         result = await scalping_engine.start(stock_codes, turnover_rates)
         logging.info(

@@ -26,6 +26,10 @@ class RateLimiter:
         self.requests = deque()  # 使用deque提高性能
         self.lock = threading.Lock()
         self.logger = logging.getLogger(__name__)
+        # 日志降噪状态
+        self._throttle_count = 0
+        self._total_wait_time = 0.0
+        self._last_summary_time = 0.0
 
     def wait_if_needed(self) -> float:
         """
@@ -34,41 +38,59 @@ class RateLimiter:
         Returns:
             等待时间（秒）
         """
-        with self.lock:
-            current_time = time.time()
+        total_wait = 0.0
 
-            # 移除时间窗口外的请求记录
-            while self.requests and self.requests[0] < current_time - self.time_window:
-                self.requests.popleft()
+        while True:
+            with self.lock:
+                current_time = time.time()
 
-            # 检查是否超过限制
-            if len(self.requests) >= self.max_requests:
+                # 移除时间窗口外的请求记录
+                while self.requests and self.requests[0] < current_time - self.time_window:
+                    self.requests.popleft()
+
+                # 检查是否超过限制
+                if len(self.requests) < self.max_requests:
+                    # 有余量，记录本次请求并放行
+                    self.requests.append(current_time)
+                    return total_wait
+
                 # 计算需要等待的时间
                 oldest_request = self.requests[0]
-                wait_time = oldest_request + self.time_window - current_time + 0.1  # 额外0.1秒缓冲
+                wait_time = oldest_request + self.time_window - current_time + 0.1
 
-                if wait_time > 0:
+                if wait_time <= 0:
+                    # 窗口已过期，记录并放行
+                    self.requests.append(current_time)
+                    return total_wait
+
+                # 日志降噪
+                self._throttle_count += 1
+                self._total_wait_time += wait_time
+
+                if self._throttle_count == 1:
                     self.logger.warning(
                         f"达到频率限制（{self.max_requests}次/{self.time_window}秒），"
                         f"等待 {wait_time:.2f} 秒"
                     )
-                    # 释放锁后再等待，避免阻塞其他线程
-                    self.lock.release()
-                    try:
-                        time.sleep(wait_time)
-                    finally:
-                        self.lock.acquire()
+                    self._last_summary_time = current_time
+                elif (current_time - self._last_summary_time) >= 30:
+                    self.logger.info(
+                        f"频率限制汇总: 过去30秒共限流 {self._throttle_count} 次，"
+                        f"累计等待 {self._total_wait_time:.1f}s"
+                    )
+                    self._throttle_count = 0
+                    self._total_wait_time = 0.0
+                    self._last_summary_time = current_time
+                else:
+                    self.logger.debug(
+                        f"频率限制等待 {wait_time:.2f}s "
+                        f"(本轮第 {self._throttle_count} 次)"
+                    )
 
-                    # 重新清理过期请求
-                    current_time = time.time()
-                    while self.requests and self.requests[0] < current_time - self.time_window:
-                        self.requests.popleft()
-
-                    return wait_time
-
-            # 记录本次请求
-            self.requests.append(current_time)
-            return 0.0
+            # 在锁外等待，不阻塞其他线程的检查
+            time.sleep(wait_time)
+            total_wait += wait_time
+            # 循环回去重新竞争锁，确保不会突发
 
     def add_delay(self, delay: float):
         """

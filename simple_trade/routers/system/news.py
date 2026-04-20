@@ -186,7 +186,8 @@ async def trigger_crawl(
     # 如果是调试模式，临时创建调试版服务
     if request.debug:
         from ...services.news import NewsService
-        config = container.config if hasattr(container, 'config') else {}
+        from dataclasses import asdict
+        config = asdict(container.config) if hasattr(container, 'config') else {}
         debug_service = NewsService(container.db_manager, config=config, debug=True)
         result = await debug_service.crawl_and_analyze(request.max_items)
     else:

@@ -116,8 +116,8 @@ class StockMarkerService:
                     WHERE code = ?
                 ''', (new_count, score, code))
 
-                # 检查是否达到永久排除阈值（连续3次）
-                if new_count >= 3:
+                # 检查是否刚达到永久排除阈值（仅首次触发时计数）
+                if new_count == 3:
                     permanently_excluded_count += 1
 
             # 日志输出
@@ -127,7 +127,7 @@ class StockMarkerService:
                     f"将被永久排除（需手动清除标记才能重新参与筛选）"
                 )
 
-            self.logger.info(
+            self.logger.debug(
                 f"【低活跃度标记】已标记 {len(stock_codes)} 只股票为低活跃度，"
                 f"其中 {permanently_excluded_count} 只达到永久排除阈值"
             )

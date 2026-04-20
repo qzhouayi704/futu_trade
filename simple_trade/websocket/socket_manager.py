@@ -7,8 +7,9 @@ WebSocket 管理器
 """
 
 import logging
+import time
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set
 
 import socketio
 
@@ -18,10 +19,20 @@ from .events import SocketEvent, StatusData, ErrorData
 class SocketManager:
     """WebSocket 管理器 - 封装 AsyncServer 和事件处理"""
 
+    # 高频事件节流配置（事件名 -> 最小间隔秒数）
+    _THROTTLE_INTERVALS: Dict[str, float] = {
+        'quotes_update': 3.0,      # 报价更新：最快 3 秒一次
+        'conditions_update': 5.0,  # 条件更新：最快 5 秒一次
+    }
+
     def __init__(self):
         """初始化 WebSocket 管理器"""
         self.sio: Optional[socketio.AsyncServer] = None
         self.connected_clients: Dict[str, Dict[str, Any]] = {}
+        # 节流状态：事件名 -> 上次发送时间戳
+        self._last_emit_time: Dict[str, float] = {}
+        # 节流统计
+        self._throttle_skip_count: int = 0
 
     def create_server(self) -> socketio.AsyncServer:
         """创建 AsyncServer 实例
@@ -88,7 +99,7 @@ class SocketManager:
             )
 
     async def emit_to_all(self, event: str, data: Dict[str, Any]):
-        """向所有客户端广播消息
+        """向所有客户端广播消息（含超时保护 + 高频节流）
 
         Args:
             event: 事件名称
@@ -98,9 +109,28 @@ class SocketManager:
             logging.warning("[SocketIO] Server not initialized")
             return
 
+        # 高频事件节流：在最小间隔内跳过，只保留最新数据
+        event_name = event.value if hasattr(event, 'value') else str(event)
+        throttle_interval = self._THROTTLE_INTERVALS.get(event_name)
+        if throttle_interval:
+            now = time.monotonic()
+            last_time = self._last_emit_time.get(event_name, 0)
+            if now - last_time < throttle_interval:
+                self._throttle_skip_count += 1
+                if self._throttle_skip_count % 50 == 1:
+                    logging.debug(
+                        f"[SocketIO] 节流跳过: {event_name}，"
+                        f"累计跳过 {self._throttle_skip_count} 次"
+                    )
+                return
+            self._last_emit_time[event_name] = now
+
         try:
-            await self.sio.emit(event, data)
-            logging.debug(f"[SocketIO] 广播事件: {event}, 客户端数: {len(self.connected_clients)}")
+            import asyncio
+            await asyncio.wait_for(self.sio.emit(event, data), timeout=3.0)
+            logging.debug(f"[SocketIO] 广播事件: {event_name}, 客户端数: {len(self.connected_clients)}")
+        except asyncio.TimeoutError:
+            logging.warning(f"[SocketIO] 广播超时(3s): {event_name}, 客户端数: {len(self.connected_clients)}")
         except Exception as e:
             logging.error(f"[SocketIO] 广播失败: {e}")
 

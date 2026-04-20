@@ -144,10 +144,10 @@ class HeatQuoteService:
             if not remaining:
                 return result
 
-            wait_for_api('market_snapshot')
+            # 频率控制已由 futu_client.get_market_snapshot() 统一处理
 
             try:
-                ret, data = self.futu_client.client.get_market_snapshot(remaining)
+                ret, data = self.futu_client.get_market_snapshot(remaining)
 
                 if ReturnCode.is_ok(ret):
                     result.update(self._parse_snapshot_data(data, batch_num))

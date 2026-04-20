@@ -114,9 +114,9 @@ class InvalidStockDetector:
             return
 
         # 批量检测
-        wait_for_api('market_snapshot')
+        # 频率控制已由 futu_client.get_market_snapshot() 统一处理
         try:
-            ret, data = self.futu_client.client.get_market_snapshot(codes)
+            ret, data = self.futu_client.get_market_snapshot(codes)
 
             if ret == RET_OK:
                 # 整批成功，全部有效
@@ -130,8 +130,7 @@ class InvalidStockDetector:
             if error_type == ErrorType.RATE_LIMIT:
                 self.logger.warning(f"无效股票检测触发频率限制，等待 30 秒后重试")
                 time.sleep(30)
-                wait_for_api('market_snapshot')
-                ret2, data2 = self.futu_client.client.get_market_snapshot(codes)
+                ret2, data2 = self.futu_client.get_market_snapshot(codes)
                 if ret2 == RET_OK:
                     valid_out.extend(codes)
                     return
@@ -163,9 +162,8 @@ class InvalidStockDetector:
         valid_out: List[str]
     ) -> None:
         """检测单只股票是否无效"""
-        wait_for_api('market_snapshot')
         try:
-            ret, data = self.futu_client.client.get_market_snapshot([code])
+            ret, data = self.futu_client.get_market_snapshot([code])
             if ret != RET_OK:
                 error_msg = data if isinstance(data, str) else str(data)
                 if self.is_invalid_stock_error(error_msg):

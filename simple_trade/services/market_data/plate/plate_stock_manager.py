@@ -14,7 +14,7 @@ from ....database.core.db_manager import DatabaseManager
 from ....api.futu_client import FutuClient
 from ....api.market_types import ReturnCode
 from ....utils.field_mapper import FieldMapper
-from ....utils.rate_limiter import wait_for_api, record_api_call
+from ....utils.rate_limiter import wait_for_api
 from ....core.models import Stock
 
 
@@ -76,12 +76,8 @@ class PlateStockManager:
         if max_stocks is None:
             max_stocks = self.MAX_STOCKS_PER_PLATE
 
-        wait_time = wait_for_api('get_plate_stock')
-        if wait_time > 0:
-            self.logger.debug(f"等待API可用: {wait_time:.1f}秒")
-
+        # 频率控制已由 futu_client.get_plate_stock() 统一处理
         ret, stock_data = self.futu_client.get_plate_stock(plate_code)
-        record_api_call('get_plate_stock')
 
         if ReturnCode.is_ok(ret) and stock_data is not None and not stock_data.empty:
             for _, stock_row in stock_data.head(max_stocks).iterrows():

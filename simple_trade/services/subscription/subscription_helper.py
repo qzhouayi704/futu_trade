@@ -35,7 +35,8 @@ class SubscriptionHelper:
         self.activity_filter = ActivityFilterService(
             subscription_manager=subscription_manager,
             quote_service=quote_service, config=config,
-            db_manager=db_manager, container=container
+            db_manager=db_manager, container=container,
+            quote_cache=getattr(container, 'quote_cache', None) if container else None
         )
         self.stock_marker = StockMarkerService(db_manager=db_manager)
         self.version_service = SubscriptionVersionService(db_manager=db_manager)
@@ -151,9 +152,16 @@ class SubscriptionHelper:
                     except Exception as e:
                         logging.error(f"Scalping 多类型订阅失败: {e}", exc_info=True)
 
-                # 订阅成功后，提交后台K线下载任务（非阻塞）
+                # 订阅成功后，延迟提交后台K线下载任务（避免与启动阶段报价轮询争抢 OpenD）
                 if self.background_kline_task:
-                    self.background_kline_task.submit(target_stocks)
+                    import threading
+                    def _delayed_kline_submit():
+                        import time as _t
+                        _t.sleep(120)  # 延迟 120 秒，等系统完全稳定
+                        logging.info(f"[后台K线] 延迟期满，开始下载 {len(target_stocks)} 只股票的K线")
+                        self.background_kline_task.submit(target_stocks)
+                    threading.Thread(target=_delayed_kline_submit, daemon=True, name="kline-delay").start()
+                    logging.info("[后台K线] 已安排 120 秒后开始下载（避免启动冲击）")
             else:
                 self._handle_subscribe_failure(result, subscribe_result, len(target_stocks))
         except Exception as e:
@@ -168,6 +176,8 @@ class SubscriptionHelper:
         对比当前已订阅股票与最新目标股票池，取消不在目标池中的股票订阅。
         避免订阅集合只增不减，超出富途API 300只限制。
 
+        注意：尊重富途 API 的 1 分钟最短订阅时间限制，跳过刚订阅不满 65 秒的股票。
+
         Args:
             active_codes: 当前筛选后应保留的股票代码集合
 
@@ -178,23 +188,45 @@ class SubscriptionHelper:
             return 0
 
         try:
+            import time
+            now = time.time()
+            MIN_SUBSCRIPTION_SECONDS = 65  # 富途要求至少 1 分钟，留 5 秒余量
+
             currently_subscribed = self.subscription_manager.subscribed_stocks
             inactive_codes = currently_subscribed - active_codes - self.priority_stocks
 
             if not inactive_codes:
                 return 0
 
+            # 过滤掉订阅不满 65 秒的股票（尊重富途 API 限制）
+            eligible_to_clean = set()
+            too_recent = set()
+            for code in inactive_codes:
+                sub_time = self.subscription_manager.get_subscribe_time(code)
+                if sub_time > 0 and (now - sub_time) < MIN_SUBSCRIPTION_SECONDS:
+                    too_recent.add(code)
+                else:
+                    eligible_to_clean.add(code)
+
+            if too_recent:
+                logging.debug(
+                    f"【订阅清理】跳过 {len(too_recent)} 只订阅不满1分钟的股票"
+                )
+
+            if not eligible_to_clean:
+                return 0
+
             cleaned = 0
-            success = self.subscription_manager.unsubscribe(list(inactive_codes))
+            success = self.subscription_manager.unsubscribe(list(eligible_to_clean))
             if success:
-                cleaned = len(inactive_codes)
+                cleaned = len(eligible_to_clean)
                 logging.info(
                     f"【订阅清理】已取消 {cleaned} 只不活跃股票的订阅，"
                     f"当前剩余 {len(self.subscription_manager.subscribed_stocks)} 只，"
-                    f"清理列表: {list(inactive_codes)[:10]}{'...' if len(inactive_codes) > 10 else ''}"
+                    f"清理列表: {list(eligible_to_clean)[:10]}{'...' if len(eligible_to_clean) > 10 else ''}"
                 )
             else:
-                logging.warning(f"【订阅清理】取消订阅失败，目标清理 {len(inactive_codes)} 只")
+                logging.warning(f"【订阅清理】取消订阅失败，目标清理 {len(eligible_to_clean)} 只")
 
             return cleaned
         except Exception as e:
@@ -387,8 +419,18 @@ class SubscriptionHelper:
         return counts
 
     def _is_scalping_enabled(self) -> bool:
-        """检查 Scalping 引擎是否启用（基于配置）"""
+        """检查 Scalping 引擎是否启用（基于配置）
+
+        注意：SCALPING_MODE=process 时返回 False，因为子进程通过
+        get_rt_ticker()/get_order_book() 独立轮询，不需要主进程的推送订阅。
+        """
         try:
+            # 进程模式：子进程独立轮询，主进程不需要订阅 TICKER/ORDER_BOOK
+            import os
+            if os.environ.get('SCALPING_MODE', '').lower() == 'process':
+                logging.debug("Scalping 进程模式：跳过主进程 TICKER/ORDER_BOOK 订阅")
+                return False
+
             # 从配置读取 scalping_max_stocks
             sub_cfg = self._get_config_attr('subscription_config', {})
             scalping_max = sub_cfg.get('scalping_max_stocks', 0)
@@ -532,12 +574,12 @@ class SubscriptionHelper:
 
             # 按换手率排序，取前50只
             sorted_quotes = sorted(
-                quotes.items(),
-                key=lambda x: x[1].get('turnover_rate', 0),
+                [q for q in quotes if isinstance(q, dict) and q.get('code')],
+                key=lambda q: q.get('turnover_rate', 0) or 0,
                 reverse=True
             )
 
-            return [code for code, _ in sorted_quotes[:50]]
+            return [q['code'] for q in sorted_quotes[:50]]
 
         except Exception as e:
             logging.error(f"获取活跃个股列表失败: {e}")

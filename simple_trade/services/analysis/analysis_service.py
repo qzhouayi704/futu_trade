@@ -247,7 +247,24 @@ class AnalysisService:
             logging.warning(f"查询数据库K线失败: {e}")
 
         # 无论数据库是否有数据，都尝试补充下载最新K线
-        if self.futu_client and self.futu_client.is_available():
+        # 但如果数据库数据足够新（上一交易日以内），跳过补充下载以减少 OpenD 竞争
+        need_supplement = True
+        if db_kline and len(db_kline) >= 200:
+            latest_date_str = db_kline[-1].get('time_key', '')[:10]
+            if latest_date_str:
+                try:
+                    latest_date = datetime.strptime(latest_date_str, '%Y-%m-%d')
+                    days_old = (end_date - latest_date).days
+                    if days_old <= 2:
+                        logging.info(
+                            f"{stock_code}: 数据库K线数据较新（最后日期: {latest_date_str}，"
+                            f"距今{days_old}天），跳过补充下载"
+                        )
+                        need_supplement = False
+                except (ValueError, TypeError):
+                    pass
+
+        if need_supplement and self.futu_client and self.futu_client.is_available():
             try:
                 # 补充下载最近30天的数据，确保上一交易日数据准确
                 supplement_days = 30
@@ -308,7 +325,11 @@ class AnalysisService:
                 logging.info(f"{stock_code}: 下载并保存 {saved} 条K线数据")
                 return kline_list
             else:
-                logging.warning(f"{stock_code}: 下载K线数据为空")
+                logging.warning(
+                    f"{stock_code}: 下载K线数据为空, "
+                    f"API可用={self.futu_client.is_available()}, "
+                    f"可能OpenD过载或股票无数据"
+                )
                 return []
         except Exception as e:
             logging.error(f"{stock_code}: 下载K线数据失败: {e}")

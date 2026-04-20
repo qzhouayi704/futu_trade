@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-FastAPI 依赖注入
+"""FastAPI 依赖注入 — 纯薄封装，所有服务统一从 ServiceContainer 获取
 
-提供路由处理函数所需的公共依赖
+重构说明（A1）：
+- 删除 _AppState dataclass 和 6 个 set_xxx() 函数
+- 唯一入口：set_container() 注册 ServiceContainer
+- 所有 get_xxx() 函数从 container 获取，不持有独立状态
 """
 
 from typing import Optional
@@ -14,50 +14,23 @@ from .core import ServiceContainer
 from .core.exceptions import BusinessError
 
 
-# 全局服务容器引用（由 app.py 的 lifespan 初始化）
+# 唯一的全局引用
 _container: Optional[ServiceContainer] = None
-_state_manager = None
-_system_coordinator = None
-_quote_pipeline = None
-_socket_manager = None
-_quote_pusher = None
 
 
 def set_container(container: ServiceContainer) -> None:
-    """设置服务容器（由 app.py 调用）"""
+    """设置服务容器（由 app.py lifespan 调用，唯一的 setter）"""
     global _container
     _container = container
 
 
-def set_state_manager(state) -> None:
-    """设置状态管理器"""
-    global _state_manager
-    _state_manager = state
+def reset() -> None:
+    """重置服务容器引用（用于测试和优雅重启）"""
+    global _container
+    _container = None
 
 
-def set_system_coordinator(coordinator) -> None:
-    """设置系统协调器"""
-    global _system_coordinator
-    _system_coordinator = coordinator
-
-
-def set_quote_pipeline(pipeline) -> None:
-    """设置行情处理管道"""
-    global _quote_pipeline
-    _quote_pipeline = pipeline
-
-
-def set_socket_manager(manager) -> None:
-    """设置 Socket 管理器"""
-    global _socket_manager
-    _socket_manager = manager
-
-
-def set_quote_pusher(pusher) -> None:
-    """设置行情推送服务"""
-    global _quote_pusher
-    _quote_pusher = pusher
-
+# ========== 服务获取函数（薄封装） ==========
 
 def get_container() -> ServiceContainer:
     """获取服务容器"""
@@ -123,37 +96,40 @@ def get_strategy_monitor_service():
 
 def get_state():
     """获取状态管理器"""
-    if _state_manager is None:
+    container = get_container()
+    if container.state_manager is None:
         raise BusinessError("状态管理器未初始化")
-    return _state_manager
+    return container.state_manager
 
 
 def get_system_coordinator():
     """获取系统协调器"""
-    if _system_coordinator is None:
+    container = get_container()
+    if container.system_coordinator is None:
         raise BusinessError("系统协调器未初始化")
-    return _system_coordinator
+    return container.system_coordinator
 
 
 def get_socket_manager():
     """获取 Socket 管理器"""
-    if _socket_manager is None:
-        raise BusinessError("Socket管理器未初始化")
-    return _socket_manager
+    from .websocket import get_socket_manager as _get_socket_manager
+    return _get_socket_manager()
 
 
 def get_quote_pusher():
     """获取行情推送服务"""
-    if _quote_pusher is None:
+    container = get_container()
+    if container.quote_pusher is None:
         raise BusinessError("行情推送服务未初始化")
-    return _quote_pusher
+    return container.quote_pusher
 
 
 def get_quote_pipeline():
     """获取行情处理管道"""
-    if _quote_pipeline is None:
+    container = get_container()
+    if container.quote_pipeline is None:
         raise BusinessError("行情处理管道未初始化")
-    return _quote_pipeline
+    return container.quote_pipeline
 
 
 # ========== 常用查询参数 ==========

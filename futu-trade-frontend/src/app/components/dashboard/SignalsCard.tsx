@@ -7,14 +7,18 @@ import Link from "next/link";
 
 interface TradeSignal {
   id: number;
-  stock_code: string;
-  stock_name: string;
+  stock_code?: string;
+  code?: string;
+  stock_name?: string;
+  name?: string;
   signal_type: string;
   signal_price: number;
   target_price?: number;
   stop_loss_price?: number;
   created_at: string;
-  is_executed: boolean;
+  is_executed?: boolean;
+  condition_text?: string;
+  reason?: string;
 }
 
 interface SignalsCardProps {
@@ -32,6 +36,11 @@ export function SignalsCard({ signals, loading = false }: SignalsCardProps) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
             </svg>
             交易信号提醒
+            {signals.length > 0 && (
+              <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700">
+                {signals.length}
+              </span>
+            )}
           </h3>
           <Link
             href="/trading"
@@ -50,12 +59,21 @@ export function SignalsCard({ signals, loading = false }: SignalsCardProps) {
           <div className="text-center py-8 text-gray-500">暂无信号</div>
         ) : (
           <div className="space-y-3">
-            {signals.slice(0, 5).map((signal) => (
-              <div
-                key={signal.id}
-                className="p-3 rounded-lg border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors"
-              >
-                <div className="flex items-start justify-between mb-2">
+            {signals.slice(0, 8).map((signal) => {
+              const stockCode = signal.stock_code || signal.code || '';
+              const stockName = signal.stock_name || signal.name || '';
+              const reasonText = signal.reason || signal.condition_text || '';
+
+              return (
+                <div
+                  key={signal.id}
+                  className={`p-3 rounded-lg border hover:shadow-sm transition-all ${
+                    signal.signal_type === "BUY"
+                      ? "border-red-200 bg-red-50/30 hover:border-red-300"
+                      : "border-green-200 bg-green-50/30 hover:border-green-300"
+                  }`}
+                >
+                <div className="flex items-start justify-between mb-1">
                   <div className="flex items-center gap-2">
                     <span
                       className={`px-2 py-1 rounded text-xs font-medium ${
@@ -66,20 +84,28 @@ export function SignalsCard({ signals, loading = false }: SignalsCardProps) {
                     >
                       {signal.signal_type === "BUY" ? "买入" : "卖出"}
                     </span>
-                    <span className="font-medium text-gray-900">{signal.stock_name}</span>
-                    <span className="text-xs text-gray-500">{signal.stock_code}</span>
+                    <span className="font-medium text-gray-900">{stockName}</span>
+                    <span className="text-xs text-gray-500">{stockCode}</span>
                   </div>
-                  {signal.is_executed && (
-                    <span className="px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-600">
-                      已执行
+                  <div className="flex items-center gap-2">
+                    {signal.is_executed && (
+                      <span className="px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                        已执行
+                      </span>
+                    )}
+                    <span className="text-xs text-gray-500">
+                      {new Date(signal.created_at).toLocaleTimeString("zh-CN", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
                     </span>
-                  )}
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-4 text-gray-600">
                     <span>
-                      信号价: <span className="font-medium text-gray-900">{signal.signal_price.toFixed(2)}</span>
+                      信号价: <span className="font-medium text-gray-900">{signal.signal_price?.toFixed(2) ?? '--'}</span>
                     </span>
                     {signal.target_price && (
                       <span>
@@ -92,18 +118,20 @@ export function SignalsCard({ signals, loading = false }: SignalsCardProps) {
                       </span>
                     )}
                   </div>
-                  <span className="text-xs text-gray-500">
-                    {new Date(signal.created_at).toLocaleTimeString("zh-CN", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
                 </div>
+
+                {reasonText && (
+                  <div className="mt-1.5 text-xs text-gray-500 truncate" title={reasonText}>
+                    {reasonText}
+                  </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
     </Card>
   );
 }
+

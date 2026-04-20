@@ -13,8 +13,13 @@
 - quote_service.py: 报价获取服务
 """
 
+import time
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from simple_trade.utils.api_protection import futu_api_protected
+from simple_trade.utils.rate_limiter import get_global_rate_limiter, RateLimiter
+from simple_trade.utils.metrics import get_metrics
 
 # 富途API
 try:
@@ -38,12 +43,45 @@ except ImportError:
 class FutuClient:
     """富途API客户端 - 连接管理"""
 
+    # 专用线程池：防止 Futu 同步 API 调用占满默认 asyncio executor
+    _futu_executor = ThreadPoolExecutor(
+        max_workers=4,
+        thread_name_prefix="futu-api",
+    )
+
     def __init__(self, host: str = "127.0.0.1", port: int = 11111):
         self.host = host
         self.port = port
-        self.client = None  # OpenQuoteContext instance
+        self.client = None  # OpenQuoteContext instance (主连接：报价/K线/板块)
+        self.scalping_client = None  # 第二个 OpenQuoteContext (Scalping专用：Ticker/OrderBook)
         self.is_connected = False
         self._ticker_failed_stocks = set()  # 缓存订阅失败的股票，避免重复警告
+
+        # 限流器：通用行情接口 60次/30秒（K线、快照、资金流、报价共享）
+        self._quote_limiter = get_global_rate_limiter(max_requests=60, time_window=30)
+        # 板块接口专用限流器 10次/30秒
+        self._plate_limiter = RateLimiter(max_requests=10, time_window=30)
+        # 全局 QPS 限流：所有 OpenD 请求共享 5 req/s 上限
+        self._global_qps_interval = 0.2  # 200ms 最小间隔
+        self._last_request_time = 0.0
+        self._qps_lock = threading.Lock()
+
+    @property
+    def executor(self) -> ThreadPoolExecutor:
+        """获取专用线程池（供 run_in_executor 使用）"""
+        return self._futu_executor
+
+    def _throttle(self):
+        """全局 QPS 限流：确保每次 OpenD 请求至少间隔 200ms"""
+        with self._qps_lock:
+            now = time.monotonic()
+            elapsed = now - self._last_request_time
+            if elapsed < self._global_qps_interval:
+                time.sleep(self._global_qps_interval - elapsed)
+            self._last_request_time = time.monotonic()
+        # metrics 埋点
+        get_metrics().counter("api.futu.calls").inc()
+        get_metrics().rate("api.futu.qps", window_seconds=60).inc()
 
     def connect(self) -> bool:
         """连接富途API"""
@@ -68,6 +106,16 @@ class FutuClient:
                 self.is_connected = True
                 logging.info("富途API连接成功")
                 logging.debug(f"历史K线额度信息: {data}")
+
+                # 创建第二个 Context 专供 Scalping (Ticker/OrderBook)
+                try:
+                    self.scalping_client = OpenQuoteContext(
+                        host=self.host, port=self.port, is_encrypt=False
+                    )
+                    logging.info("Scalping专用连接已创建")
+                except Exception as e:
+                    logging.warning(f"Scalping专用连接创建失败，将退化为单连接: {e}")
+                    self.scalping_client = None
 
                 # 测试板块列表
                 test_ret, test_data = self.client.get_plate_list(Market.HK, 'ALL')
@@ -94,8 +142,41 @@ class FutuClient:
             self._cleanup()
             return False
 
+    def register_scalping_handlers(self, ticker_handler, orderbook_handler) -> bool:
+        """注册 Scalping 推送处理器到 scalping_client
+
+        Args:
+            ticker_handler: TickerHandlerBase 子类实例
+            orderbook_handler: OrderBookHandlerBase 子类实例
+
+        Returns:
+            是否注册成功
+        """
+        ctx = self.scalping_client or self.client
+        if ctx is None:
+            logging.warning("无法注册推送处理器: 连接未建立")
+            return False
+        try:
+            ctx.set_handler(ticker_handler)
+            ctx.set_handler(orderbook_handler)
+            logging.info("Scalping 推送处理器已注册 (Ticker + OrderBook)")
+            return True
+        except Exception as e:
+            logging.warning(f"注册推送处理器失败: {e}")
+            return False
+
     def disconnect(self):
         """断开连接"""
+        # 关闭 Scalping 专用连接
+        if self.scalping_client:
+            try:
+                self.scalping_client.close()
+                logging.info("Scalping专用连接已关闭")
+            except Exception as e:
+                logging.error(f"关闭Scalping专用连接失败: {e}")
+            finally:
+                self.scalping_client = None
+        # 关闭主连接
         if self.client:
             try:
                 self.client.close()
@@ -108,6 +189,7 @@ class FutuClient:
     def _cleanup(self):
         """清理连接状态"""
         self.client = None
+        self.scalping_client = None
         self.is_connected = False
 
     def is_available(self) -> bool:
@@ -128,23 +210,25 @@ class FutuClient:
 
     @futu_api_protected(max_retries=2, error_return_value=(RET_ERROR, "API调用失败"))
     def get_plate_list(self, market, plate_type):
-        """获取板块列表"""
+        """获取板块列表（10次/30秒）"""
         if not self.is_available():
             return RET_ERROR, "富途API不可用"
+        self._plate_limiter.wait_if_needed()
         return self.client.get_plate_list(market, plate_type)
 
     @futu_api_protected(max_retries=2, error_return_value=(RET_ERROR, "API调用失败"))
     def get_plate_stock(self, plate_code: str):
-        """获取板块股票"""
+        """获取板块股票（10次/30秒）"""
         if not self.is_available():
             return RET_ERROR, "富途API不可用"
+        self._plate_limiter.wait_if_needed()
         return self.client.get_plate_stock(plate_code)
 
     # ========== K线相关方法 ==========
 
     def request_history_kline(self, code: str, start: str, end: str,
                               ktype=None, autype=None, fields=None,
-                              max_count: int = 1000, timeout: int = 30):
+                              max_count: int = 1000, timeout: int = 10):
         """获取历史K线数据
 
         Args:
@@ -161,6 +245,7 @@ class FutuClient:
             return RET_ERROR, None, None
 
         try:
+            self._quote_limiter.wait_if_needed()
             if ktype is None:
                 ktype = KLType.K_DAY
             if autype is None:
@@ -207,9 +292,10 @@ class FutuClient:
 
     @futu_api_protected(max_retries=2, error_return_value=(RET_ERROR, "API调用失败"))
     def get_history_kl_quota(self, get_detail: bool = False):
-        """获取K线额度"""
+        """获取K线额度（60次/30秒）"""
         if not self.is_available():
             return RET_ERROR, "富途API不可用"
+        self._quote_limiter.wait_if_needed()
         return self.client.get_history_kl_quota(get_detail=get_detail)
 
     def get_kline_quota_detail(self) -> dict:
@@ -292,6 +378,7 @@ class FutuClient:
             return RET_ERROR, "富途API不可用"
 
         try:
+            self._quote_limiter.wait_if_needed()
             period = PeriodType.INTRADAY if period_type == 'INTRADAY' else PeriodType.DAY
             kwargs = {'period_type': period}
             if start:
@@ -335,6 +422,7 @@ class FutuClient:
             return RET_ERROR, "富途API不可用"
 
         try:
+            self._quote_limiter.wait_if_needed()
             ret, data = self.client.get_capital_distribution(stock_code)
 
             if ret == RET_OK:
@@ -372,7 +460,10 @@ class FutuClient:
             return RET_ERROR, "富途API不可用"
 
         try:
-            ret, data = self.client.get_rt_ticker(stock_code, num=num)
+            # 优先使用 scalping_client（分流），退化到主 client
+            ctx = self.scalping_client or self.client
+            self._throttle()
+            ret, data = ctx.get_rt_ticker(stock_code, num=num)
 
             if ret == RET_OK:
                 # 调试：打印 DataFrame 列名和前几行数据（仅首次）
@@ -388,8 +479,12 @@ class FutuClient:
                 return ret, data
             else:
                 # 只在首次失败时输出 WARNING，避免重复日志
+                ctx_name = 'scalping_client' if (self.scalping_client and ctx == self.scalping_client) else 'main_client'
                 if stock_code not in self._ticker_failed_stocks:
-                    logging.warning(f"获取逐笔成交失败: {stock_code}, {data}")
+                    logging.warning(
+                        f"获取逐笔成交失败: {stock_code}, 连接={ctx_name}, "
+                        f"错误: {data}"
+                    )
                     self._ticker_failed_stocks.add(stock_code)
                 else:
                     # 后续失败降级为 DEBUG
@@ -450,15 +545,69 @@ class FutuClient:
             return RET_ERROR, "富途API不可用"
 
         try:
-            ret, data = self.client.get_order_book(stock_code)
+            # 优先使用 scalping_client（分流），退化到主 client
+            ctx = self.scalping_client or self.client
+            self._throttle()
+            ret, data = ctx.get_order_book(stock_code)
 
             if ret == RET_OK:
                 logging.debug(f"获取摆盘数据成功: {stock_code}")
                 return ret, data
             else:
-                logging.warning(f"获取摆盘数据失败: {stock_code}, {data}")
+                ctx_name = 'scalping_client' if (self.scalping_client and ctx == self.scalping_client) else 'main_client'
+                logging.warning(
+                    f"获取摆盘数据失败: {stock_code}, 连接={ctx_name}, "
+                    f"错误: {data}"
+                )
                 return ret, data
 
         except Exception as e:
             logging.error(f"获取摆盘数据异常: {stock_code}, {e}")
+            return RET_ERROR, str(e)
+
+    # ========== 集中入口：快照和报价（60次/30秒） ==========
+
+    def get_market_snapshot(self, codes):
+        """获取市场快照（60次/30秒）
+
+        所有调用方应通过此方法获取快照数据，不要直接调用 self.client.get_market_snapshot。
+
+        Args:
+            codes: 股票代码列表
+
+        Returns:
+            (ret_code, data)
+        """
+        if not self.is_available():
+            return RET_ERROR, "富途API不可用"
+        try:
+            if not codes:
+                return RET_ERROR, "股票代码列表不能为空"
+            self._quote_limiter.wait_if_needed()
+            return self.client.get_market_snapshot(codes)
+        except Exception as e:
+            logging.error(f"获取市场快照异常: {e}")
+            return RET_ERROR, str(e)
+
+    def get_stock_quote(self, stock_codes):
+        """获取股票报价（60次/30秒）
+
+        所有调用方应通过此方法获取报价，不要直接调用 self.client.get_stock_quote。
+
+        Args:
+            stock_codes: 股票代码列表
+
+        Returns:
+            (ret_code, data)
+        """
+        if not self.is_available():
+            return RET_ERROR, "富途API不可用"
+        try:
+            if not stock_codes:
+                return RET_ERROR, "股票代码列表不能为空"
+            self._quote_limiter.wait_if_needed()
+            self._throttle()
+            return self.client.get_stock_quote(stock_codes)
+        except Exception as e:
+            logging.error(f"获取股票报价异常: {e}")
             return RET_ERROR, str(e)

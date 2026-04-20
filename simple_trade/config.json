@@ -13,7 +13,7 @@
   "max_stocks_monitor": 800,
   "max_subscription_stocks": 300,
   "monitor_stocks_limit_by_market": {
-    "HK": 50,
+    "HK": 25,
     "US": 50
   },
   "kline_priority_enabled": true,
@@ -138,26 +138,6 @@
           "默认": {
             "name": "默认",
             "description": "使用回测自动优化的参数"
-          }
-        }
-      },
-      "swing": {
-        "id": "swing",
-        "name": "低吸高抛策略",
-        "description": "基于12日高低点的技术分析策略",
-        "active_preset": "默认",
-        "presets": {
-          "默认": {
-            "name": "默认",
-            "description": "12日高低点策略",
-            "lookback_days": 12,
-            "stop_loss_pct": -5.0,
-            "stop_loss_min_rise_pct": 3.0,
-            "stop_loss_check_days": 3,
-            "narrow_range_enabled": true,
-            "narrow_range_amplitude_threshold": 3.0,
-            "narrow_range_check_days": 3,
-            "narrow_range_daily_rise_threshold": 1.0
           }
         }
       },

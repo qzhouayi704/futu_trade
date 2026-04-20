@@ -153,3 +153,13 @@ async def get_diagnosis(container=Depends(get_container)):
         diagnosis_result['recommendations'].append('系统状态正常')
 
     return diagnosis_result
+
+
+@router.get("/metrics", response_model=APIResponse[Dict])
+async def get_metrics_snapshot():
+    """系统 Metrics 快照
+
+    返回所有已注册的计数器、瞬时值、直方图和速率指标。
+    """
+    from ...utils.metrics import get_metrics
+    return APIResponse.ok(data=get_metrics().snapshot(), message="Metrics 快照")

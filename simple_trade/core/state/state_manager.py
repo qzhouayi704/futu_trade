@@ -28,6 +28,30 @@ from simple_trade.core.state.scalping_metrics import ScalpingMetrics, ScalpingMe
 from simple_trade.core.state.ticker_df_cache import TickerDataFrameCache
 
 
+class HighTurnoverCache:
+    """活跃个股预计算数据缓存（线程安全）"""
+
+    def __init__(self):
+        self._data: Dict[str, Dict] = {}
+        self._lock = threading.Lock()
+
+    def update_batch(self, batch: Dict[str, Dict]):
+        with self._lock:
+            for code, values in batch.items():
+                if code in self._data:
+                    self._data[code].update(values)
+                else:
+                    self._data[code] = dict(values)
+
+    def get_all(self) -> Dict[str, Dict]:
+        with self._lock:
+            return dict(self._data)
+
+    def reset(self):
+        with self._lock:
+            self._data.clear()
+
+
 class StateManager:
     """统一状态管理器 - 单例模式（兼容层）"""
 
@@ -56,11 +80,15 @@ class StateManager:
         self.init_progress = InitProgress()
         self.scalping_metrics = ScalpingMetricsState()
         self.ticker_df_cache = TickerDataFrameCache()
+        self.high_turnover_cache = HighTurnoverCache()
 
         # ========== 订阅状态（暂保留） ==========
         self._subscribed_stocks: set = set()
         self._subscription_version: Optional[str] = None
         self._subscription_initialized: bool = False
+
+        # ========== 自选股（内存 + DB 持久化） ==========
+        self._watchlist: set = set()
 
         # ========== 系统运行状态（持久化） ==========
         self._state_file = os.path.join(
@@ -85,6 +113,34 @@ class StateManager:
         )
 
         logging.info("StateManager 初始化完成（兼容层）")
+
+    # ==================== 自选股操作 ====================
+
+    def get_watchlist(self) -> set:
+        """获取自选股代码集合"""
+        with self._state_lock:
+            return self._watchlist.copy()
+
+    def set_watchlist(self, codes: set):
+        """设置自选股列表（全量替换）"""
+        with self._state_lock:
+            self._watchlist = set(codes)
+
+    def add_to_watchlist(self, codes: list):
+        """添加股票到自选股"""
+        with self._state_lock:
+            self._watchlist.update(codes)
+
+    def remove_from_watchlist(self, code: str):
+        """从自选股移除"""
+        with self._state_lock:
+            self._watchlist.discard(code)
+
+    # ==================== 监控任务操作（桩方法，待完整实现） ====================
+
+    def get_monitor_tasks(self) -> list:
+        """获取监控任务列表（桩：当前返回空列表）"""
+        return []
 
     # ==================== 股票池操作（委托 PoolState） ====================
 
@@ -321,6 +377,7 @@ class StateManager:
             self.trading_state.reset()
             self.scalping_metrics.reset()
             self.ticker_df_cache.reset()
+            self.high_turnover_cache.reset()
 
             # 重置本地保留的状态
             self._subscribed_stocks = set()
@@ -328,6 +385,7 @@ class StateManager:
             self._subscription_initialized = False
             self._is_running = False
             self._last_update = None
+            self._watchlist = set()
 
         logging.info("StateManager 状态已重置")
 

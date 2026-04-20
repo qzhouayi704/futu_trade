@@ -13,7 +13,7 @@ from ...pool.stock_pool import refresh_global_stock_pool_from_db
 
 # 富途交易API
 try:
-    from futu import RET_OK, RET_ERROR
+    from futu import RET_OK, RET_ERROR, TrdEnv
     FUTU_TRADE_AVAILABLE = True
 except ImportError:
     FUTU_TRADE_AVAILABLE = False
@@ -34,10 +34,13 @@ class PositionManager:
         """
         self.db_manager = db_manager
         self.trade_client = trade_client
+        self.trd_env = TrdEnv.REAL if TrdEnv else None  # 由 futu_trade_service 传入
 
-    def set_trade_client(self, trade_client):
+    def set_trade_client(self, trade_client, trd_env=None):
         """设置富途交易客户端"""
         self.trade_client = trade_client
+        if trd_env is not None:
+            self.trd_env = trd_env
 
     def get_positions(self) -> Dict[str, Any]:
         """
@@ -57,8 +60,13 @@ class PositionManager:
             return result
 
         try:
-            ret, data = self.trade_client.position_list_query()
+            query_result = self.trade_client.position_list_query(trd_env=self.trd_env)
 
+            if query_result is None:
+                result['message'] = "交易连接已断开(position_list_query返回None)"
+                return result
+
+            ret, data = query_result
             if ret == RET_OK and data is not None:
                 positions = []
                 for _, row in data.iterrows():
