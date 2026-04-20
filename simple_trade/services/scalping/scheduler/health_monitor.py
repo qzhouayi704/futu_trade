@@ -302,6 +302,16 @@ class HealthMonitor:
 
         logger.info(f"[批量重连] 开始批量订阅 {len(stock_codes)} 只股票")
         try:
+            # 关键步骤：先清除内存中的旧订阅状态
+            # 网络断开后 OpenD 侧订阅已丢失，但内存中仍标记为"已订阅"
+            # 如果不清除，subscribe() 会跳过这些股票（认为已订阅）
+            sub_mgr = self._subscription_manager
+            if sub_mgr and hasattr(sub_mgr, 'force_clear_subscriptions'):
+                sub_mgr.force_clear_subscriptions(stock_codes)
+                logger.info(
+                    f"[批量重连] 已清除 {len(stock_codes)} 只股票的内存订阅状态"
+                )
+
             # 设置所有需要重连的股票为优先订阅
             e._subscription_helper.set_priority_stocks(stock_codes)
             # 一次性批量订阅（而不是逐只轮询）

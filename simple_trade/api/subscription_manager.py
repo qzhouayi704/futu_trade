@@ -252,6 +252,34 @@ class SubscriptionManager:
             self.logger.error(f"取消订阅异常: {e}")
             return False
 
+    def force_clear_subscriptions(self, stock_codes: List[str]) -> None:
+        """强制清除内存中的订阅状态（不调用 Futu API）
+
+        用途：网络断开后 OpenD 侧订阅已丢失，需要清除内存状态
+        以便后续 subscribe() 不会因"已订阅"而跳过这些股票。
+
+        Args:
+            stock_codes: 需要清除状态的股票代码列表
+        """
+        codes_set = set(stock_codes)
+        cleared_quote = len(self._quote_subscribed & codes_set)
+        cleared_ticker = len(self._ticker_subscribed & codes_set)
+        cleared_orderbook = len(self._orderbook_subscribed & codes_set)
+
+        self._quote_subscribed.difference_update(codes_set)
+        self._ticker_subscribed.difference_update(codes_set)
+        self._orderbook_subscribed.difference_update(codes_set)
+        # _subscribed_stocks 指向 _quote_subscribed，无需单独更新
+
+        for code in stock_codes:
+            self._subscribe_times.pop(code, None)
+
+        self.logger.info(
+            f"[强制清除] 已清除 {len(stock_codes)} 只股票的内存订阅状态 "
+            f"(QUOTE:{cleared_quote}, TICKER:{cleared_ticker}, "
+            f"ORDER_BOOK:{cleared_orderbook})"
+        )
+
     def unsubscribe_all(self):
         """取消所有订阅"""
         if not self._is_client_available() or not self._subscribed_stocks:
