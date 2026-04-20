@@ -21,6 +21,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("scalping.orderbook_poller")
 
+# 连续失败 N 次后临时降频
+_FAIL_SKIP_THRESHOLD = 5
+# 降频后跳过的周期数
+_FAIL_SKIP_CYCLES = 4
+
 
 class OrderBookPoller:
     """OrderBook 轮询器 - 定期拉取买卖盘数据"""
@@ -39,14 +44,18 @@ class OrderBookPoller:
 
         # 数据获取失败统计
         self._fetch_errors: dict[str, int] = {}
+        # 连续失败跳过：剩余跳过周期数
+        self._skip_remaining: dict[str, int] = {}
 
     def add_stock(self, stock_code: str) -> None:
         """添加股票到监控列表"""
         self._fetch_errors[stock_code] = 0
+        self._skip_remaining[stock_code] = 0
 
     def remove_stock(self, stock_code: str) -> None:
         """从监控列表移除股票"""
         self._fetch_errors.pop(stock_code, None)
+        self._skip_remaining.pop(stock_code, None)
 
     async def poll_loop(
         self, stocks_getter, running_checker, data_time_updater
@@ -87,9 +96,18 @@ class OrderBookPoller:
                 interval_per_stock = self._order_book_interval / len(stocks)
                 # 最小间隔 300ms，避免股票数量多时请求过于密集
                 interval_per_stock = max(interval_per_stock, 0.3)
+                skip_count = 0
                 for stock_code in stocks:
                     if not running_checker() or stock_code not in stocks_getter():
                         break
+
+                    # 连续失败跳过机制
+                    remaining = self._skip_remaining.get(stock_code, 0)
+                    if remaining > 0:
+                        self._skip_remaining[stock_code] = remaining - 1
+                        skip_count += 1
+                        continue
+
                     await self._rate_limiter.acquire()
                     result = await self._poll_order_book(stock_code, data_time_updater)
                     if result == 'ok':
@@ -98,6 +116,14 @@ class OrderBookPoller:
                         empty_count += 1
                     else:
                         fail_count += 1
+                        # 连续失败达到阈值时启动跳过
+                        err_cnt = self._fetch_errors.get(stock_code, 0)
+                        if err_cnt >= _FAIL_SKIP_THRESHOLD:
+                            self._skip_remaining[stock_code] = _FAIL_SKIP_CYCLES
+                            logger.warning(
+                                f"[OrderBook降频] {stock_code} 连续失败{err_cnt}次，"
+                                f"跳过接下来{_FAIL_SKIP_CYCLES}个周期"
+                            )
                     await asyncio.sleep(interval_per_stock)
 
                 # 每 6 个周期输出一次诊断摘要
@@ -109,10 +135,11 @@ class OrderBookPoller:
                         if cnt >= 3
                     ]
                     problem_str = f" | 问题股: {problem_stocks[:5]}" if problem_stocks else ""
+                    skip_str = f" 跳过:{skip_count}" if skip_count else ""
                     logger.info(
                         f"[OrderBook诊断] 周期#{cycle_count} | "
                         f"{len(stocks)}只 | "
-                        f"成功:{success_count} 空:{empty_count} 失败:{fail_count} | "
+                        f"成功:{success_count} 空:{empty_count} 失败:{fail_count}{skip_str} | "
                         f"耗时:{cycle_duration:.1f}s | "
                         f"间隔:{interval_per_stock:.2f}s/只"
                         f"{problem_str}"

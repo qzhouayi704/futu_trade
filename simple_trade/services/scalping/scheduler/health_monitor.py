@@ -20,9 +20,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("scalping.health_monitor")
 
 # 健康检查间隔（秒）
-_HEALTH_CHECK_INTERVAL = 30.0
+_HEALTH_CHECK_INTERVAL = 40.0
 # 数据超时阈值（秒）- 超过此时间未收到数据视为不健康
-_DATA_TIMEOUT = 60.0
+_DATA_TIMEOUT = 120.0
 # Delta flush 间隔（秒）
 _DELTA_FLUSH_INTERVAL = 10.0
 # POC 计算间隔（秒）
