@@ -78,11 +78,15 @@ class RealtimeHotFilterConfig(_ConfigMixin):
 @dataclass
 class GeminiConfig(_ConfigMixin):
     """Gemini AI 配置"""
-    api_key: str = "AIzaSyAEYkoUaP2kYhhKY2BuoBHO704vWjh0DwI"
+    api_key: str = ""
     model: str = "gemini-3-flash-preview"
     enabled: bool = True
     timeout: int = 30
     max_retries: int = 3
+    vertexai: bool = False
+    project: str = ""
+    location: str = ""
+    proxy: str = ""
 
 
 @dataclass
@@ -176,10 +180,12 @@ class Config:
     max_subscription_stocks: int = 300      # 最大订阅股票数量
     monitor_stocks_limit_by_market: dict = field(default_factory=lambda: {
         "HK": 25,
-        "US": 50
+        "US": 0
     })                                      # 按市场的订阅数量限制
     kline_priority_enabled: bool = True     # K线优先订阅开关
     log_kline_detail: bool = True           # 是否记录K线详细日志
+    scalping_enabled: bool = False          # Scalping模块开关
+    max_scalping_stocks: int = 50           # Scalping最大监控股票数
     
     # ==================== 优先级配置 ====================
     priority_thresholds: dict = field(default_factory=lambda: {
@@ -289,6 +295,7 @@ class ConfigValidator:
         'max_subscription_stocks': {'type': int, 'min': 1, 'max': 1000},
         'kline_priority_enabled': {'type': bool},
         'log_kline_detail': {'type': bool},
+        'max_scalping_stocks': {'type': int, 'min': 1, 'max': 200},
         
         # 数据限制配置
         'max_recent_signals': {'type': int, 'min': 1, 'max': 1000},
@@ -587,7 +594,7 @@ class ConfigManager:
                         "alert_5min_amplitude_threshold", "price_history_duration",
                         "alert_cooldown_seconds", "alert_percent_increment_threshold"],
             "监控配置": ["max_stocks_monitor", "max_subscription_stocks", 
-                        "kline_priority_enabled", "log_kline_detail"],
+                        "kline_priority_enabled", "log_kline_detail", "max_scalping_stocks"],
             "优先级配置": ["priority_thresholds"],
             "数据限制配置": ["max_recent_signals", "max_active_stocks", "max_subscribed_stocks",
                           "max_plate_stocks", "max_quality_plates", "max_target_plates",

@@ -1,4 +1,5 @@
 {
+  "scalping_enabled": false,
   "futu_host": "127.0.0.1",
   "futu_port": 11111,
   "database_path": "simple_trade/data/trade.db",
@@ -13,8 +14,8 @@
   "max_stocks_monitor": 800,
   "max_subscription_stocks": 300,
   "monitor_stocks_limit_by_market": {
-    "HK": 25,
-    "US": 50
+    "HK": 100,
+    "US": 0
   },
   "kline_priority_enabled": true,
   "log_kline_detail": true,
@@ -77,12 +78,14 @@
     "turnover_max_threshold": 50000000
   },
   "gemini": {
-    "api_key": "",
-    "model": "gemini-3-flash-preview",
+    "api_key": "AIzaSyC4e7kbq2AvTgdrqfPbOU0DkjV_TR5L8oo",
+    "model": "gemini-2.5-flash",
     "enabled": true,
     "timeout": 30,
     "max_retries": 3,
-    "proxy": "http://127.0.0.1:7897"
+    "vertexai": true,
+    "project": "gen-lang-client-0924637518",
+    "location": "us-central1"
   },
   "gemini_analyst": {
     "enabled": true,
