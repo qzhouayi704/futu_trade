@@ -35,28 +35,25 @@ class StockNewsSearchService:
             logger.warning("google.genai 未安装，消息面搜索不可用")
             return
 
-        # 模式1（默认）: Vertex AI — 使用 ADC 认证，不传 api_key
-        if vertexai and project:
+        # 模式1（默认）: Vertex AI + API Key
+        if vertexai and project and api_key:
             try:
-                # 预检 ADC 凭据是否可用（genai.Client 构造时不校验，延迟到调用时才报错）
-                import google.auth
-                google.auth.default()
-
                 self.client = genai.Client(
                     vertexai=True,
+                    api_key=api_key,
                     project=project,
                     location=location or "us-central1",
                 )
                 logger.info(f"StockNewsSearch 初始化成功 (Vertex AI), model={model}, project={project}")
                 return
             except Exception as e:
-                logger.warning(f"Vertex AI 不可用 ({e})，降级到标准 API Key 模式")
+                logger.warning(f"Vertex AI 初始化失败 ({e})，降级到标准 API Key 模式")
 
-        # 模式2（降级/备选）: 标准 API Key
+        # 模式2（降级）: 标准 API Key（直连 generativelanguage.googleapis.com）
         if api_key:
             try:
                 self.client = genai.Client(api_key=api_key)
-                logger.info(f"StockNewsSearch 初始化成功 (API Key), model={model}")
+                logger.info(f"StockNewsSearch 初始化成功 (标准 API Key), model={model}")
             except Exception as e:
                 logger.error(f"StockNewsSearch 标准模式初始化也失败: {e}")
 
