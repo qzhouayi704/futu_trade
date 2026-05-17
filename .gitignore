@@ -37,7 +37,7 @@ env/
 .env
 *.log
 logs/
-data/
+/simple_trade/data/
 *.db
 *.db-journal
 
