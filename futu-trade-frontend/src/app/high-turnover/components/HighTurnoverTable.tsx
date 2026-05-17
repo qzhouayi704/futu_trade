@@ -8,6 +8,7 @@ import { formatPercent, formatPrice } from "@/lib/utils";
 import TradeDirectionBadge from "./TradeDirectionBadge";
 import BuyRatioCell from "./BuyRatioCell";
 import BigOrderPctCell from "./BigOrderPctCell";
+import LiquidityScoreCell from "./LiquidityScoreCell";
 import { Tooltip } from "@/components/common/Tooltip";
 
 /** 排序方向 */
@@ -25,7 +26,8 @@ export type SortField =
   | "amplitude"
   | "score"
   | "buy_sell_ratio"
-  | "big_order_pct";
+  | "big_order_pct"
+  | "liquidity_score"; // 新增流动性评分排序
 
 interface HighTurnoverTableProps {
   /** 股票数据列表 */
@@ -66,22 +68,18 @@ function formatTurnoverZh(turnover: number): string {
 }
 
 /** 表头列定义 */
-const COLUMNS: { key: SortField | "name" | "plates" | "bull_pct" | "signal_label"; label: string; sortable: boolean; align: string; tooltip?: string }[] = [
+const COLUMNS: { key: SortField | "name" | "plates"; label: string; sortable: boolean; align: string; tooltip?: string }[] = [
   { key: "rank", label: "排名", sortable: true, align: "text-center" },
   { key: "name", label: "股票名称/代码", sortable: false, align: "text-left" },
+  { key: "liquidity_score", label: "流动性", sortable: true, align: "text-center", tooltip: "综合成交量、换手率、历史稳定性的流动性评分" },
   { key: "turnover_rate", label: "换手率", sortable: true, align: "text-right" },
   { key: "change_rate", label: "涨跌幅", sortable: true, align: "text-right" },
-  { key: "amplitude", label: "振幅", sortable: true, align: "text-right" },
   { key: "last_price", label: "现价", sortable: true, align: "text-right" },
-  { key: "volume", label: "成交量", sortable: true, align: "text-right" },
   { key: "turnover", label: "成交额", sortable: true, align: "text-right" },
   { key: "score", label: "成交方向", sortable: true, align: "text-center", tooltip: "根据逐笔成交分析，判断主动买卖力量对比" },
   { key: "buy_sell_ratio", label: "力量比", sortable: true, align: "text-right", tooltip: "主动买入金额 / 主动卖出金额" },
   { key: "big_order_pct", label: "大单占比", sortable: true, align: "text-right", tooltip: "单笔成交额 > 10万元的成交占比" },
-  { key: "bull_pct", label: "多空占比", sortable: false, align: "text-center", tooltip: "基于主动买卖量计算的多空力量对比" },
-  { key: "signal_label", label: "信号", sortable: true, align: "text-center", tooltip: "综合多空分析信号" },
   { key: "plates", label: "所属板块", sortable: false, align: "text-left" },
-  { key: "volume_ratio", label: "量比", sortable: true, align: "text-right" },
 ];
 
 export default function HighTurnoverTable({
@@ -167,6 +165,16 @@ export default function HighTurnoverTable({
                   <div className="text-xs text-gray-500">{stock.code}</div>
                 </td>
 
+                {/* 流动性评分（新增） */}
+                <td className="px-4 py-3 text-sm text-center">
+                  <LiquidityScoreCell
+                    score={stock.liquidity_score}
+                    level={stock.liquidity_level}
+                    isAnomaly={stock.is_volume_anomaly}
+                    klineDataMissing={stock.kline_data_missing}
+                  />
+                </td>
+
                 {/* 换手率（颜色渐变高亮） */}
                 <td className="px-4 py-3 text-sm text-right">
                   <span
@@ -176,24 +184,14 @@ export default function HighTurnoverTable({
                   </span>
                 </td>
 
-                {/* 涨跌幅（红涨绿跌） */}
-                <td className={`px-4 py-3 text-sm text-right font-medium ${changeColor}`}>
+                {/* 涨跌幅（红涨绿跌）— hover显示振幅/量比 */}
+                <td className={`px-4 py-3 text-sm text-right font-medium ${changeColor}`} title={`振幅${stock.amplitude > 0 ? formatPercent(stock.amplitude) : '-'} | 量比${stock.volume_ratio > 0 ? stock.volume_ratio.toFixed(2) : '-'}`}>
                   {changePrefix}{formatPercent(stock.change_rate)}
-                </td>
-
-                {/* 振幅 */}
-                <td className="px-4 py-3 text-sm text-right text-gray-900">
-                  {stock.amplitude > 0 ? formatPercent(stock.amplitude) : "-"}
                 </td>
 
                 {/* 现价 */}
                 <td className="px-4 py-3 text-sm text-right text-gray-900">
                   {formatPrice(stock.last_price)}
-                </td>
-
-                {/* 成交量 */}
-                <td className="px-4 py-3 text-sm text-right text-gray-900">
-                  {formatVolumeZh(stock.volume)}
                 </td>
 
                 {/* 成交额 */}
@@ -216,48 +214,6 @@ export default function HighTurnoverTable({
                   <BigOrderPctCell summary={stock.ticker_summary} loading={tickerLoading} />
                 </td>
 
-                {/* 多空占比 */}
-                <td className="px-3 py-3 text-sm text-center">
-                  {stock.ticker_summary ? (() => {
-                    const ratio = stock.ticker_summary.buy_sell_ratio;
-                    const bullPct = ratio >= 999 ? 99 : Math.round((ratio / (1 + ratio)) * 100);
-                    const bearPct = 100 - bullPct;
-                    const barColor = bullPct >= 60 ? "bg-green-500" : bullPct <= 40 ? "bg-red-500" : "bg-yellow-500";
-                    const textColor = bullPct >= 60 ? "text-green-600" : bullPct <= 40 ? "text-red-600" : "text-gray-600";
-                    return (
-                      <div className="flex flex-col items-center gap-0.5">
-                        <div className="flex h-[5px] w-full max-w-[60px] overflow-hidden rounded-full bg-gray-200">
-                          <div className={barColor} style={{ width: `${bullPct}%` }} />
-                          <div className="bg-red-300" style={{ width: `${bearPct}%` }} />
-                        </div>
-                        <span className={`text-[10px] font-medium ${textColor}`}>
-                          {bullPct >= 60 ? `多${bullPct}%` : bullPct <= 40 ? `空${bearPct}%` : `${bullPct}/${bearPct}`}
-                        </span>
-                      </div>
-                    );
-                  })() : <span className="text-gray-300 text-xs">-</span>}
-                </td>
-
-                {/* 信号 */}
-                <td className="px-3 py-3 text-sm text-center">
-                  {stock.ticker_summary ? (() => {
-                    const s = stock.ticker_summary;
-                    const colorMap: Record<string, string> = {
-                      bullish: "bg-green-100 text-green-700",
-                      slightly_bullish: "bg-green-50 text-green-600",
-                      neutral: "bg-gray-100 text-gray-600",
-                      slightly_bearish: "bg-red-50 text-red-600",
-                      bearish: "bg-red-100 text-red-700",
-                    };
-                    const cls = colorMap[s.signal] || colorMap.neutral;
-                    return (
-                      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}`}>
-                        {s.label}
-                      </span>
-                    );
-                  })() : <span className="text-gray-300 text-xs">-</span>}
-                </td>
-
                 {/* 所属板块 */}
                 <td className="px-4 py-3 text-sm">
                   <div className="flex flex-wrap gap-1">
@@ -275,11 +231,6 @@ export default function HighTurnoverTable({
                       <span className="text-gray-400 text-xs">-</span>
                     )}
                   </div>
-                </td>
-
-                {/* 量比 */}
-                <td className="px-4 py-3 text-sm text-right text-gray-900">
-                  {stock.volume_ratio > 0 ? stock.volume_ratio.toFixed(2) : "-"}
                 </td>
               </tr>
             );

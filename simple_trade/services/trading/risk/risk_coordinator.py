@@ -111,6 +111,9 @@ class RiskCoordinator:
         # 2. 动态止损（市场环境驱动）
         self._check_dynamic_stop_loss(quotes, positions, decisions, triggered_stocks)
 
+        # 2.5 智能持仓管理（分批止盈 + ATR止损 + 趋势保护）
+        self._check_smart_position(quotes, decisions, triggered_stocks)
+
         # 3. 分仓止盈
         self._check_lot_take_profit(quotes, decisions, triggered_stocks)
 
@@ -195,6 +198,8 @@ class RiskCoordinator:
                 from .dynamic_stop_loss import MarketContext
                 context = MarketContext(
                     turnover_rate=quote.get('turnover_rate', 0.0),
+                    liquidity_level=quote.get('liquidity_level', 'B'),
+                    liquidity_score=quote.get('liquidity_score', 50.0),
                 )
                 risk_config = self.dynamic_stop_loss.calculate_dynamic_risk_config(
                     code, context=context
@@ -325,3 +330,65 @@ class RiskCoordinator:
                     ))
         except Exception as e:
             self.logger.error(f"【风险协调】策略趋势止损检查异常: {e}", exc_info=True)
+
+    def _check_smart_position(
+        self,
+        quotes: List[Dict[str, Any]],
+        decisions: List[RiskDecision],
+        triggered_stocks: set,
+    ):
+        """
+        智能持仓管理检查（分批止盈 + ATR止损 + 趋势保护）
+
+        通过服务容器获取 SmartPositionManager，对已注册的持仓进行
+        分批止盈和ATR自适应止损检查。urgency=7（介于动态止损和分仓止盈之间）
+        """
+        try:
+            from ....dependencies import get_container
+            try:
+                container = get_container()
+            except Exception:
+                return
+
+            mgr = container.smart_position_manager
+            if not mgr:
+                return
+
+            active_positions = mgr.get_all_positions()
+            if not active_positions:
+                return
+
+            for quote in quotes:
+                code = quote.get('code', '')
+                if code in triggered_stocks or code not in active_positions:
+                    continue
+
+                price = quote.get('last_price', 0)
+                if price <= 0:
+                    continue
+
+                # 获取连续阴线数（从5分钟K线缓存，暂用0）
+                consecutive_down = 0
+
+                action = mgr.evaluate(code, price, consecutive_down)
+
+                if action.action in ('SELL_PARTIAL', 'SELL_ALL'):
+                    urgency = 8 if action.is_emergency else 7
+                    decisions.append(RiskDecision(
+                        stock_code=code,
+                        action='SMART_POSITION_' + action.action,
+                        source='SmartPositionManager',
+                        urgency=urgency,
+                        details={
+                            'stock_code': code,
+                            'reason': action.reason,
+                            'qty_to_sell': action.qty_to_sell,
+                            'is_emergency': action.is_emergency,
+                        },
+                    ))
+                    if action.action == 'SELL_ALL':
+                        triggered_stocks.add(code)
+
+        except Exception as e:
+            self.logger.error(f"【风险协调】智能持仓检查异常: {e}", exc_info=True)
+

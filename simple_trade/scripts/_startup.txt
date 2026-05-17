@@ -1,0 +1,14 @@
+Found 2 stocks with consolidation-then-breakout pattern
+
+ 1. HK.06613 蓝思科技
+    Price: 21.100 | 90d pos: 32.1%
+    Consolidation range: 11.8% | Vol expansion: 2.3x
+    3d change: +8.48% | Turnover: 7.53% | BREAKOUT
+    Last date: 2026-05-12
+
+ 2. HK.00354 中国软件国际
+    Price: 3.500 | 90d pos: 10.5%
+    Consolidation range: 12.2% | Vol expansion: 2.2x
+    3d change: +2.04% | Turnover: 1.05% | approaching
+    Last date: 2026-05-11
+

@@ -82,15 +82,15 @@ def setup_logging(log_file: Optional[str] = None, log_level: str = 'INFO', conso
             file_handler.suffix = "%Y-%m-%d"
             rotation_info = "按日期轮转(30天)"
         elif is_windows:
-            # Windows：按大小轮转，10MB × 7个备份 ≈ 最大80MB
+            # Windows：按大小轮转，50MB × 7个备份
             from logging.handlers import RotatingFileHandler
             file_handler = RotatingFileHandler(
                 log_file,
-                maxBytes=10 * 1024 * 1024,  # 10MB
+                maxBytes=50 * 1024 * 1024,  # 50MB
                 backupCount=7,
                 encoding='utf-8'
             )
-            rotation_info = "按大小轮转(10MB×7)"
+            rotation_info = "按大小轮转(50MB×7)"
         else:
             file_handler = logging.FileHandler(log_file, encoding='utf-8')
             rotation_info = "单文件(无轮转)"
@@ -145,7 +145,6 @@ def setup_logging(log_file: Optional[str] = None, log_level: str = 'INFO', conso
     for noisy_module in [
         'simple_trade.api.subscription_optimizer',
         'simple_trade.api.quote_service',
-        'scalping.health_monitor',
     ]:
         logging.getLogger(noisy_module).setLevel(logging.WARNING)
 
@@ -278,3 +277,52 @@ class FlowLogger:
 def get_flow_logger(flow_name: str) -> FlowLogger:
     """快捷获取流程日志器"""
     return FlowLogger(flow_name)
+
+
+def create_dedicated_logger(
+    name: str,
+    log_file: str,
+    level: int = logging.INFO,
+    max_bytes: int = 50 * 1024 * 1024,
+    backup_count: int = 7,
+) -> logging.Logger:
+    """创建独立日志器（写入独立文件，不影响主日志）
+
+    用于 P1-1 数据链路埋点：futu_api.log, quote_cycle.log 等
+
+    Args:
+        name: 日志器名称
+        log_file: 日志文件绝对路径
+        level: 日志级别
+        max_bytes: 单文件最大字节数（默认50MB）
+        backup_count: 保留备份数（默认7）
+
+    Returns:
+        独立的 Logger 实例
+    """
+    from logging.handlers import RotatingFileHandler
+
+    log_dir = os.path.dirname(log_file)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.propagate = False  # 不传播到根日志器
+
+    # 避免重复添加 handler
+    if not logger.handlers:
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding='utf-8'
+        )
+        handler.setLevel(level)
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        ))
+        logger.addHandler(handler)
+
+    return logger

@@ -10,6 +10,7 @@
 """
 
 import logging
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Tuple, Optional, Set
 
 from ....utils.converters import get_last_price
@@ -21,6 +22,11 @@ class HotStockQueryService:
 
     def __init__(self, db_manager: DatabaseManager):
         self._db = db_manager
+        # 波动率缓存：近30天有高波动的股票代码集合
+        self._volatile_codes: Set[str] = set()
+        self._stocks_with_kline: Set[str] = set()
+        self._volatile_cache_time: Optional[datetime] = None
+        self._volatile_cache_minutes: int = 10
 
     def get_position_codes(self, futu_trade_service=None) -> Set[str]:
         """获取持仓股票代码集合
@@ -96,6 +102,9 @@ class HotStockQueryService:
         min_volume = filter_config.get('min_volume', 100000)
         _position_codes = position_codes or set()
 
+        # 获取波动率过滤集合（近30天有过高波动的股票）
+        volatile_codes, stocks_with_kline = self._get_volatile_stock_codes()
+
         filtered_stocks = []
         filter_summary: List[str] = []
 
@@ -111,11 +120,13 @@ class HotStockQueryService:
                 continue
 
             quote = quotes_map.get(stock_code)
+            has_quote = bool(quote)
             if not quote:
-                continue
+                # 无报价时使用空占位，确保股票仍然显示（启动初期/缓存过期）
+                quote = {'code': stock_code, 'volume': 0, 'turnover': 0, 'turnover_rate': 0}
 
-            # 持仓股票跳过成交量和价格筛选
-            if not is_position:
+            # 持仓股票跳过成交量和价格筛选；无报价时也跳过（确保启动时能显示）
+            if not is_position and has_quote:
                 volume = quote.get('volume', 0) or 0
                 if filter_enabled and volume < min_volume:
                     if '成交量过低' not in filter_summary:
@@ -129,9 +140,134 @@ class HotStockQueryService:
                         filter_summary.append('价格过低')
                     continue
 
+                # 波动率过滤：近30天平均振幅不达标的股票排除
+                # 但当日有异常表现的股票豁免（突然放量/大幅波动）
+                # 注意：没有K线数据的股票不过滤（缺数据≠低波动）
+                if (filter_enabled and volatile_codes
+                        and stock_code in stocks_with_kline
+                        and stock_code not in volatile_codes):
+                    # 当日异常豁免条件
+                    high = quote.get('high_price', 0) or 0
+                    low = quote.get('low_price', 0) or 0
+                    intraday_amp = ((high - low) / low * 100) if low > 0 else 0
+                    change_rate = abs(quote.get('change_rate', 0) or quote.get('change_percent', 0) or 0)
+                    turnover_rate = quote.get('turnover_rate', 0) or 0
+                    volume_ratio = quote.get('volume_ratio', 0) or 0
+
+                    today_anomaly = (
+                        intraday_amp >= 5.0       # 当日振幅 >= 5%
+                        or change_rate >= 5.0     # 当日涨跌幅 >= 5%
+                        or turnover_rate >= 3.0   # 当日换手率 >= 3%
+                        or volume_ratio >= 2.0    # 量比 >= 2（成交量是近期均值2倍）
+                    )
+                    if not today_anomaly:
+                        if '低波动' not in filter_summary:
+                            filter_summary.append('低波动')
+                        continue
+
             heat_score = self.calculate_stock_heat(quote, stock_code, cached_heat_scores, filter_config)
             stock['heat_score'] = heat_score
             filtered_stocks.append(stock)
 
         filtered_stocks.sort(key=lambda x: x.get('heat_score', 0), reverse=True)
         return filtered_stocks[:limit], filter_summary
+
+    def _get_volatile_stock_codes(
+        self, min_avg_amplitude_pct: float = 5.0, lookback_days: int = 30
+    ) -> Tuple[Set[str], Set[str]]:
+        """获取近30天平均日振幅达标的股票代码集合（带缓存）
+
+        筛选条件：近 lookback_days 天的日K线平均振幅 >= min_avg_amplitude_pct%
+        振幅 = (最高 - 最低) / 最低 × 100
+
+        Returns:
+            (volatile_codes, stocks_with_kline):
+            - volatile_codes: 满足平均波动率条件的股票代码集合
+            - stocks_with_kline: 近30天有K线数据的股票代码集合
+        """
+        # 检查缓存
+        if (self._volatile_cache_time
+                and self._volatile_codes is not None
+                and (datetime.now() - self._volatile_cache_time).total_seconds() / 60 < self._volatile_cache_minutes):
+            return self._volatile_codes, self._stocks_with_kline
+
+        try:
+            cutoff_date = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+
+            # 查询1：近30天有K线数据的所有股票
+            kline_rows = self._db.execute_query("""
+                SELECT DISTINCT stock_code
+                FROM kline_data
+                WHERE date(time_key) >= ?
+            """, (cutoff_date,))
+            self._stocks_with_kline = {row[0] for row in kline_rows} if kline_rows else set()
+
+            # 查询2：近30天平均日振幅 >= 阈值的股票
+            rows = self._db.execute_query("""
+                SELECT stock_code
+                FROM kline_data
+                WHERE date(time_key) >= ?
+                  AND low_price > 0
+                GROUP BY stock_code
+                HAVING AVG((high_price - low_price) / low_price * 100) >= ?
+            """, (cutoff_date, min_avg_amplitude_pct))
+
+            self._volatile_codes = {row[0] for row in rows} if rows else set()
+            self._volatile_cache_time = datetime.now()
+            logging.info(
+                f"波动率过滤缓存更新: {len(self._volatile_codes)}/{len(self._stocks_with_kline)} "
+                f"只股票近{lookback_days}天平均振幅>={min_avg_amplitude_pct}%"
+            )
+
+        except Exception as e:
+            logging.warning(f"获取波动率数据失败: {e}")
+            if not hasattr(self, '_stocks_with_kline'):
+                self._stocks_with_kline = set()
+            if self._volatile_codes is None:
+                self._volatile_codes = set()
+
+        return self._volatile_codes, self._stocks_with_kline
+
+    def trigger_kline_download_for_missing(
+        self, all_stock_codes: Set[str], stocks_with_kline: Set[str]
+    ) -> None:
+        """后台触发缺少K线数据的股票下载（非阻塞）
+
+        在单独线程中运行，不影响 API 响应速度。
+        如果 API 额度不足，下载会自动失败，不影响过滤逻辑。
+        """
+        missing_codes = all_stock_codes - stocks_with_kline
+        if not missing_codes:
+            return
+
+        # 限制每次最多下载 20 只，避免占用太多额度
+        codes_to_download = list(missing_codes)[:20]
+        logging.info(f"检测到 {len(missing_codes)} 只股票缺少近期K线，后台下载 {len(codes_to_download)} 只")
+
+        import threading
+
+        def _download():
+            try:
+                from ...services.realtime.realtime_kline_service import RealtimeKlineService
+                kline_svc = RealtimeKlineService(self._db, None)
+                # 初始化 futu_client
+                from ...api.futu_client import FutuClient
+                client = FutuClient()
+                if not client.is_available():
+                    logging.debug("K线下载: 富途API不可用，跳过")
+                    return
+                kline_svc.futu_client = client
+                result = kline_svc.fetch_and_save_kline_data(
+                    stock_codes=codes_to_download, limit=35
+                )
+                if result['success']:
+                    logging.info(f"后台K线下载完成: {result['message']}")
+                    # 清除缓存以便下次重新计算波动率
+                    self._volatile_cache_time = None
+                else:
+                    logging.debug(f"后台K线下载未成功: {result['message']}")
+            except Exception as e:
+                logging.debug(f"后台K线下载异常（可忽略）: {e}")
+
+        t = threading.Thread(target=_download, daemon=True, name="kline-volatility-fill")
+        t.start()

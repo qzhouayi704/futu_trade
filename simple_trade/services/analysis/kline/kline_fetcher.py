@@ -107,7 +107,7 @@ class KlineFetcher:
 
         if ReturnCode.is_ok(ret) and data is not None and not data.empty:
             df = data.tail(limit_days) if limit_days else data
-            return self._parse_dataframe(df)
+            return self._parse_dataframe(df, stock_code)
 
         # 错误处理
         error_msg, error_type = self._parse_error(ret, data)
@@ -122,7 +122,7 @@ class KlineFetcher:
             )
             if ReturnCode.is_ok(ret) and data is not None and not data.empty:
                 df = data.tail(limit_days) if limit_days else data
-                return self._parse_dataframe(df)
+                return self._parse_dataframe(df, stock_code)
             # 重试仍失败：静默返回空，不再重试
             logging.debug(f"K线重试仍失败: {stock_code}")
             return []
@@ -202,10 +202,20 @@ class KlineFetcher:
     # ==================== 内部工具方法 ====================
 
     @staticmethod
-    def _parse_dataframe(df) -> List[KlineData]:
-        """将 DataFrame 解析为 KlineData 列表"""
+    def _parse_dataframe(df, stock_code: str = '') -> List[KlineData]:
+        """将 DataFrame 解析为 KlineData 列表
+
+        注意：港股K线API返回的 turnover_rate 是小数比例形式（0.01732 = 1.732%），
+        而实时报价API返回百分比形式（1.732 = 1.732%）。
+        此处统一转为百分比形式，与实时报价保持一致。
+        """
+        is_hk = stock_code.startswith('HK.')
         records = []
         for _, row in df.iterrows():
+            raw_rate = float(row.get('turnover_rate', 0)) if row.get('turnover_rate') else None
+            # 港股K线换手率：小数比例 → 百分比（×100）
+            if raw_rate is not None and is_hk and raw_rate < 1.0:
+                raw_rate = round(raw_rate * 100, 5)
             records.append(KlineData(
                 time_key=row['time_key'],
                 open_price=float(row['open']),
@@ -215,7 +225,7 @@ class KlineFetcher:
                 volume=int(row['volume']),
                 turnover=float(row.get('turnover', 0)),
                 pe_ratio=float(row.get('pe_ratio', 0)) if row.get('pe_ratio') else None,
-                turnover_rate=float(row.get('turnover_rate', 0)) if row.get('turnover_rate') else None
+                turnover_rate=raw_rate
             ))
         return records
 

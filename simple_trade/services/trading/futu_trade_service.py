@@ -163,6 +163,14 @@ class FutuTradeService:
                 result['message'] = f"交易API未准备好: {connect_result['message']}"
                 return result
 
+        # ===== 新增：交易优化门卫（评分+频率+阶段检查）=====
+        if trade_type == 'BUY':
+            gate_result = self._pre_trade_gatekeeper(stock.code, price)
+            if not gate_result['passed']:
+                result['message'] = f"交易门卫拒绝: {gate_result['reason']}"
+                logging.info(f"[Gatekeeper] 拒绝买入 {stock.code}: {gate_result['reason']}")
+                return result
+
         # 风控检查
         risk_result = self._check_trade_risk(stock.code, trade_type, price)
         if risk_result and risk_result.should_sell and trade_type == 'BUY':
@@ -251,6 +259,61 @@ class FutuTradeService:
                     logging.error(f"更新交易记录失败: {update_e}")
 
         return result
+
+    def _pre_trade_gatekeeper(self, stock_code: str, price: float) -> Dict[str, Any]:
+        """
+        交易优化门卫 — 在下单前执行评分、频率、阶段检查
+
+        集成：
+        - StockScorer: 一票否决检查（盘中检查同股亏损次数）
+        - TradeFrequencyGuard: 日交易上限 + 同股上限 + 阶段禁买
+        - TradingPhaseManager: 当前阶段是否允许买入
+
+        Returns:
+            {'passed': bool, 'reason': str, 'score': int|None}
+        """
+        try:
+            # 通过 dependencies 获取服务容器
+            from ...dependencies import get_container
+            try:
+                container = get_container()
+            except Exception:
+                # 容器未初始化时跳过检查（测试环境）
+                return {'passed': True, 'reason': '', 'score': None}
+
+            # 1. 频率检查（最快，先执行）
+            guard = container.trade_frequency_guard
+            if guard:
+                allowed, reason = guard.can_buy(stock_code)
+                if not allowed:
+                    return {'passed': False, 'reason': f"[频率] {reason}", 'score': None}
+
+            # 获取评分（供阶段检查和否决检查使用）
+            scorer = container.stock_scorer
+            stock_score = 0
+            if scorer:
+                cached = scorer.get_score(stock_code)
+                stock_score = cached.total_score if cached else 0
+
+            # 2. 阶段检查
+            phase_mgr = container.trading_phase_manager
+            if phase_mgr:
+                allowed, reason = phase_mgr.should_buy(stock_score)
+                if not allowed:
+                    return {'passed': False, 'reason': f"[阶段] {reason}", 'score': stock_score}
+
+            # 3. 评分一票���决（盘中仅检查同股亏损次数，盘前评分在外部运行）
+            if scorer:
+                veto = scorer.check_intraday_veto(stock_code)
+                if veto:
+                    return {'passed': False, 'reason': f"[否决] {veto}", 'score': stock_score}
+
+            return {'passed': True, 'reason': '', 'score': stock_score}
+
+        except Exception as e:
+            # 门卫异常不应阻止交易
+            logging.warning(f"[Gatekeeper] 检查异常(放行): {e}")
+            return {'passed': True, 'reason': '', 'score': None}
 
     def _check_trade_risk(self, stock_code: str, trade_type: str,
                           price: float) -> Optional['RiskCheckResult']:

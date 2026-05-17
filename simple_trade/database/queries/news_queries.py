@@ -70,6 +70,17 @@ class NewsQueries:
 
     def save_news_plate(self, news_db_id: int, plate_data: Dict[str, Any]) -> bool:
         """保存新闻-板块关联"""
+        plate_code = plate_data.get('plate_code')
+        plate_name = plate_data.get('plate_name')
+
+        # plate_code 为空时，从 plate_name 自动生成
+        if not plate_code:
+            if not plate_name:
+                self.logger.debug("plate_code 和 plate_name 均为空，跳过保存")
+                return False
+            import hashlib
+            plate_code = 'AUTO_' + hashlib.md5(plate_name.encode()).hexdigest()[:8].upper()
+
         sql = '''
             INSERT OR REPLACE INTO news_plates
             (news_id, plate_code, plate_name, impact_type)
@@ -77,8 +88,8 @@ class NewsQueries:
         '''
         params = (
             news_db_id,
-            plate_data.get('plate_code'),
-            plate_data.get('plate_name'),
+            plate_code,
+            plate_name,
             plate_data.get('impact_type')
         )
         try:

@@ -47,6 +47,9 @@ class BaseTables:
             activity_score REAL DEFAULT 0,
             last_activity_check TIMESTAMP,
             low_activity_count INTEGER DEFAULT 0,
+            liquidity_score REAL DEFAULT 50.0,
+            liquidity_level VARCHAR(10) DEFAULT 'B',
+            liquidity_updated_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )

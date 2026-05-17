@@ -33,34 +33,48 @@ class VWAPService:
     基于富途 get_rt_ticker 逐笔成交数据。
     """
 
-    def __init__(self, futu_client):
+    def __init__(self, futu_client, global_coordinator=None):
         self._futu_client = futu_client
+        self._global_coordinator = global_coordinator
         self._cache: Dict[str, VWAPData] = {}
         self._cache_ttl = 60  # 60秒缓存
-        self._ticker_subscribed: set = set()
-        self._ticker_failed: set = set()  # 订阅失败的股票集合
 
     def _ensure_ticker_subscribed(self, stock_code: str):
         """确保已订阅该股票的 Ticker 数据（富途要求先订阅才能获取逐笔成交）"""
-        # 跳过已订阅或已知失败的股票
-        if stock_code in self._ticker_subscribed or stock_code in self._ticker_failed:
-            return
-        try:
-            from futu import SubType, RET_OK
-            client = self._futu_client.client if hasattr(self._futu_client, 'client') else self._futu_client
-            if client is None:
-                return
-            ret, err = client.subscribe([stock_code], [SubType.TICKER])
-            if ret == RET_OK:
-                self._ticker_subscribed.add(stock_code)
-                logger.debug(f"VWAP: 已订阅 Ticker: {stock_code}")
-            else:
-                # 记录失败的股票，避免重复尝试和警告
-                self._ticker_failed.add(stock_code)
-                logger.debug(f"VWAP: 订阅 Ticker 失败(已记录): {stock_code}, {err}")
-        except Exception as e:
-            self._ticker_failed.add(stock_code)
-            logger.error(f"VWAP: 订阅 Ticker 异常: {stock_code}, {e}")
+        # 优先通过全局协调器订阅（Phase 1）
+        if self._global_coordinator:
+            try:
+                from futu import SubType
+                import asyncio
+                loop = asyncio.get_event_loop()
+                async def _do_subscribe():
+                    return await self._global_coordinator.request_subscription(
+                        subscriber_id='vwap_service',
+                        stock_codes=[stock_code],
+                        sub_types=[SubType.TICKER],
+                        priority=0
+                    )
+                result = loop.run_until_complete(_do_subscribe())
+                if result.get(stock_code):
+                    logger.debug(f"VWAP: 已通过全局协调器订阅 Ticker: {stock_code}")
+                else:
+                    logger.debug(f"VWAP: 全局协调器订阅失败: {stock_code}")
+            except Exception as e:
+                logger.error(f"VWAP: 全局协调器订阅异常: {stock_code}, {e}")
+        else:
+            # 回退到直接订阅（兼容旧代码）
+            try:
+                from futu import SubType, RET_OK
+                ctx = getattr(self._futu_client, 'client', self._futu_client)
+                if ctx is None:
+                    return
+                ret, err = ctx.subscribe([stock_code], [SubType.TICKER])
+                if ret == RET_OK:
+                    logger.debug(f"VWAP: 已订阅 Ticker: {stock_code}")
+                else:
+                    logger.debug(f"VWAP: 订阅 Ticker 失败: {stock_code}, {err}")
+            except Exception as e:
+                logger.error(f"VWAP: 订阅 Ticker 异常: {stock_code}, {e}")
 
     async def get_vwap(self, stock_code: str, current_price: float = 0) -> Optional[VWAPData]:
         """获取单只股票的VWAP数据

@@ -20,6 +20,10 @@ class StockMarkerService:
     负责标记 OTC 股票和低活跃度股票到数据库
     """
 
+    # 低活跃度排除阈值：连续 N 次标记为低活跃后临时排除
+    # （可通过 recheck_days 过期后自动恢复，通过活跃度检查时 count 衰减）
+    LOW_ACTIVITY_THRESHOLD = 5
+
     def __init__(self, db_manager):
         """
         初始化股票标记服务
@@ -73,39 +77,39 @@ class StockMarkerService:
         return marked_count
 
     def mark_low_activity_stocks(self, stock_codes: List[str], activity_scores: dict = None):
-        """标记低活跃度股票到数据库，并实现永久排除机制
+        """标记低活跃度股票到数据库
 
         Args:
             stock_codes: 低活跃度股票代码列表
             activity_scores: 股票代码到活跃度评分的映射 {code: score}
 
         Note:
-            - 使用 SQL 的 datetime('now', 'localtime') 确保时间格式与查询时一致
-            - 增加 low_activity_count 计数器，连续3次标记后永久排除
-            - 保存 activity_score 用于缓存
+            - 增加 low_activity_count 计数器，达到阈值后临时排除
+            - 已达阈值的股票不再递增，等待 recheck_days 过期后自动恢复
         """
         if not stock_codes:
             return
 
         try:
-            permanently_excluded_count = 0
+            threshold_reached_count = 0
+            already_excluded_count = 0
 
-            # 使用 SQL 的 datetime('now', 'localtime') 存储本地时间
-            # 确保与查询时的 datetime('now', 'localtime', '-N days') 格式一致
             for code in stock_codes:
-                # 获取当前的 low_activity_count
                 result = self.db_manager.execute_query(
                     'SELECT low_activity_count FROM stocks WHERE code = ?',
                     (code,)
                 )
 
                 current_count = result[0][0] if result and result[0][0] is not None else 0
-                new_count = current_count + 1
 
-                # 获取活跃度评分
+                # 已达排除阈值的股票，跳过，不再递增
+                if current_count >= self.LOW_ACTIVITY_THRESHOLD:
+                    already_excluded_count += 1
+                    continue
+
+                new_count = current_count + 1
                 score = activity_scores.get(code, 0) if activity_scores else 0
 
-                # 更新股票信息
                 self.db_manager.execute_update('''
                     UPDATE stocks
                     SET is_low_activity = 1,
@@ -116,20 +120,19 @@ class StockMarkerService:
                     WHERE code = ?
                 ''', (new_count, score, code))
 
-                # 检查是否刚达到永久排除阈值（仅首次触发时计数）
-                if new_count == 3:
-                    permanently_excluded_count += 1
+                if new_count == self.LOW_ACTIVITY_THRESHOLD:
+                    threshold_reached_count += 1
 
-            # 日志输出
-            if permanently_excluded_count > 0:
-                self.logger.warning(
-                    f"【永久排除】{permanently_excluded_count} 只股票连续3次标记为低活跃度，"
-                    f"将被永久排除（需手动清除标记才能重新参与筛选）"
+            if threshold_reached_count > 0:
+                self.logger.debug(
+                    f"【低活跃排除】{threshold_reached_count} 只股票连续{self.LOW_ACTIVITY_THRESHOLD}次"
+                    f"标记为低活跃度，将被临时排除（recheck_days 过期后自动恢复）"
                 )
 
             self.logger.debug(
-                f"【低活跃度标记】已标记 {len(stock_codes)} 只股票为低活跃度，"
-                f"其中 {permanently_excluded_count} 只达到永久排除阈值"
+                f"【低活跃度标记】标记 {len(stock_codes)} 只，"
+                f"新达阈值 {threshold_reached_count} 只，"
+                f"已排除跳过 {already_excluded_count} 只"
             )
 
         except Exception as e:
@@ -146,7 +149,6 @@ class StockMarkerService:
         """
         try:
             if stock_codes is None:
-                # 清除所有标记
                 if reset_count:
                     self.db_manager.execute_update('''
                         UPDATE stocks
@@ -162,7 +164,6 @@ class StockMarkerService:
                     ''')
                 self.logger.info("已清除所有低活跃度标记")
             else:
-                # 清除指定股票的标记
                 for code in stock_codes:
                     if reset_count:
                         self.db_manager.execute_update('''
@@ -183,3 +184,28 @@ class StockMarkerService:
 
         except Exception as e:
             self.logger.error(f"清除低活跃度标记失败: {e}")
+
+    def decrement_low_activity_count(self, stock_codes: List[str]):
+        """衰减低活跃度计数（股票通过活跃度检查时调用）
+
+        每次通过活跃度检查时 count-1（最低为0），实现渐进恢复。
+        同时清除 is_low_activity 标记。
+
+        Args:
+            stock_codes: 通过活跃度检查的股票代码列表
+        """
+        if not stock_codes:
+            return
+
+        try:
+            for code in stock_codes:
+                self.db_manager.execute_update('''
+                    UPDATE stocks
+                    SET is_low_activity = 0,
+                        low_activity_checked_at = NULL,
+                        low_activity_count = MAX(0, COALESCE(low_activity_count, 0) - 1),
+                        last_activity_check = datetime('now', 'localtime')
+                    WHERE code = ?
+                ''', (code,))
+        except Exception as e:
+            self.logger.error(f"衰减低活跃度计数失败: {e}")

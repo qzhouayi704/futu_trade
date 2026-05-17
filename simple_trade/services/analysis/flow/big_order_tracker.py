@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 class BigOrderTracker:
     """实时大单追踪器"""
 
-    def __init__(self, futu_client=None, db_manager=None, config: dict = None, *, ctx=None):
+    def __init__(self, futu_client=None, db_manager=None, config: dict = None, *, ctx=None, baseline_service=None):
         """
         初始化大单追踪器
 
@@ -27,6 +27,7 @@ class BigOrderTracker:
             futu_client: 富途API客户端（向后兼容）
             db_manager: 数据库管理器（向后兼容）
             config: 配置字典（向后兼容）
+            baseline_service: 历史基准服务（可选，用于动态阈值）
         """
         if ctx is not None:
             self.futu_client = ctx.futu_client
@@ -37,6 +38,7 @@ class BigOrderTracker:
             self.db_manager = db_manager
             self.config = (config or {}).get('enhanced_heat_config', {})
         self.big_order_config = self.config.get('big_order_config', {})
+        self._baseline = baseline_service
 
         # 配置参数
         self.enabled = self.big_order_config.get('enabled', True)
@@ -56,10 +58,10 @@ class BigOrderTracker:
             return
         try:
             from futu import SubType, RET_OK
-            client = self.futu_client.client if hasattr(self.futu_client, 'client') else self.futu_client
-            if client is None:
+            ctx = getattr(self.futu_client, 'client', self.futu_client)
+            if ctx is None:
                 return
-            ret, err = client.subscribe([stock_code], [SubType.TICKER])
+            ret, err = ctx.subscribe([stock_code], [SubType.TICKER])
             if ret == RET_OK:
                 self._ticker_subscribed.add(stock_code)
                 logging.debug(f"已订阅 Ticker: {stock_code}")
@@ -116,7 +118,7 @@ class BigOrderTracker:
                 return None
 
             # 识别大单
-            big_orders = self.identify_big_orders(data)
+            big_orders = self.identify_big_orders(data, stock_code=stock_code)
 
             # 计算统计数据（即使没有大单也返回零值结果）
             big_buy_count = sum(1 for order in big_orders if order['direction'] == 'BUY')
@@ -138,8 +140,12 @@ class BigOrderTracker:
                 'big_buy_amount': float(big_buy_amount),
                 'big_sell_amount': float(big_sell_amount),
                 'buy_sell_ratio': float(buy_sell_ratio),
-                'order_strength': float(order_strength)
+                'order_strength': float(order_strength),
             }
+
+            # Phase 3: 主力方向信号 + 大单密度
+            direction_signal = self._detect_direction_signal(big_orders)
+            big_order_data.update(direction_signal)
 
             # 保存到数据库
             self._save_to_db(big_order_data)
@@ -150,23 +156,32 @@ class BigOrderTracker:
             logging.error(f"追踪大单异常: {stock_code}, {e}")
             return None
 
-    def identify_big_orders(self, ticker_data) -> List[dict]:
+    def identify_big_orders(self, ticker_data, stock_code: str = None) -> List[dict]:
         """
         识别大单交易
 
         Args:
             ticker_data: 逐笔成交DataFrame
+            stock_code: 股票代码（用于动态阈值查询）
 
         Returns:
             大单列表
         """
+        # 动态阈值：优先使用历史基准，冷启动降级到固定值
+        threshold = (
+            self._baseline.get_threshold(
+                stock_code, "avg_turnover_per_tick", "p75",
+                fallback=self.min_order_amount
+            ) if self._baseline and stock_code else self.min_order_amount
+        )
+
         big_orders = []
 
         for _, row in ticker_data.iterrows():
             turnover = row.get('turnover', 0)
 
             # 判断是否为大单
-            if turnover >= self.min_order_amount:
+            if turnover >= threshold:
                 direction = row.get('ticker_direction', 'NEUTRAL')
 
                 big_orders.append({
@@ -218,6 +233,90 @@ class BigOrderTracker:
 
         strength = (buy_count - sell_count) / total_count
         return round(strength, 2)
+
+    def _detect_direction_signal(self, big_orders: List[dict]) -> dict:
+        """
+        检测主力方向变化信号
+
+        基于大单的时间序列分析：
+        - 将大单按时间分为前半段和后半段
+        - 比较两段的买卖方向变化
+        - 计算大单密度（每分钟大单笔数）
+
+        Returns:
+            {
+                'direction_trend': '买方加速' | '买方减速' | '卖方加速' | '卖方减速' | '稳定',
+                'direction_shift': True/False (是否发生方向转换),
+                'big_order_density': float (每分钟大单笔数),
+                'recent_strength': float (近期大单强度 -1~1),
+            }
+        """
+        result = {
+            'direction_trend': '稳定',
+            'direction_shift': False,
+            'big_order_density': 0.0,
+            'recent_strength': 0.0,
+        }
+
+        if len(big_orders) < 4:
+            return result
+
+        # 按时间排序
+        sorted_orders = sorted(big_orders, key=lambda x: str(x.get('time', '')))
+        mid = len(sorted_orders) // 2
+        first_half = sorted_orders[:mid]
+        second_half = sorted_orders[mid:]
+
+        # 计算前半段和后半段的方向强度
+        def calc_strength(orders):
+            if not orders:
+                return 0.0
+            buys = sum(1 for o in orders if o['direction'] == 'BUY')
+            sells = sum(1 for o in orders if o['direction'] == 'SELL')
+            total = len(orders)
+            return (buys - sells) / total if total > 0 else 0.0
+
+        early_str = calc_strength(first_half)
+        recent_str = calc_strength(second_half)
+        result['recent_strength'] = round(recent_str, 2)
+
+        # 方向趋势判定
+        diff = recent_str - early_str
+        if recent_str > 0.3 and diff > 0.2:
+            result['direction_trend'] = '买方加速'
+        elif recent_str > 0.3 and diff < -0.2:
+            result['direction_trend'] = '买方减速'
+        elif recent_str < -0.3 and diff < -0.2:
+            result['direction_trend'] = '卖方加速'
+        elif recent_str < -0.3 and diff > 0.2:
+            result['direction_trend'] = '卖方减速'
+
+        # 方向转换检测（从买变卖或从卖变买）
+        if (early_str > 0.3 and recent_str < -0.3) or \
+           (early_str < -0.3 and recent_str > 0.3):
+            result['direction_shift'] = True
+
+        # 大单密度（每分钟大单笔数）
+        try:
+            times = [str(o.get('time', '')) for o in sorted_orders if o.get('time')]
+            if len(times) >= 2:
+                # 简单用首尾时间差估算
+                first_t = times[0]
+                last_t = times[-1]
+                # 时间格式: "HH:MM:SS" 或 "YYYY-MM-DD HH:MM:SS"
+                ft = first_t.split(' ')[-1] if ' ' in first_t else first_t
+                lt = last_t.split(' ')[-1] if ' ' in last_t else last_t
+                fp = ft.split(':')
+                lp = lt.split(':')
+                if len(fp) >= 2 and len(lp) >= 2:
+                    f_min = int(fp[0]) * 60 + int(fp[1])
+                    l_min = int(lp[0]) * 60 + int(lp[1])
+                    span = max(l_min - f_min, 1)
+                    result['big_order_density'] = round(len(sorted_orders) / span, 2)
+        except Exception:
+            pass
+
+        return result
 
     def _save_to_db(self, big_order_data: dict):
         """保存大单数据到数据库"""

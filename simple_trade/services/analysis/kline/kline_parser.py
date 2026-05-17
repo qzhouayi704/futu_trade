@@ -6,7 +6,7 @@ K线数据解析服务
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Dict, Any, List
 from ....database.core.db_manager import DatabaseManager
 from ....utils.market_helper import MarketTimeHelper
@@ -157,7 +157,7 @@ class KlineParser:
         """过滤掉今天的不完整数据
 
         当天的K线数据在收盘前是不完整的，不应保存到数据库。
-        只保存已收盘的完整历史数据，避免策略判断时使用不完整数据。
+        收盘后数据已完整，允许保存。
 
         根据股票所属市场的时区来判断"今天"的日期。
 
@@ -168,12 +168,24 @@ class KlineParser:
         Returns:
             过滤后的K线数据列表
         """
-        filtered_data = []
-        skipped_count = 0
-
-        # 根据股票代码判断市场，获取该市场的"今天"日期
+        # 根据股票代码判断市场
         market = MarketTimeHelper.get_market_from_code(stock_code)
         today_str = MarketTimeHelper.get_market_today(market)
+
+        # 如果市场已收盘，今日K线已完整，不需要过滤
+        now = datetime.now()
+        now_time = now.time()
+        if market == 'HK':
+            market_closed = not MarketTimeHelper._is_hk_trading_time(now_time) and now_time > MarketTimeHelper.HK_AFTERNOON_END
+        else:
+            market_closed = not MarketTimeHelper._is_us_trading_time(now, now_time) and now_time > time(5, 0) and now_time < time(21, 0)
+
+        if market_closed:
+            logging.debug(f"{stock_code} ({market}) 市场已收盘，保留当日K线数据")
+            return kline_data
+
+        filtered_data = []
+        skipped_count = 0
 
         try:
             for data in kline_data:
@@ -186,7 +198,7 @@ class KlineParser:
                 filtered_data.append(data)
 
             if skipped_count > 0:
-                logging.debug(f"{stock_code} ({market}) 跳过{skipped_count}条当天({today_str})未完成数据")
+                logging.debug(f"{stock_code} ({market}) 盘中跳过{skipped_count}条当天({today_str})未完成数据")
 
         except Exception as e:
             logging.error(f"过滤K线数据失败: {e}", exc_info=True)

@@ -134,23 +134,27 @@ class QuoteCache:
     def get_quotes_for_codes(self, stock_codes: List[str]) -> Dict[str, Dict[str, Any]]:
         """获取指定股票的缓存报价
 
+        P6-1: 读操作不加锁，使用引用快照
+
         Args:
             stock_codes: 股票代码列表
 
         Returns:
             {stock_code: quote_data} 字典
         """
-        with self._lock:
-            return {
-                code: dict(self._cache[code])
-                for code in stock_codes
-                if code in self._cache
-            }
+        cache = self._cache  # 引用快照
+        return {
+            code: cache[code].copy()
+            for code in stock_codes
+            if code in cache
+        }
 
     def get_all_quotes(self) -> Dict[str, Dict[str, Any]]:
-        """获取所有缓存报价"""
-        with self._lock:
-            return {code: dict(data) for code, data in self._cache.items()}
+        """获取所有缓存报价
+
+        P6-1: 读操作不加锁，浅拷贝
+        """
+        return self._cache.copy()
 
     def get_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息"""

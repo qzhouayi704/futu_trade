@@ -63,7 +63,7 @@ class SubscriptionOptimizer:
         try:
             self.logger.debug(f"订阅第 {batch_num}/{total_batches} 批: {len(batch)} 只")
 
-            ret, err_msg = self._futu_client.client.subscribe(
+            ret, err_msg = self._futu_client.subscribe_stocks(
                 batch, [SubType.QUOTE]
             )
 
@@ -105,7 +105,7 @@ class SubscriptionOptimizer:
             stocks_to_defer = batch[remaining_quota:]
 
             # 订阅可以用额度的股票
-            ret2, err_msg2 = self._futu_client.client.subscribe(
+            ret2, err_msg2 = self._futu_client.subscribe_stocks(
                 stocks_to_subscribe, [SubType.QUOTE]
             )
 
@@ -146,7 +146,7 @@ class SubscriptionOptimizer:
     def _retry_valid_stocks(self, valid_stocks: List[str], result: Dict):
         """重新订阅有效股票"""
         self.logger.info(f"重新批量订阅 {len(valid_stocks)} 只有效股票...")
-        ret2, err_msg2 = self._futu_client.client.subscribe(
+        ret2, err_msg2 = self._futu_client.subscribe_stocks(
             valid_stocks, [SubType.QUOTE]
         )
 
@@ -170,7 +170,7 @@ class SubscriptionOptimizer:
             # 还有剩余额度
             stocks_to_sub = valid_stocks[:remaining_quota]
             stocks_to_defer = valid_stocks[remaining_quota:]
-            ret3, err_msg3 = self._futu_client.client.subscribe(
+            ret3, err_msg3 = self._futu_client.subscribe_stocks(
                 stocks_to_sub, [SubType.QUOTE]
             )
             if ret3 == RET_OK:
@@ -192,7 +192,7 @@ class SubscriptionOptimizer:
             try:
                 time.sleep(self.SINGLE_RETRY_DELAY)
 
-                ret, err_msg = self._futu_client.client.subscribe(
+                ret, err_msg = self._futu_client.subscribe_stocks(
                     [stock_code], [SubType.QUOTE]
                 )
 

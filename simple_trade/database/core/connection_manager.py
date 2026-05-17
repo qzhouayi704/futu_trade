@@ -58,6 +58,21 @@ class ConnectionManager:
                 # 16MB 缓存（默认 2MB 对高频数据不足）
                 self._local.connection.execute("PRAGMA cache_size = -16000")
                 logging.debug(f"为线程 {threading.current_thread().name} 创建新数据库连接")
+            else:
+                # P6-2: 健康检查 — 检测僵尸连接
+                try:
+                    self._local.connection.execute("SELECT 1")
+                except sqlite3.Error:
+                    logging.warning(f"线程 {threading.current_thread().name} 连接已断开，重建")
+                    self._close_thread_connection()
+                    self._local.connection = sqlite3.connect(
+                        self.database_path,
+                        check_same_thread=False,
+                        timeout=30.0
+                    )
+                    self._local.connection.execute("PRAGMA journal_mode = WAL")
+                    self._local.connection.execute("PRAGMA busy_timeout = 15000")
+                    self._local.connection.execute("PRAGMA synchronous = NORMAL")
 
             yield self._local.connection
 

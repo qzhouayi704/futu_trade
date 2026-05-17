@@ -24,7 +24,6 @@ from simple_trade.core.state.quote_cache import QuoteCache
 from simple_trade.core.state.trading_state import TradingState
 from simple_trade.core.state.pool_state import PoolState
 from simple_trade.core.state.init_progress import InitProgress
-from simple_trade.core.state.scalping_metrics import ScalpingMetrics, ScalpingMetricsState
 from simple_trade.core.state.ticker_df_cache import TickerDataFrameCache
 
 
@@ -78,7 +77,6 @@ class StateManager:
         self.trading_state = TradingState()
         self.pool_state = PoolState()
         self.init_progress = InitProgress()
-        self.scalping_metrics = ScalpingMetricsState()
         self.ticker_df_cache = TickerDataFrameCache()
         self.high_turnover_cache = HighTurnoverCache()
 
@@ -294,15 +292,7 @@ class StateManager:
                 logging.error(f"获取目标股票失败: {e}")
                 return []
 
-    # ==================== Scalping 指标共享（委托 ScalpingMetricsState） ====================
 
-    def set_scalping_metrics(self, stock_code: str, metrics: ScalpingMetrics) -> None:
-        """写入 Scalping 指标快照（由 Scalping 系统调用）"""
-        self.scalping_metrics.set(stock_code, metrics)
-
-    def get_scalping_metrics(self, stock_code: str) -> Optional[ScalpingMetrics]:
-        """读取 Scalping 指标快照，过期返回 None（由 Strategy 系统调用）"""
-        return self.scalping_metrics.get(stock_code)
 
     # ==================== 系统运行状态（持久化） ====================
 
@@ -375,7 +365,6 @@ class StateManager:
             self.init_progress.reset()
             self.quote_cache.reset()
             self.trading_state.reset()
-            self.scalping_metrics.reset()
             self.ticker_df_cache.reset()
             self.high_turnover_cache.reset()
 

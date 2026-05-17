@@ -303,10 +303,31 @@ class StockPoolManagerService:
             self.logger.warning(f"更新板块股票数量失败: {e}")
 
     def _get_stock_info(self, stock_code: str) -> Optional[Dict[str, Any]]:
-        """获取股票信息"""
+        """获取股票信息（优先DB缓存 → 富途快照API → fallback）"""
         try:
-            market = 'HK' if stock_code.isdigit() or stock_code.startswith('HK.') else 'US'
-            return {'code': stock_code, 'name': f'{stock_code}_股票', 'market': market}
+            # 确定市场
+            market = 'HK' if stock_code.startswith('HK.') else 'US'
+
+            # 1. 先查数据库缓存
+            cached = self.db_manager.execute_query(
+                'SELECT code, name, market FROM stocks WHERE code = ?', (stock_code,)
+            )
+            if cached and cached[0][1]:
+                return {'code': cached[0][0], 'name': cached[0][1], 'market': cached[0][2] or market}
+
+            # 2. 调用富途快照 API 获取真实名称
+            if self.futu_client.is_available():
+                try:
+                    ret, data = self.futu_client.get_market_snapshot([stock_code])
+                    if ret == 0 and data is not None and not data.empty:
+                        row = data.iloc[0]
+                        name = str(row.get('name', '')) or stock_code
+                        return {'code': stock_code, 'name': name, 'market': market}
+                except Exception as e:
+                    self.logger.debug(f"快照获取股票名称失败 {stock_code}: {e}")
+
+            # 3. fallback: 使用代码作为名称
+            return {'code': stock_code, 'name': stock_code, 'market': market}
         except Exception as e:
             self.logger.warning(f"获取股票 {stock_code} 信息失败: {e}")
             return None

@@ -25,23 +25,24 @@ class AggressiveStrategyConfig:
     max_plate_rank: int = 3              # 最大板块排名
     min_up_ratio: float = 0.6            # 最低上涨占比
 
-    # 股票筛选（基于回测优化）
-    min_change_pct: float = 2.5          # 最低涨幅 (%)
-    max_change_pct: float = 5.0          # 最高涨幅 (%)
+    # 股票筛选（基于回测优化，已放宽适配港股/美股无涨跌停市场）
+    min_change_pct: float = 1.5          # 最低涨幅 (%)
+    max_change_pct: float = 8.0          # 最高涨幅 (%) — 港股/美股强势股常见10%+
     min_volume: int = 5000000            # 最低成交量 (股)
     min_price_position: float = 0        # 最低价格位置 (%)
-    max_price_position: float = 40       # 最高价格位置 (%)
+    max_price_position: float = 100      # 最高价格位置 (%) — 不限高低位
 
-    # 止盈参数
-    target_profit_pct: float = 8.0       # 目标止盈 (%)
-    trailing_trigger_pct: float = 6.0    # 移动止盈触发 (%)
-    trailing_callback_pct: float = 2.0   # 移动止盈回撤 (%)
+    # 止盈参数（回测优化: Trail10/3+SL8%+3D → 笔均+0.91%, 胜率46%）
+    # 配合阶梯低吸入场(前收-1%优先/前收兜底) → 笔均+6.14%, 胜率80%
+    target_profit_pct: float = 10.0      # 目标止盈 (%)
+    trailing_trigger_pct: float = 10.0   # 移动止盈触发 (%)
+    trailing_callback_pct: float = 3.0   # 移动止盈回撤 (%)
 
     # 止损参数
-    fixed_stop_loss_pct: float = -5.0    # 固定止损 (%)
-    quick_stop_loss_pct: float = -3.0    # 快速止损 (%)
+    fixed_stop_loss_pct: float = -8.0    # 固定止损 (%)
+    quick_stop_loss_pct: float = -5.0    # 快速止损 (%)
     plate_rank_threshold: int = 5        # 板块止损排名阈值
-    max_holding_days: int = 1            # 最大持有天数
+    max_holding_days: int = 3            # 最大持有天数
 
     # 信号控制
     max_daily_signals: int = 2           # 每日最大信号数
@@ -336,8 +337,8 @@ class AggressiveStrategy(BaseStrategy):
         volume_score = volume_ratio * 0.3
 
         # 价格位置评分 (0-0.3)
-        # 越低位越好
-        position_score = (1 - price_position / 100) * 0.3
+        # 不限高低位，中间位置略优
+        position_score = 0.15 + 0.15 * (1 - abs(price_position - 50) / 50)
 
         return change_score + volume_score + position_score
 

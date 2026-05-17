@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-增强热度计算器
+增强热度计算器（已废弃 — 请使用 StockSnapshot + SnapshotBuilder）
 
-职责：
-1. 多维度热度计算（基础热度+资金流向+价格动能+板块联动）
-2. 追高风险检查
-3. 假突破识别
-4. 整合所有分析模块
+⚠️ DEPRECATED: 本模块的功能已被统一数据引擎替代：
+  - 多维度热度计算 → StockSnapshot 各字段
+  - 价格位置计算 → SnapshotBuilder._calc_price_position()
+  - 追高风险检查 → leader_stock_filter 已内联
+  - 假突破识别 → 保留供 stock_heat_calculator 调用
+
+保留此文件仅为向后兼容，新代码请勿引用。
 """
 
 import logging

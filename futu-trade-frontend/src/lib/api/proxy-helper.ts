@@ -55,10 +55,12 @@ export async function handleProxyRequest(
       body = await request.text();
     }
 
-    // 转发请求到后端 API
+    // 转发请求到后端 API（POST 等变更请求给更长超时，覆盖新闻抓取等耗时操作）
+    const timeoutMs = request.method === "GET" ? undefined : 120_000;
     const flaskResponse = await proxyToFlask(fullPath, {
       method: request.method,
       body,
+      timeoutMs,
       headers: {
         "Content-Type": "application/json",
       },

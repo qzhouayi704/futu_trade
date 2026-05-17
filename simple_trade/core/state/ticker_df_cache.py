@@ -3,11 +3,10 @@
 """
 Ticker DataFrame 共享缓存
 
-按 stock_code 缓存 ScalpingDataPoller 拉取的原始 ticker DataFrame，
-供 TickerService 复用，避免重复调用 futu API。
+按 stock_code 缓存 TickerService 拉取的原始 ticker DataFrame，
+避免重复调用 futu API。
 
 设计原则：
-- 与 ScalpingMetricsState 一致的缓存模式
 - 线程安全：RLock 保护读写
 - TTL 5 秒，惰性过期（get 时检查）
 """

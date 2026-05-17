@@ -60,6 +60,21 @@ export async function getCapitalFlowHistory(
   });
 }
 
+export interface IntradayTimelinePoint {
+  time: string;
+  price: number;
+  avg_price: number;
+  volume: number;
+  turnover: number;
+}
+
+/** 获取股票当天的分时折线数据 */
+export async function getIntradayTimeline(
+  stockCode: string
+): Promise<ApiResponse<IntradayTimelinePoint[]>> {
+  return apiClient.get(`/enhanced-heat/intraday-timeline/${stockCode}`);
+}
+
 /** 获取龙头股列表 */
 export async function getLeaderStocks(
   maxTotal: number = 10
@@ -98,4 +113,97 @@ export async function getPriceDistribution(
   stockCode: string
 ): Promise<ApiResponse<PriceLevelDistributionData | null>> {
   return apiClient.get(`/enhanced-heat/price-distribution/${stockCode}`);
+}
+
+// ==================== 日内支撑/阻力位 ====================
+
+export interface IntradayPriceLevel {
+  price: number;
+  strength: number;
+  type: string;       // volume_poc / big_order_buy / big_order_sell / order_book_bid / order_book_ask
+  label: string;
+  volume: number;
+  reliability?: 'confirmed' | 'order_book_only';  // 价位可信度
+}
+
+export interface BrokerDetail {
+  name: string;
+  pos: number;        // 排队位置
+  tag: '散户' | '机构' | '北水' | '未知';
+}
+
+export interface BrokerAnalysis {
+  is_trap: boolean;
+  trap_confidence: number;
+  reason: string;
+  top_buyers: string[];
+  top_sellers: string[];
+  buyer_details: BrokerDetail[];
+  seller_details: BrokerDetail[];
+  institutional_sell_count: number;
+  retail_buy_count: number;
+}
+
+export interface IntradayLevelsData {
+  stock_code: string;
+  support_levels: IntradayPriceLevel[];
+  resistance_levels: IntradayPriceLevel[];
+  poc: { price: number; volume: number } | null;
+  vwap: { price: number; deviation_pct: number } | null;
+  current_price: number;
+  updated_at: string;
+  broker_analysis?: BrokerAnalysis;
+}
+
+/** 获取日内资金支撑/阻力位 */
+export async function getIntradayLevels(
+  stockCode: string
+): Promise<ApiResponse<IntradayLevelsData | null>> {
+  return apiClient.get(`/enhanced-heat/intraday-levels/${stockCode}`);
+}
+
+// ==================== 主力/散户资金流时间线 ====================
+
+export interface CapitalFlowTimelinePoint {
+  time: string;       // "HH:MM"
+  main_in: number;    // 主力净流入（万元）= 超大单+大单
+  retail_in: number;  // 散户净流入（万元）= 中单+小单
+  total_in: number;   // 总净流入（万元）
+  super_in?: number;  // 超大单净流入（万元）— 纯机构
+  price?: number;     // 当时股价
+  strength?: number;  // 大单强度 (-1 ~ +1)
+  bs_ratio?: number;  // 大单买卖比
+}
+
+/** 获取日内主力/散户资金流时间线 */
+export async function getCapitalFlowTimeline(
+  stockCode: string
+): Promise<ApiResponse<CapitalFlowTimelinePoint[]>> {
+  return apiClient.get(`/enhanced-heat/capital-flow-timeline/${stockCode}`);
+}
+
+/** CCASS 持仓变化数据 */
+export interface CCASHoldingChange {
+  participant_id: string;
+  name: string;
+  current_holding: number;
+  prev_holding: number;
+  change: number;
+}
+
+export interface CCASHoldingsData {
+  stock_code: string;
+  latest_date: string;
+  compare_date: string;
+  top_increases: CCASHoldingChange[];
+  top_decreases: CCASHoldingChange[];
+}
+
+/** 获取 CCASS 持仓变化（首次请求需爬取 HKEX，可能需 30-60 秒） */
+export async function getCCASHoldings(
+  stockCode: string
+): Promise<ApiResponse<CCASHoldingsData>> {
+  return apiClient.get(`/enhanced-heat/ccass-holdings/${stockCode}`, {
+    timeout: 65000, // HKEX 爬取较慢，首次需要 30-60 秒
+  });
 }

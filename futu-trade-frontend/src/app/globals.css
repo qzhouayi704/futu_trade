@@ -4,26 +4,32 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* 自定义动画 */
+/* Apple-style scale-in animation */
 @keyframes scale-in {
-  0% {
-    transform: scale(0);
-    opacity: 0;
-  }
-  50% {
-    transform: scale(1.1);
-  }
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
+  0% { transform: scale(0.95); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes fade-up {
+  0% { transform: translateY(8px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
 
-.animate-scale-in {
-  animation: scale-in 0.5s ease-out;
+.animate-scale-in { animation: scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+.animate-fade-up { animation: fade-up 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 0%, oklch(1 0 0 / 5%) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
 }
 
 @theme inline {
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -64,73 +70,80 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/* ═══════════════════════════════════════════════════
+   Light theme — warm ivory with indigo accents
+   ═══════════════════════════════════════════════════ */
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --radius: 0.75rem;
+  --background: oklch(0.975 0.003 80);
+  --foreground: oklch(0.18 0.02 270);
+  --card: oklch(0.995 0.002 80);
+  --card-foreground: oklch(0.18 0.02 270);
+  --popover: oklch(0.995 0.002 80);
+  --popover-foreground: oklch(0.18 0.02 270);
+  --primary: oklch(0.50 0.20 265);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.955 0.01 265);
+  --secondary-foreground: oklch(0.30 0.02 265);
+  --muted: oklch(0.955 0.008 80);
+  --muted-foreground: oklch(0.50 0.01 270);
+  --accent: oklch(0.955 0.015 265);
+  --accent-foreground: oklch(0.30 0.02 265);
+  --destructive: oklch(0.58 0.22 25);
+  --border: oklch(0.91 0.008 80);
+  --input: oklch(0.93 0.008 80);
+  --ring: oklch(0.50 0.20 265);
+  --chart-1: oklch(0.55 0.22 265);
+  --chart-2: oklch(0.62 0.19 155);
+  --chart-3: oklch(0.58 0.20 330);
+  --chart-4: oklch(0.72 0.16 65);
+  --chart-5: oklch(0.60 0.20 25);
+  --sidebar: oklch(0.98 0.003 265);
+  --sidebar-foreground: oklch(0.18 0.02 270);
+  --sidebar-primary: oklch(0.50 0.20 265);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.95 0.015 265);
+  --sidebar-accent-foreground: oklch(0.30 0.02 265);
+  --sidebar-border: oklch(0.92 0.01 265);
+  --sidebar-ring: oklch(0.50 0.20 265);
 }
 
+/* ═══════════════════════════════════════════════════
+   Dark theme — deep space blue with electric accents
+   Inspired by Bloomberg Terminal × Apple Pro Display
+   ═══════════════════════════════════════════════════ */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: oklch(0.14 0.015 265);
+  --foreground: oklch(0.92 0.005 265);
+  --card: oklch(0.18 0.015 265);
+  --card-foreground: oklch(0.92 0.005 265);
+  --popover: oklch(0.18 0.015 265);
+  --popover-foreground: oklch(0.92 0.005 265);
+  --primary: oklch(0.68 0.18 265);
+  --primary-foreground: oklch(0.14 0.015 265);
+  --secondary: oklch(0.22 0.015 265);
+  --secondary-foreground: oklch(0.88 0.005 265);
+  --muted: oklch(0.22 0.015 265);
+  --muted-foreground: oklch(0.58 0.01 265);
+  --accent: oklch(0.23 0.02 265);
+  --accent-foreground: oklch(0.88 0.005 265);
+  --destructive: oklch(0.62 0.20 25);
+  --border: oklch(0.26 0.015 265);
+  --input: oklch(0.24 0.015 265);
+  --ring: oklch(0.68 0.18 265);
+  --chart-1: oklch(0.68 0.18 265);
+  --chart-2: oklch(0.68 0.17 155);
+  --chart-3: oklch(0.70 0.18 330);
+  --chart-4: oklch(0.75 0.14 65);
+  --chart-5: oklch(0.65 0.18 25);
+  --sidebar: oklch(0.16 0.015 265);
+  --sidebar-foreground: oklch(0.92 0.005 265);
+  --sidebar-primary: oklch(0.68 0.18 265);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.23 0.02 265);
+  --sidebar-accent-foreground: oklch(0.88 0.005 265);
+  --sidebar-border: oklch(0.26 0.015 265);
+  --sidebar-ring: oklch(0.68 0.18 265);
 }
 
 @layer base {
@@ -139,5 +152,74 @@
   }
   body {
     @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    letter-spacing: -0.011em;
+  }
+
+  /* All interactive elements get smooth Apple-like transitions */
+  button, a, input, select, textarea, [role="button"] {
+    transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  }
+
+  /* ── Card hover lift ── */
+  .card-hover {
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+                box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .card-hover:hover {
+    transform: translateY(-2px);
+    box-shadow:
+      0 8px 24px oklch(0.50 0.20 265 / 8%),
+      0 2px 8px oklch(0 0 0 / 4%);
+  }
+  .dark .card-hover:hover {
+    box-shadow:
+      0 8px 24px oklch(0 0 0 / 30%),
+      0 2px 8px oklch(0.68 0.18 265 / 8%);
+  }
+
+  /* ── Apple frosted glass ── */
+  .glass {
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+  }
+
+  /* ── Tabular figures for financial data ── */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Scrollbar styling ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.5 0 0 / 20%);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.5 0 0 / 35%);
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background: oklch(1 0 0 / 12%);
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: oklch(1 0 0 / 25%);
+  }
+
+  /* ── Financial color utilities ── */
+  .text-profit { color: oklch(0.62 0.19 155); }
+  .text-loss { color: oklch(0.62 0.20 25); }
+  .bg-profit { background: oklch(0.62 0.19 155 / 12%); }
+  .bg-loss { background: oklch(0.62 0.20 25 / 12%); }
+
+  /* ── Gradient text ── */
+  .gradient-text {
+    background: linear-gradient(135deg, oklch(0.68 0.18 265), oklch(0.62 0.20 330));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
   }
 }

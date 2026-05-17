@@ -32,7 +32,8 @@ class GeminiAnalysisResult:
 class GeminiNewsAnalyzer:
     """Gemini 新闻分析器"""
 
-    def __init__(self, api_key: str, model: str = "gemini-3-flash-preview", timeout: int = 30):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash", timeout: int = 30,
+                 vertexai: bool = False, project: str = "", location: str = ""):
         """
         初始化 Gemini 分析器
 
@@ -40,6 +41,9 @@ class GeminiNewsAnalyzer:
             api_key: Gemini API Key
             model: 模型名称
             timeout: 超时时间（秒）
+            vertexai: 是否使用 Vertex AI 模式
+            project: Vertex AI 项目 ID
+            location: Vertex AI 区域
         """
         self.logger = logging.getLogger(__name__)
         self.api_key = api_key
@@ -51,11 +55,26 @@ class GeminiNewsAnalyzer:
             self.logger.error("google.genai 未安装，无法使用 Gemini 分析")
             return
 
-        try:
-            self.client = genai.Client(api_key=api_key)
-            self.logger.info(f"Gemini 分析器初始化成功，模型: {model}")
-        except Exception as e:
-            self.logger.error(f"Gemini 分析器初始化失败: {e}")
+        # 模式1（优先）: Vertex AI — 使用服务账号凭据（GOOGLE_APPLICATION_CREDENTIALS）
+        if vertexai and project:
+            try:
+                self.client = genai.Client(
+                    vertexai=True,
+                    project=project,
+                    location=location or "us-central1",
+                )
+                self.logger.info(f"Gemini 新闻分析器初始化成功 (Vertex AI), 模型: {model}, project={project}")
+                return
+            except Exception as e:
+                self.logger.warning(f"Vertex AI 初始化失败 ({e})，降级到标准 API Key 模式")
+
+        # 模式2（降级）: 标准 API Key
+        if api_key:
+            try:
+                self.client = genai.Client(api_key=api_key)
+                self.logger.info(f"Gemini 新闻分析器初始化成功 (标准 API Key), 模型: {model}")
+            except Exception as e:
+                self.logger.error(f"Gemini 新闻分析器初始化失败: {e}")
 
     def is_available(self) -> bool:
         """检查 Gemini 是否可用"""
@@ -152,7 +171,7 @@ class GeminiNewsAnalyzer:
         return prompt
 
     async def _call_gemini_api(self, prompt: str) -> Optional[str]:
-        """调用 Gemini API"""
+        """调用 Gemini API（含 Vertex AI 运行时降级）"""
         try:
             # 使用新的 google.genai API（同步调用，在 executor 中运行）
             import asyncio
@@ -172,6 +191,31 @@ class GeminiNewsAnalyzer:
             return response.text.strip()
 
         except Exception as e:
+            err_msg = str(e)
+            # Vertex AI 凭据/权限错误 → 运行时降级到标准 API Key
+            if self.api_key and ("credentials" in err_msg.lower()
+                                 or "default credentials" in err_msg.lower()
+                                 or "API_KEY_INVALID" in err_msg
+                                 or "PERMISSION_DENIED" in err_msg
+                                 or "API Key not found" in err_msg):
+                self.logger.warning(f"Vertex AI 调用失败 ({e})，运行时降级到标准 API Key")
+                try:
+                    self.client = genai.Client(api_key=self.api_key)
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: self.client.models.generate_content(
+                            model=self.model_name,
+                            contents=prompt
+                        )
+                    )
+                    if response and response.text:
+                        return response.text.strip()
+                except Exception as fallback_e:
+                    self.logger.error(f"标准 API Key 降级也失败: {fallback_e}")
+                    return None
+
             self.logger.error(f"调用 Gemini API 失败: {e}")
             return None
 

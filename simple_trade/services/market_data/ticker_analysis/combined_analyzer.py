@@ -89,18 +89,6 @@ class CombinedAnalyzer:
         quote = quote or {}
         current_price = get_last_price(quote)
 
-        # 从 StateManager 获取 Scalping 指标（可选消费，无数据时不影响分析）
-        scalping_delta = None
-        scalping_delta_direction = None
-        try:
-            from ....core.state import get_state_manager
-            metrics = get_state_manager().get_scalping_metrics(stock_code)
-            if metrics is not None:
-                scalping_delta = metrics.delta
-                scalping_delta_direction = metrics.delta_direction
-        except Exception:
-            pass  # StateManager 不可用时静默降级
-
         # 并行调用挂单分析和成交分析
         ob_result, ticker_result = await asyncio.gather(
             self._ob_analyzer.analyze(
@@ -109,8 +97,6 @@ class CombinedAnalyzer:
             self._ticker_analyzer.analyze(
                 stock_code, current_price, quote=quote,
                 avg_daily_turnover=avg_daily_turnover,
-                scalping_delta=scalping_delta,
-                scalping_delta_direction=scalping_delta_direction,
             ),
         )
 

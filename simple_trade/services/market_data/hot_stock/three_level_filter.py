@@ -23,7 +23,8 @@ class ThreeLevelFilter:
         self,
         db_manager: DatabaseManager,
         heat_calculator: StockHeatCalculator,
-        config: Dict[str, Any]
+        config: Dict[str, Any],
+        container=None  # 新增：容器引用，用于访问流动性计算器
     ):
         """
         初始化三级过滤器
@@ -32,10 +33,12 @@ class ThreeLevelFilter:
             db_manager: 数据库管理器
             heat_calculator: 热度计算器
             config: 三级过滤配置
+            container: 服务容器（可选）
         """
         self.db_manager = db_manager
         self.heat_calculator = heat_calculator
         self.config = config
+        self.container = container
         self.logger = logging.getLogger(__name__)
 
     def apply_three_level_filter(
@@ -146,16 +149,43 @@ class ThreeLevelFilter:
             if not HotStockFilter.check_stock_activity(stock_code, quote, thresholds):
                 continue
 
+            # 新增：流动性评分检查（从缓存读取，由 high_turnover_enricher 预计算）
+            if self.container:
+                from ....core import get_state_manager
+                state = get_state_manager()
+                cache_data = state.high_turnover_cache.get(stock_code)
+                if cache_data:
+                    liquidity_score = cache_data.get('liquidity_score', 50)
+                    liquidity_level = cache_data.get('liquidity_level', 'B')
+                    is_volume_anomaly = cache_data.get('is_volume_anomaly', False)
+
+                    # 流动性评分不达标则过滤（D级以下）
+                    if liquidity_score < 30:
+                        self.logger.debug(f"流动性评分不达标 {stock_code}: {liquidity_score} ({liquidity_level}级)")
+                        continue
+
+                    # 附加流动性数据到结果
+                    quote['liquidity_score'] = liquidity_score
+                    quote['liquidity_level'] = liquidity_level
+                    quote['is_volume_anomaly'] = is_volume_anomaly
+
             filtered_stocks.append({
                 'code': stock_code,
                 'quote': quote
             })
 
-        # 按热度排序，取前N只
-        filtered_stocks.sort(
-            key=lambda x: x['quote'].get('volume_ratio', 0) * x['quote'].get('turnover_rate', 0),
-            reverse=True
-        )
+        # 按流动性评分排序（如果有），否则按热度排序
+        if filtered_stocks and 'liquidity_score' in filtered_stocks[0]['quote']:
+            filtered_stocks.sort(
+                key=lambda x: x['quote'].get('liquidity_score', 0),
+                reverse=True
+            )
+        else:
+            # 按热度排序，取前N只
+            filtered_stocks.sort(
+                key=lambda x: x['quote'].get('volume_ratio', 0) * x['quote'].get('turnover_rate', 0),
+                reverse=True
+            )
         return filtered_stocks[:target_count]
 
     def _level2_capital_filter(self, level1_stocks: List[Dict], quote_data: Dict = None) -> List[Dict]:
@@ -220,17 +250,13 @@ class ThreeLevelFilter:
         - 涨幅范围（按市场区分，资金强确认时放宽上限）
         - 板块强度 >= 70
         """
-        if not hasattr(self.heat_calculator, 'enhanced_calculator') or not self.heat_calculator.enhanced_calculator:
-            self.logger.warning("增强热度计算器未初始化，跳过第三级筛选")
-            return level2_stocks[:20]
-
         level3_config = self.config.get('level3_position', {})
         target_count = level3_config.get('target_count', 20)
 
-        # 按市场区分的涨幅范围（可配置，有默认值）
+        # 按市场区分的涨幅范围（可配置，有默认值，已放宽适配无涨跌停市场）
         market_change_ranges = level3_config.get('market_change_ranges', {})
-        default_min_change = level3_config.get('min_change_pct', 2.5)
-        default_max_change = level3_config.get('max_change_pct', 5.0)
+        default_min_change = level3_config.get('min_change_pct', 1.0)
+        default_max_change = level3_config.get('max_change_pct', 10.0)
 
         # 资金强确认的涨幅上限放宽倍数
         capital_boost_ratio = level3_config.get('capital_boost_ratio', 1.5)
@@ -264,12 +290,12 @@ class ThreeLevelFilter:
             if not (min_change <= change_rate <= max_change):
                 continue
 
-            # 价格位置检查（如果有K线数据）
+            # 价格位置检查（使用 SnapshotBuilder 静态方法，不再依赖 enhanced_calculator）
             if kline:
-                price_position = self.heat_calculator.enhanced_calculator._calculate_price_position(
-                    stock_code, quote, kline
-                )
-                if price_position:
+                from ....services.analysis.signal.snapshot_builder import SnapshotBuilder
+                current_price = quote.get('last_price') or quote.get('cur_price', 0)
+                price_position = SnapshotBuilder._calc_price_position(current_price, kline, days=30)
+                if price_position is not None:
                     max_position = level3_config.get('max_price_position', 40)
                     if price_position > max_position:
                         continue

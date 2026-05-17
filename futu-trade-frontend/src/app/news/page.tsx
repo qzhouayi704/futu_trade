@@ -260,30 +260,61 @@ export default function NewsPage() {
     loadData();
   }, [loadData]);
 
+  // 抓取状态信息
+  const [crawlStatus, setCrawlStatus] = useState<string>("");
+
   const handleCrawl = async (debug: boolean = false) => {
     setCrawling(true);
+    setCrawlStatus("正在启动抓取...");
     try {
-      const result = await newsApi.triggerCrawl(50, debug);
-      if (result.success) {
-        const newCount = result.data?.new_count || 0;
-        const crawledCount = result.data?.crawled_count || 0;
+      await newsApi.triggerCrawl(50, debug);
+      setCrawlStatus("数据抓取中，请稍后查看...");
 
-        if (newCount === 0 && crawledCount > 0) {
-          alert(`抓取完成，但所有新闻都已存在（共抓取 ${crawledCount} 条）`);
-        } else {
-          alert(`抓取完成！\n- 抓取: ${crawledCount} 条\n- 新增: ${newCount} 条`);
+      // 轮询状态，每3秒检查一次
+      const pollInterval = setInterval(async () => {
+        try {
+          const statusRes = await newsApi.getStatus();
+          if (statusRes.success && statusRes.data) {
+            const { is_crawling, last_crawl_result } = statusRes.data;
+            if (!is_crawling) {
+              clearInterval(pollInterval);
+              setCrawling(false);
+              if (last_crawl_result) {
+                const newCount = last_crawl_result.new_count || 0;
+                const crawledCount = last_crawl_result.crawled_count || 0;
+                if (newCount === 0 && crawledCount > 0) {
+                  setCrawlStatus(`抓取完成，所有新闻已是最新（共 ${crawledCount} 条）`);
+                } else {
+                  setCrawlStatus(`抓取完成！新增 ${newCount} 条，共抓取 ${crawledCount} 条`);
+                }
+              } else {
+                setCrawlStatus("抓取完成");
+              }
+              // 自动刷新数据
+              loadData();
+              // 5秒后清除状态消息
+              setTimeout(() => setCrawlStatus(""), 5000);
+            }
+          }
+        } catch {
+          // 轮询失败不中断，继续等待
         }
-        loadData();
-      } else {
-        // 显示详细的错误信息
-        const errorMsg = result.message || "抓取失败";
-        alert(`抓取失败\n\n原因：${errorMsg}\n\n建议：\n- 检查网络连接\n- 稍后重试\n- 如果问题持续，请联系管理员`);
-      }
-    } catch (error) {
-      console.error("抓取失败:", error);
-      alert(`抓取失败\n\n原因：无法连接到后端服务\n\n建议：\n- 确认后端服务正在运行（端口 5001）\n- 检查网络连接\n- 查看浏览器控制台获取详细错误`);
-    } finally {
+      }, 10000);
+
+      // 最长等待 3 分钟后放弃轮询
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        if (crawling) {
+          setCrawling(false);
+          setCrawlStatus("抓取超时，请刷新页面查看结果");
+          setTimeout(() => setCrawlStatus(""), 5000);
+        }
+      }, 180000);
+
+    } catch {
       setCrawling(false);
+      setCrawlStatus("启动抓取失败，请检查后端服务是否运行");
+      setTimeout(() => setCrawlStatus(""), 5000);
     }
   };
 
@@ -319,6 +350,25 @@ export default function NewsPage() {
           </Button>
         </div>
       </div>
+
+      {/* 抓取状态提示 */}
+      {crawlStatus && (
+        <div className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium ${
+          crawling
+            ? "bg-blue-50 text-blue-700 border border-blue-200"
+            : crawlStatus.includes("失败") || crawlStatus.includes("超时")
+            ? "bg-red-50 text-red-700 border border-red-200"
+            : "bg-green-50 text-green-700 border border-green-200"
+        }`}>
+          {crawling && (
+            <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+          )}
+          {crawlStatus}
+        </div>
+      )}
 
       {/* 顶部卡片区域 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -69,5 +69,7 @@ class KlineData:
             'open_price': self.open_price,
             'high_price': self.high_price,
             'low_price': self.low_price,
-            'close_price': self.close_price
+            'close_price': self.close_price,
+            'turnover': self.turnover,
+            'turnover_rate': self.turnover_rate,
         }

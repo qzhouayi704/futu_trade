@@ -26,6 +26,9 @@ class MarketContext:
     plate_strength: float = 50.0        # 板块强势度 (0-100)
     turnover_rate: float = 0.0          # 当日换手率 (%)
     avg_turnover_rate: float = 0.0      # 近 5 日平均换手率 (%)
+    liquidity_level: str = 'B'          # 流动性等级 A/B/C/D
+    liquidity_score: float = 50.0       # 流动性评分 (0-100)
+    stock_tag_label: str = '正常'       # 股票行为标签（控盘检测）
 
 
 @dataclass
@@ -42,7 +45,7 @@ class DynamicStopLossConfig:
     capital_adjust_range: float = 1.5       # 资金调整幅度 (%)
     big_order_adjust_range: float = 1.0     # 大单调整幅度 (%)
 
-    # 极限值（安全边界）—— 按交易类型区分
+    # 极限值（安全边界）—— 按交易类型区分（B级默认值）
     min_stop_loss_pct: float = -8.0         # 短线最大止损不超过 -8%
     max_stop_loss_pct: float = -2.0         # 最小止损不低于 -2%
     min_target_profit_pct: float = 5.0      # 最低止盈目标
@@ -54,6 +57,35 @@ class DynamicStopLossConfig:
 
     # 交易类型: "intraday" | "swing"
     trade_type: str = "swing"
+
+
+# 流动性等级对应的安全边界调整
+LIQUIDITY_BOUNDS = {
+    'A': {  # 高流动性：滑点小，止损更紧，止盈更低
+        'base_stop_loss_pct': -4.0,
+        'base_target_profit_pct': 6.0,
+        'min_stop_loss_pct': -6.0, 'max_stop_loss_pct': -2.0,
+        'min_target_profit_pct': 4.0, 'max_target_profit_pct': 10.0,
+    },
+    'B': {  # 中等流动性：默认值
+        'base_stop_loss_pct': -5.0,
+        'base_target_profit_pct': 8.0,
+        'min_stop_loss_pct': -8.0, 'max_stop_loss_pct': -2.0,
+        'min_target_profit_pct': 5.0, 'max_target_profit_pct': 12.0,
+    },
+    'C': {  # 低流动性：波动大，止损更宽，止盈更高
+        'base_stop_loss_pct': -7.0,
+        'base_target_profit_pct': 10.0,
+        'min_stop_loss_pct': -10.0, 'max_stop_loss_pct': -3.0,
+        'min_target_profit_pct': 6.0, 'max_target_profit_pct': 15.0,
+    },
+    'D': {  # 极低流动性：等同C级
+        'base_stop_loss_pct': -7.0,
+        'base_target_profit_pct': 10.0,
+        'min_stop_loss_pct': -10.0, 'max_stop_loss_pct': -3.0,
+        'min_target_profit_pct': 6.0, 'max_target_profit_pct': 15.0,
+    },
+}
 
 
 class DynamicStopLossStrategy:
@@ -72,12 +104,14 @@ class DynamicStopLossStrategy:
         capital_analyzer=None,
         big_order_tracker=None,
         realtime_query=None,
+        quote_cache=None,
         config: DynamicStopLossConfig = None
     ):
         self.market_heat_monitor = market_heat_monitor
         self.capital_analyzer = capital_analyzer
         self.big_order_tracker = big_order_tracker
         self.realtime_query = realtime_query
+        self.quote_cache = quote_cache
         self.config = config or DynamicStopLossConfig()
         self.logger = logging.getLogger(__name__)
 
@@ -108,25 +142,26 @@ class DynamicStopLossStrategy:
             f"资金={context.net_inflow_ratio:.3f}, "
             f"大单={context.big_order_strength:.3f}, "
             f"换手率={context.turnover_rate:.2f}%/"
-            f"均值{context.avg_turnover_rate:.2f}%)"
+            f"均值{context.avg_turnover_rate:.2f}%, "
+            f"流动性={context.liquidity_level}/{context.liquidity_score:.0f})"
         )
 
-        return self._apply_adjustment(adjustment_factor)
+        return self._apply_adjustment(adjustment_factor, context.liquidity_level)
 
     def _calculate_adjustment_factor(self, context: MarketContext) -> float:
         """
         计算综合调整因子
 
-        四个维度：热度 35% + 资金 30% + 大单 20% + 换手率 15%
+        五个维度：热度 30% + 资金 25% + 大单 20% + 换手率 10% + 流动性 15%
 
         Returns:
             -1 ~ 1 的调整因子
         """
-        # 1. 市场热度因子 (权重 35%)
+        # 1. 市场热度因子 (权重 30%)
         heat_factor = (context.market_heat - 50) / 50
         heat_factor = max(-1.0, min(1.0, heat_factor))
 
-        # 2. 资金流向因子 (权重 30%)
+        # 2. 资金流向因子 (权重 25%)
         capital_factor = 0.0
         if context.capital_continuity and context.net_inflow_ratio > 0:
             capital_factor = min(context.net_inflow_ratio * 2, 1.0)
@@ -136,7 +171,7 @@ class DynamicStopLossStrategy:
         # 3. 大单强度因子 (权重 20%)
         big_order_factor = max(-1.0, min(1.0, context.big_order_strength))
 
-        # 4. 换手率因子 (权重 15%)
+        # 4. 换手率因子 (权重 10%)
         # 高换手率 + 下跌 → 收紧（出货信号）
         # 低换手率 + 下跌 → 放宽（洗盘信号）
         turnover_factor = 0.0
@@ -151,40 +186,71 @@ class DynamicStopLossStrategy:
             elif relative_turnover < 0.5:
                 turnover_factor = 0.3
 
-        # 加权综合
+        # 5. 流动性因子 (权重 15%)
+        # A级高流动性 → 收紧止损(+0.4)，C级低流动性 → 放宽止损(-0.5)
+        liquidity_factor = {
+            'A': 0.4, 'B': 0.0, 'C': -0.5, 'D': -0.5,
+        }.get(context.liquidity_level, 0.0)
+
+        # 6. 股票标签因子 — 控盘/仙股收紧，正常不调整
+        tag_factor = {
+            '锁仓控盘': -0.6,   # 少量资金操控，收紧
+            '暴量拉升': -0.4,   # 暴力拉升后可能砸盘，收紧
+            '仙股炒作': -0.8,   # 极高风险，强收紧
+            '明星高波动': 0.0,  # 正常高波动，不调整
+            '正常': 0.0,
+        }.get(context.stock_tag_label, 0.0)
+
+        # 加权综合（新增标签因子 10%，其他权重微调）
         factor = (
-            heat_factor * 0.35 +
-            capital_factor * 0.30 +
-            big_order_factor * 0.20 +
-            turnover_factor * 0.15
+            heat_factor * 0.25 +
+            capital_factor * 0.25 +
+            big_order_factor * 0.15 +
+            turnover_factor * 0.10 +
+            liquidity_factor * 0.15 +
+            tag_factor * 0.10
         )
 
         return max(-1.0, min(1.0, factor))
 
-    def _apply_adjustment(self, factor: float) -> RiskConfig:
+    def _apply_adjustment(self, factor: float,
+                          liquidity_level: str = 'B') -> RiskConfig:
         """
         将调整因子应用到风险配置
 
         factor > 0: 放宽（止损更宽，止盈更高）
         factor < 0: 收紧（止损更紧，止盈更低）
+
+        安全边界根据流动性等级自适应：
+        - A级：止损-2%~-6%，止盈4%~10%
+        - B级：止损-2%~-8%，止盈5%~12%（默认）
+        - C级：止损-3%~-10%，止盈6%~15%
         """
         cfg = self.config
+        liq_bounds = LIQUIDITY_BOUNDS.get(liquidity_level, LIQUIDITY_BOUNDS['B'])
+
+        # 根据流动性等级选择基础参数
+        base_sl = liq_bounds['base_stop_loss_pct']
+        base_tp = liq_bounds['base_target_profit_pct']
 
         # 根据交易类型选择安全边界
         if cfg.trade_type == "intraday":
             min_sl = cfg.intraday_min_stop_loss_pct
             max_sl = cfg.intraday_max_stop_loss_pct
         else:
-            min_sl = cfg.min_stop_loss_pct
-            max_sl = cfg.max_stop_loss_pct
+            min_sl = liq_bounds['min_stop_loss_pct']
+            max_sl = liq_bounds['max_stop_loss_pct']
+
+        min_tp = liq_bounds['min_target_profit_pct']
+        max_tp = liq_bounds['max_target_profit_pct']
 
         # 止损调整：factor > 0 → 止损更宽（更负），factor < 0 → 止损更紧（更接近0）
-        stop_loss = cfg.base_stop_loss_pct - (factor * cfg.heat_adjust_range)
+        stop_loss = base_sl - (factor * cfg.heat_adjust_range)
         stop_loss = max(min_sl, min(max_sl, stop_loss))
 
         # 止盈调整：factor > 0 → 止盈更高，factor < 0 → 止盈更低
-        target_profit = cfg.base_target_profit_pct + (factor * cfg.heat_adjust_range)
-        target_profit = max(cfg.min_target_profit_pct, min(cfg.max_target_profit_pct, target_profit))
+        target_profit = base_tp + (factor * cfg.heat_adjust_range)
+        target_profit = max(min_tp, min(max_tp, target_profit))
 
         # 移动止盈触发调整
         trailing_trigger = cfg.base_trailing_trigger_pct + (factor * cfg.capital_adjust_range)
@@ -220,7 +286,8 @@ class DynamicStopLossStrategy:
         # 获取市场热度
         if self.market_heat_monitor:
             try:
-                context.market_heat = self.market_heat_monitor.calculate_market_heat()
+                quotes = self.quote_cache.get_cached_quotes() if self.quote_cache else None
+                context.market_heat = self.market_heat_monitor.calculate_market_heat(quotes)
             except Exception as e:
                 self.logger.warning(f"获取市场热度失败: {e}")
 

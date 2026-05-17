@@ -21,8 +21,8 @@ from ....utils.converters import safe_float
 class CacheTTL:
     """资金流缓存时效常量（秒）"""
     REALTIME = 60       # 实时场景（日内交易）
-    SCREENING = 300     # 筛选场景（策略筛选）
-    DASHBOARD = 900     # 仪表盘场景（默认，与原 15 分钟一致）
+    SCREENING = 180     # 筛选场景（策略筛选）
+    DASHBOARD = 180     # 仪表盘场景（3分钟，平衡新鲜度与API频率）
 
 
 @dataclass
@@ -38,7 +38,7 @@ class ContinuityResult:
 class CapitalFlowAnalyzer:
     """资金流向分析器"""
 
-    def __init__(self, futu_client=None, db_manager=None, config: dict = None, *, ctx=None):
+    def __init__(self, futu_client=None, db_manager=None, config: dict = None, *, ctx=None, baseline_service=None):
         """
         初始化资金流向分析器
 
@@ -47,6 +47,7 @@ class CapitalFlowAnalyzer:
             futu_client: 富途API客户端（向后兼容）
             db_manager: 数据库管理器（向后兼容）
             config: 配置字典（向后兼容）
+            baseline_service: 历史基准服务（可选，用于动态阈值）
         """
         if ctx is not None:
             self.futu_client = ctx.futu_client
@@ -57,7 +58,8 @@ class CapitalFlowAnalyzer:
             self.db_manager = db_manager
             self.config = (config or {}).get('enhanced_heat_config', {})
         self.capital_config = self.config.get('capital_flow_config', {})
-        self.cache_duration = self.config.get('cache_duration', {}).get('capital_flow', 900)
+        self.cache_duration = self.config.get('cache_duration', {}).get('capital_flow', 180)
+        self._baseline = baseline_service
 
         # 配置参数
         self.min_net_inflow_ratio = self.capital_config.get('min_net_inflow_ratio', 0.1)
@@ -112,6 +114,26 @@ class CapitalFlowAnalyzer:
                 daemon=True,
             ).start()
 
+        return result
+
+    def batch_read_cache_only(
+        self, stock_codes: List[str], cache_ttl: Optional[int] = None,
+    ) -> Dict[str, dict]:
+        """纯缓存批量读取（不调 API），供 API 请求链路使用
+
+        Args:
+            stock_codes: 股票代码列表
+            cache_ttl: 缓存有效期（秒），None 使用默认值
+
+        Returns:
+            {stock_code: {资金流向数据}} 字典，缺失的股票不在结果中
+        """
+        effective_ttl = cache_ttl if cache_ttl is not None else self.cache_duration
+        result = {}
+        for stock_code in stock_codes:
+            cached_data = self._get_cached_capital_flow(stock_code, cache_ttl=effective_ttl)
+            if cached_data:
+                result[stock_code] = cached_data
         return result
 
     def _fetch_from_api(self, stock_code: str) -> Optional[dict]:
@@ -193,7 +215,7 @@ class CapitalFlowAnalyzer:
 
             if rows and len(rows) > 0:
                 row = rows[0]
-                return {
+                data = {
                     'stock_code': row[1],
                     'timestamp': datetime.fromisoformat(row[2]),
                     'main_net_inflow': row[3],
@@ -207,8 +229,10 @@ class CapitalFlowAnalyzer:
                     'small_outflow': row[11],
                     'net_inflow_ratio': row[12],
                     'big_order_buy_ratio': row[13],
-                    'capital_score': row[14]
+                    'capital_score': row[14],
+                    'inflow_change': row[16] if len(row) > 16 else 0,
                 }
+                return data
 
             return None
 
@@ -219,6 +243,24 @@ class CapitalFlowAnalyzer:
     def _save_to_cache(self, stock_code: str, capital_data: dict):
         """保存资金流向数据到缓存"""
         try:
+            # 读取上一轮缓存值（跳过最新1条，取倒数第2条），计算实时变化量
+            try:
+                rows = self.db_manager.execute_query("""
+                    SELECT main_net_inflow FROM capital_flow_cache
+                    WHERE stock_code = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 1 OFFSET 1
+                """, (stock_code,))
+                if rows and rows[0][0] is not None:
+                    capital_data['inflow_change'] = capital_data['main_net_inflow'] - rows[0][0]
+                else:
+                    capital_data['inflow_change'] = 0.0
+            except Exception:
+                capital_data['inflow_change'] = 0.0
+
+            if abs(capital_data['inflow_change']) > 10000:
+                logging.info(f"[资金Delta] {stock_code}: 变化 {capital_data['inflow_change']/1e4:.0f}万")
+
             # 计算资金评分
             capital_score = self.calculate_capital_score(capital_data)
             capital_data['capital_score'] = capital_score
@@ -227,8 +269,9 @@ class CapitalFlowAnalyzer:
                 INSERT OR REPLACE INTO capital_flow_cache
                 (stock_code, timestamp, main_net_inflow, super_large_inflow, large_inflow,
                  medium_inflow, small_inflow, super_large_outflow, large_outflow,
-                 medium_outflow, small_outflow, net_inflow_ratio, big_order_buy_ratio, capital_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 medium_outflow, small_outflow, net_inflow_ratio, big_order_buy_ratio, capital_score,
+                 inflow_change)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 stock_code,
                 capital_data['timestamp'].isoformat(),
@@ -243,7 +286,8 @@ class CapitalFlowAnalyzer:
                 capital_data['small_outflow'],
                 capital_data['net_inflow_ratio'],
                 capital_data['big_order_buy_ratio'],
-                capital_score
+                capital_score,
+                capital_data.get('inflow_change', 0)
             ))
 
         except Exception as e:
@@ -251,42 +295,99 @@ class CapitalFlowAnalyzer:
 
     def calculate_capital_score(self, capital_data: dict) -> float:
         """
-        计算资金评分（v2：50 分基准 + 三维偏移）
+        计算资金评分（v3：50 分基准 + 四维偏移）
 
         评分公式：
-        total = 50 + net_flow_offset(±20) + order_structure_offset(±15) + continuity_offset(±15)
+        total = 50 + net_flow_offset(±20) + order_structure_offset(±15)
+                   + continuity_offset(±15) + order_consistency_offset(-10~+5)
 
         Returns:
             0-100 的评分
         """
         # 维度 1：主力净流入方向 (±20)
         net_inflow_ratio = capital_data.get('net_inflow_ratio', 0)
-        net_flow_off = self._net_flow_offset(net_inflow_ratio)
+        stock_code = capital_data.get('stock_code', '')
+        net_flow_off = self._net_flow_offset(net_inflow_ratio, stock_code=stock_code)
 
         # 维度 2：大单买入占比 (±15)
         big_order_ratio = capital_data.get('big_order_buy_ratio', 0.5)
         order_off = self._order_structure_offset(big_order_ratio)
 
         # 维度 3：多日资金持续性 (±15)
-        stock_code = capital_data.get('stock_code', '')
         cont_off = self._continuity_offset(stock_code)
 
-        total = 50 + net_flow_off + order_off + cont_off
+        # 维度 4：超大单/大单方向一致性 (-10 ~ +5)
+        consistency_off = self._order_consistency_offset(capital_data)
+
+        total = 50 + net_flow_off + order_off + cont_off + consistency_off
         score = round(max(0, min(100, total)), 2)
-        logging.info(f"[资金评分v2] {stock_code}: flow={net_flow_off:+.1f} order={order_off:+.1f} cont={cont_off:+.1f} => {score}")
+        logging.info(
+            f"[资金评分v3] {stock_code}: flow={net_flow_off:+.1f} order={order_off:+.1f} "
+            f"cont={cont_off:+.1f} consist={consistency_off:+.1f} => {score}"
+        )
         return score
 
-    @staticmethod
-    def _net_flow_offset(ratio: float) -> float:
-        """净流入占比 -> ±20 偏移（满偏范围 ±0.15）"""
-        clamped = max(-0.15, min(0.15, ratio))
-        return round(clamped / 0.15 * 20, 2)
+    def _net_flow_offset(self, ratio: float, stock_code: str = "") -> float:
+        """净流入占比 -> ±20 偏移
+
+        满偏范围优先使用历史基准的 p75，冷启动降级到0.15。
+        """
+        full_scale = 0.15  # 默认满偏范围
+        if self._baseline and stock_code:
+            baseline_p75 = self._baseline.get_threshold(
+                stock_code, "net_inflow_ratio", "p75",
+                fallback=None,
+            )
+            if baseline_p75 is not None and baseline_p75 > 0:
+                full_scale = baseline_p75
+        clamped = max(-full_scale, min(full_scale, ratio))
+        return round(clamped / full_scale * 20, 2)
 
     @staticmethod
     def _order_structure_offset(buy_ratio: float) -> float:
         """大单买入占比 -> ±15 偏移（0.30~0.70 映射，0.50 为中性）"""
         clamped = max(0.30, min(0.70, buy_ratio))
         return round((clamped - 0.50) / 0.20 * 15, 2)
+
+    @staticmethod
+    def _order_consistency_offset(capital_data: dict) -> float:
+        """超大单/大单方向一致性 -> -10 ~ +5 偏移
+
+        当超大单和大单净流向方向一致时给予小幅正向奖励（+5），
+        方向相反时施加惩罚（最大 -10），惩罚强度与分歧程度成正比。
+
+        典型场景：超大单大量流入 + 大单流出 = 对倒做量嫌疑，降低信号权重。
+        """
+        super_in = capital_data.get('super_large_inflow', 0)
+        super_out = capital_data.get('super_large_outflow', 0)
+        large_in = capital_data.get('large_inflow', 0)
+        large_out = capital_data.get('large_outflow', 0)
+
+        super_net = super_in - super_out
+        large_net = large_in - large_out
+
+        # 如果两者都接近零（无明显方向），不做调整
+        super_total = super_in + super_out
+        large_total = large_in + large_out
+        if super_total == 0 or large_total == 0:
+            return 0.0
+
+        # 归一化净流入比例：净额 / 总额
+        super_ratio = super_net / super_total  # -1 ~ +1
+        large_ratio = large_net / large_total  # -1 ~ +1
+
+        # 方向一致性：同号则为正，异号则为负
+        if super_ratio * large_ratio > 0:
+            # 方向一致 → 奖励（+5），按两者中较弱的一方的强度缩放
+            weaker = min(abs(super_ratio), abs(large_ratio))
+            return round(weaker * 5, 2)
+        elif super_ratio * large_ratio < 0:
+            # 方向背离 → 惩罚（-10），按分歧强度缩放
+            # 分歧强度 = 两个比例的差值绝对值 / 2，范围 0~1
+            divergence = abs(super_ratio - large_ratio) / 2
+            return round(-divergence * 10, 2)
+        else:
+            return 0.0
 
     def _continuity_offset(self, stock_code: str) -> float:
         """多日资金持续性 -> ±15 偏移（仅查 DB，不调 API）"""
@@ -353,13 +454,17 @@ class CapitalFlowAnalyzer:
             logging.info(f"[日线缓存] {stock_code}: 获取到{len(history)}条日线数据")
             for day in history:
                 flow_date = str(day.get('date', ''))[:10]
-                net_inflow = day.get('net_inflow', 0) or day.get('main_net_inflow', 0)
-                total_abs = abs(net_inflow) * 2 if net_inflow != 0 else 1
-                ratio = net_inflow / total_abs if total_abs > 0 else 0
+                main_net = day.get('main_net_inflow', 0) or 0
+                mid_net = day.get('medium_net_inflow', 0) or 0
+                sml_net = day.get('small_net_inflow', 0) or 0
+                net_inflow = day.get('net_inflow', 0) or main_net
+                # 真实比率：主力净流入 / (|主力| + |中单| + |小单|)
+                total_abs = abs(main_net) + abs(mid_net) + abs(sml_net)
+                ratio = main_net / total_abs if total_abs > 0 else 0
                 if flow_date:
                     try:
                         self.db_manager.execute_update("""
-                            INSERT OR IGNORE INTO capital_flow_daily
+                            INSERT OR REPLACE INTO capital_flow_daily
                             (stock_code, date, net_inflow, net_inflow_ratio)
                             VALUES (?, ?, ?, ?)
                         """, (stock_code, flow_date, net_inflow, ratio))

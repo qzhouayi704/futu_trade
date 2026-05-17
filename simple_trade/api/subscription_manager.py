@@ -55,6 +55,7 @@ class SubscriptionManager:
         self._quote_subscribed: Set[str] = set()  # QUOTE 订阅（报价数据）
         self._ticker_subscribed: Set[str] = set()  # TICKER 订阅（逐笔成交）
         self._orderbook_subscribed: Set[str] = set()  # ORDER_BOOK 订阅（盘口深度）
+        self._rt_data_subscribed: Set[str] = set()  # RT_DATA 订阅（分时数据）
 
         # 向后兼容：_subscribed_stocks 指向 _quote_subscribed
         self._subscribed_stocks = self._quote_subscribed
@@ -68,16 +69,21 @@ class SubscriptionManager:
             self._max_quote_subscription = sub_cfg.get('max_quote_subscription', 300)
             self._max_ticker_subscription = sub_cfg.get('max_ticker_subscription', 100)
             self._max_orderbook_subscription = sub_cfg.get('max_orderbook_subscription', 100)
+            self._max_rt_data_subscription = sub_cfg.get('max_rt_data_subscription', 100)
         else:
             self._max_quote_subscription = 300
             self._max_ticker_subscription = 100
             self._max_orderbook_subscription = 100
+            self._max_rt_data_subscription = 100
 
         # 订阅变化回调
         self._on_change_callbacks: List[Callable] = []
         # 异步回调任务引用（防止 GC 回收和异常丢失）
         self._pending_tasks: set = set()
         self.logger = logging.getLogger(__name__)
+
+        # P1-1: 订阅动作埋点
+        self._sub_logger = None
 
         # 初始化验证器和优化器
         self._validator = SubscriptionValidator(futu_client, db_manager)
@@ -202,7 +208,9 @@ class SubscriptionManager:
             return result
 
         # 分批处理订阅
+        t0 = time.time()
         self._optimizer.process_batches(new_stocks, result)
+        duration_ms = (time.time() - t0) * 1000
 
         # 更新内部状态
         if result['successful_stocks']:
@@ -215,6 +223,15 @@ class SubscriptionManager:
             for code in new_successful:
                 self._subscribe_times[code] = now
             self._notify_change()
+
+        # P1-1: 订阅埋点
+        self._log_sub_action(
+            action='subscribe',
+            total=len(stock_codes),
+            success=len(result['successful_stocks']),
+            failed=len(result['failed_stocks']),
+            duration_ms=duration_ms,
+        )
 
         # 构建结果消息
         self._build_summary(result)
@@ -231,7 +248,7 @@ class SubscriptionManager:
             if not stocks_to_unsub:
                 return True
 
-            ret, err_msg = self._futu_client.client.unsubscribe(
+            ret, err_msg = self._futu_client.unsubscribe_stocks(
                 stocks_to_unsub, [SubType.QUOTE]
             )
 
@@ -265,10 +282,12 @@ class SubscriptionManager:
         cleared_quote = len(self._quote_subscribed & codes_set)
         cleared_ticker = len(self._ticker_subscribed & codes_set)
         cleared_orderbook = len(self._orderbook_subscribed & codes_set)
+        cleared_rt_data = len(self._rt_data_subscribed & codes_set)
 
         self._quote_subscribed.difference_update(codes_set)
         self._ticker_subscribed.difference_update(codes_set)
         self._orderbook_subscribed.difference_update(codes_set)
+        self._rt_data_subscribed.difference_update(codes_set)
         # _subscribed_stocks 指向 _quote_subscribed，无需单独更新
 
         for code in stock_codes:
@@ -277,7 +296,7 @@ class SubscriptionManager:
         self.logger.info(
             f"[强制清除] 已清除 {len(stock_codes)} 只股票的内存订阅状态 "
             f"(QUOTE:{cleared_quote}, TICKER:{cleared_ticker}, "
-            f"ORDER_BOOK:{cleared_orderbook})"
+            f"ORDER_BOOK:{cleared_orderbook}, RT_DATA:{cleared_rt_data})"
         )
 
     def unsubscribe_all(self):
@@ -287,7 +306,7 @@ class SubscriptionManager:
 
         try:
             stock_list = list(self._subscribed_stocks)
-            ret, err_msg = self._futu_client.client.unsubscribe(
+            ret, err_msg = self._futu_client.unsubscribe_stocks(
                 stock_list, [SubType.QUOTE]
             )
 
@@ -301,6 +320,128 @@ class SubscriptionManager:
                 self.logger.error(f"取消全部订阅失败: {err_msg}")
         except Exception as e:
             self.logger.error(f"取消全部订阅异常: {e}")
+
+    # ==================== P2-2: 分级订阅恢复 ====================
+
+    def restore_subscriptions_by_priority(self) -> Dict[str, Any]:
+        """P2-2: 分级恢复订阅（P0持仓 → P1策略目标 → P2其他）
+
+        每批间隔 200ms，确保持仓股报价 <1s 恢复。
+
+        Returns:
+            恢复结果
+        """
+        result = {'total': 0, 'success': 0, 'failed': 0, 'batches': []}
+
+        # 从持久化恢复订阅列表
+        saved_codes = self._load_subscription_snapshot()
+        if not saved_codes:
+            self.logger.info("[分级恢复] 无持久化订阅快照，跳过")
+            return result
+
+        # P0: 持仓股（最高优先级）
+        position_codes = self._get_position_codes()
+        p0 = [c for c in saved_codes if c in position_codes]
+
+        # P1: 策略监控目标
+        strategy_codes = self._get_strategy_target_codes()
+        p1 = [c for c in saved_codes if c in strategy_codes and c not in position_codes]
+
+        # P2: 其他
+        p0_p1 = set(p0) | set(p1)
+        p2 = [c for c in saved_codes if c not in p0_p1]
+
+        for priority, batch_name, codes in [(0, 'P0_持仓', p0), (1, 'P1_策略', p1), (2, 'P2_其他', p2)]:
+            if not codes:
+                continue
+            batch_result = self.subscribe(codes)
+            batch_info = {
+                'name': batch_name,
+                'total': len(codes),
+                'success': len(batch_result.get('successful_stocks', [])),
+                'failed': len(batch_result.get('failed_stocks', [])),
+            }
+            result['batches'].append(batch_info)
+            result['total'] += len(codes)
+            result['success'] += batch_info['success']
+            result['failed'] += batch_info['failed']
+
+            self.logger.info(f"[分级恢复] {batch_name}: {batch_info['success']}/{len(codes)}")
+            if priority < 2:
+                time.sleep(0.2)  # 批间间隔 200ms
+
+        return result
+
+    def _get_position_codes(self) -> set:
+        """从数据库获取持仓股代码"""
+        if not self._db_manager:
+            return set()
+        try:
+            # 从 trade_signals 表查持仓
+            conn = self._db_manager.get_connection()
+            cursor = conn.execute(
+                "SELECT DISTINCT stock_code FROM trade_signals WHERE signal_type='BUY' "
+                "ORDER BY created_at DESC LIMIT 50"
+            )
+            return {row[0] for row in cursor.fetchall()}
+        except Exception as e:
+            self.logger.debug(f"获取持仓股代码失败: {e}")
+            return set()
+
+    def _get_strategy_target_codes(self) -> set:
+        """从数据库获取策略监控目标代码"""
+        if not self._db_manager:
+            return set()
+        try:
+            conn = self._db_manager.get_connection()
+            cursor = conn.execute(
+                "SELECT DISTINCT stock_code FROM stock_pool WHERE is_active=1"
+            )
+            return {row[0] for row in cursor.fetchall()}
+        except Exception:
+            return set()
+
+    def save_subscription_snapshot(self):
+        """P2-2: 将当前订阅状态持久化到 SQLite"""
+        if not self._db_manager:
+            return
+        try:
+            conn = self._db_manager.get_connection()
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_snapshot (
+                    type TEXT PRIMARY KEY,
+                    codes TEXT,
+                    updated_at INTEGER
+                )
+            """)
+            import json
+            codes_json = json.dumps(list(self._subscribed_stocks))
+            conn.execute(
+                "INSERT OR REPLACE INTO subscription_snapshot (type, codes, updated_at) "
+                "VALUES (?, ?, ?)",
+                ('QUOTE', codes_json, int(time.time()))
+            )
+            conn.commit()
+            self.logger.debug(f"订阅快照已保存: {len(self._subscribed_stocks)} 只")
+        except Exception as e:
+            self.logger.warning(f"保存订阅快照失败: {e}")
+
+    def _load_subscription_snapshot(self) -> list:
+        """从 SQLite 恢复订阅列表"""
+        if not self._db_manager:
+            return []
+        try:
+            conn = self._db_manager.get_connection()
+            cursor = conn.execute(
+                "SELECT codes FROM subscription_snapshot WHERE type='QUOTE'"
+            )
+            row = cursor.fetchone()
+            if row:
+                import json
+                return json.loads(row[0])
+        except Exception as e:
+            self.logger.debug(f"加载订阅快照失败: {e}")
+        return []
 
     def _init_result(self, total: int) -> Dict[str, Any]:
         """初始化结果字典"""
@@ -456,6 +597,9 @@ class SubscriptionManager:
         elif type_name == 'ORDER_BOOK':
             subscribed_set = self._orderbook_subscribed
             max_quota = self._max_orderbook_subscription
+        elif type_name == 'RT_DATA':
+            subscribed_set = self._rt_data_subscribed
+            max_quota = self._max_rt_data_subscription
         else:
             self.logger.warning(f"不支持的订阅类型: {type_name}")
             return {'success': [], 'failed': stock_codes}
@@ -491,12 +635,8 @@ class SubscriptionManager:
                 time.sleep(0.5)
 
             try:
-                # TICKER/ORDER_BOOK 走 scalping_client（与拉取侧同 context）
-                if type_name in ('TICKER', 'ORDER_BOOK') and hasattr(self._futu_client, 'scalping_client') and self._futu_client.scalping_client:
-                    ctx = self._futu_client.scalping_client
-                else:
-                    ctx = self._futu_client.client
-                ret, err = ctx.subscribe(batch, [sub_type])
+                ret, err = self._futu_client.subscribe_stocks(batch, [sub_type])
+
                 if ret == RET_OK:
                     success_stocks.extend(batch)
                     subscribed_set.update(batch)
@@ -549,6 +689,8 @@ class SubscriptionManager:
             subscribed_set = self._ticker_subscribed
         elif type_name == 'ORDER_BOOK':
             subscribed_set = self._orderbook_subscribed
+        elif type_name == 'RT_DATA':
+            subscribed_set = self._rt_data_subscribed
         else:
             return
 
@@ -559,12 +701,8 @@ class SubscriptionManager:
             return
 
         try:
-            # TICKER/ORDER_BOOK 走 scalping_client（与订阅侧同 context）
-            if type_name in ('TICKER', 'ORDER_BOOK') and hasattr(self._futu_client, 'scalping_client') and self._futu_client.scalping_client:
-                ctx = self._futu_client.scalping_client
-            else:
-                ctx = self._futu_client.client
-            ret, err = ctx.unsubscribe(to_unsubscribe, [sub_type])
+            ret, err = self._futu_client.unsubscribe_stocks(to_unsubscribe, [sub_type])
+
             if ret == RET_OK:
                 subscribed_set.difference_update(to_unsubscribe)
                 self.logger.info(
@@ -596,6 +734,29 @@ class SubscriptionManager:
     def orderbook_subscribed_stocks(self) -> Set[str]:
         """获取已订阅 ORDER_BOOK 的股票"""
         return self._orderbook_subscribed.copy()
+
+    @property
+    def rt_data_subscribed_stocks(self) -> Set[str]:
+        """获取已订阅 RT_DATA 的股票"""
+        return self._rt_data_subscribed.copy()
+
+    def _log_sub_action(self, action: str, total: int, success: int,
+                        failed: int, duration_ms: float):
+        """P1-1: 记录订阅/取消订阅到独立日志文件"""
+        import json
+        if self._sub_logger is None:
+            import os
+            from ..utils.logger import create_dedicated_logger
+            log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
+            self._sub_logger = create_dedicated_logger(
+                'subscription_trace', os.path.join(log_dir, 'subscription.log')
+            )
+        entry = {
+            "flow": "subscription", "action": action,
+            "total": total, "success": success, "failed": failed,
+            "duration_ms": round(duration_ms, 1),
+        }
+        self._sub_logger.info(json.dumps(entry, ensure_ascii=False))
 
 
 # 向后兼容别名

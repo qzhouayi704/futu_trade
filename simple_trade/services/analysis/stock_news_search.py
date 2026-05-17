@@ -35,12 +35,11 @@ class StockNewsSearchService:
             logger.warning("google.genai 未安装，消息面搜索不可用")
             return
 
-        # 模式1（默认）: Vertex AI + API Key
-        if vertexai and project and api_key:
+        # 模式1（默认）: Vertex AI — 使用服务账号凭据（GOOGLE_APPLICATION_CREDENTIALS）
+        if vertexai and project:
             try:
                 self.client = genai.Client(
                     vertexai=True,
-                    api_key=api_key,
                     project=project,
                     location=location or "us-central1",
                 )
@@ -103,6 +102,30 @@ class StockNewsSearchService:
             return self._parse_response(response.text)
 
         except Exception as e:
+            err_msg = str(e)
+            # Vertex AI 凭据/配额错误 → 运行时降级到标准 API Key
+            if self.api_key and ("credentials" in err_msg.lower()
+                                 or "default credentials" in err_msg.lower()
+                                 or "PERMISSION_DENIED" in err_msg
+                                 or "quota" in err_msg.lower()):
+                logger.warning(f"Vertex AI 调用失败 ({e})，运行时降级到标准 API Key")
+                try:
+                    self.client = genai.Client(api_key=self.api_key)
+                    response = await loop.run_in_executor(None, lambda: self.client.models.generate_content(
+                        model=self.model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            tools=[types.Tool(google_search=types.GoogleSearch())],
+                            temperature=0.2,
+                            thinking_config=types.ThinkingConfig(thinking_budget=0),
+                        )
+                    ))
+                    if response and response.text:
+                        return self._parse_response(response.text)
+                except Exception as fallback_e:
+                    logger.error(f"标准 API Key 降级也失败: {fallback_e}")
+                    return self._empty_result(str(fallback_e))
+
             logger.error(f"Gemini 搜索失败 {stock_code}: {e}")
             return self._empty_result(str(e))
 

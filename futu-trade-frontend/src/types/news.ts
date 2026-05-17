@@ -56,6 +56,7 @@ export interface InvestmentSuggestion {
 export interface NewsStatus {
   is_crawling: boolean;
   last_crawl_time?: string;
+  last_crawl_result?: CrawlResult;
   crawler_available: boolean;
 }
 

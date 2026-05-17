@@ -15,20 +15,28 @@ def analyze_trend(
     current_open: float,
 ) -> TrendAnalysis:
     """
-    分析趋势
+    分析趋势（日线级别）
+
+    核心修正：使用最后一根已完成K线（昨日收盘价）计算涨跌幅和反转信号，
+    而非日内实时价。避免盘中短暂反弹触发虚假信号后又被行情否定。
 
     Args:
-        lookback_data: 回看期间的K线数据
-        current_price: 当前价格
-        current_high: 当日最高价
-        current_low: 当日最低价
-        current_open: 当日开盘价
+        lookback_data: 回看期间的K线数据（已完成的日线）
+        current_price: 当前价格（仅存储，不参与信号判定）
+        current_high: 当日最高价（仅存储，不参与信号判定）
+        current_low: 当日最低价（仅存储，不参与信号判定）
+        current_open: 当日开盘价（仅存储，不参与信号判定）
     """
     trend = TrendAnalysis()
     trend.current_price = current_price
 
     if not lookback_data:
         return trend
+
+    # 日线级别：使用最后一根已完成K线（昨日）的收盘价作为参考价
+    last_candle = lookback_data[-1]
+    ref_price = last_candle.get('close', current_price)
+    ref_open = last_candle.get('open', 0)
 
     # 统计涨跌天数（根据K线实体方向：收盘价 vs 开盘价）
     for day in lookback_data:
@@ -51,11 +59,11 @@ def analyze_trend(
     trend.period_high = max(highs) if highs else 0
     trend.period_low = min(lows) if lows else 0
 
-    # 计算跌幅和涨幅
+    # 计算跌幅和涨幅 — 基于昨日收盘价（已完成的日线）
     if trend.period_high > 0:
-        trend.drop_from_high = ((trend.period_high - current_price) / trend.period_high) * 100
+        trend.drop_from_high = ((trend.period_high - ref_price) / trend.period_high) * 100
     if trend.period_low > 0:
-        trend.rise_from_low = ((current_price - trend.period_low) / trend.period_low) * 100
+        trend.rise_from_low = ((ref_price - trend.period_low) / trend.period_low) * 100
 
     # 判断趋势方向
     if trend.down_ratio >= 0.6:
@@ -68,12 +76,12 @@ def analyze_trend(
         trend.trend_direction = "SIDEWAYS"
         trend.trend_strength = max(trend.up_ratio, trend.down_ratio)
 
-    # 计算反转信号（今日K线方向）
-    today_is_up = current_price > current_open if current_open > 0 else False
-    if trend.trend_direction == "DOWN" and today_is_up:
+    # 计算反转信号 — 基于昨日K线方向（已完成的日线）
+    yesterday_is_up = ref_price > ref_open if ref_open > 0 else False
+    if trend.trend_direction == "DOWN" and yesterday_is_up:
         trend.reversal_signal = trend.rise_from_low
         trend.is_buy_reversal = True
-    elif trend.trend_direction == "UP" and not today_is_up:
+    elif trend.trend_direction == "UP" and not yesterday_is_up:
         trend.reversal_signal = trend.drop_from_high
         trend.is_sell_reversal = True
 

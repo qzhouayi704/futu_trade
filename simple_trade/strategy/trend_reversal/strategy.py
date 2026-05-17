@@ -32,12 +32,12 @@ class TrendReversalStrategy(BaseStrategy):
     DEFAULT_MIN_REVERSAL_PCT = 2.0
     DEFAULT_MAX_UP_RATIO_BUY = 0.4
     DEFAULT_MIN_UP_RATIO_SELL = 0.6
-    DEFAULT_STOP_LOSS_PCT = -10.0
-    DEFAULT_STOP_LOSS_DAYS = 5
-    # 追踪止盈参数（回测验证）
-    TRAILING_ACTIVATE_PCT = 8.0   # 涨幅达此值激活追踪
-    TRAILING_DRAWDOWN_PCT = 3.0   # 从峰值回撤此值卖出
-    MAX_HOLD_DAYS = 15            # 最大持有天数
+    DEFAULT_STOP_LOSS_PCT = -20.0
+    DEFAULT_STOP_LOSS_DAYS = 10
+    # 追踪止盈参数（回测优化: SL20%+Trail15/8+30D → 笔均+2.15%, 胜率53%）
+    TRAILING_ACTIVATE_PCT = 15.0  # 涨幅达此值激活追踪
+    TRAILING_DRAWDOWN_PCT = 8.0   # 从峰值回撤此值卖出
+    MAX_HOLD_DAYS = 30            # 最大持有天数
 
     def __init__(self, data_service=None, config: Dict[str, Any] = None):
         super().__init__(data_service, config)

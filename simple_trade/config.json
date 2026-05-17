@@ -78,7 +78,7 @@
     "turnover_max_threshold": 50000000
   },
   "gemini": {
-    "api_key": "AQ.Ab8RN6JUHGe4ycZLV37VGdBqlDJ5r2iqX1y-9JCHopX77I37Rw",
+    "api_key": "",
     "model": "gemini-2.5-flash",
     "enabled": true,
     "timeout": 30,
@@ -179,10 +179,6 @@
       {
         "strategy_id": "trend_reversal",
         "preset_name": "B-建议"
-      },
-      {
-        "strategy_id": "price_position_live",
-        "preset_name": "默认"
       }
     ],
     "auto_trade_strategy": null

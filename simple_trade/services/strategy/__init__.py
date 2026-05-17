@@ -19,6 +19,9 @@ from .signal_detector import SignalDetector, SignalRecord
 from .signal_history import SignalHistoryManager
 from .signal_tracker import SignalTracker
 from .position_stop_loss import PositionStopLossChecker, StopLossParams
+from .stock_scorer import StockScorer, ScoringResult
+from .trading_phase_manager import TradingPhaseManager, TradingPhase
+from .capital_flow_rotator import CapitalFlowRotator, RotationSignal
 
 __all__ = [
     'ScreeningEngine',
@@ -30,4 +33,10 @@ __all__ = [
     'SignalTracker',
     'PositionStopLossChecker',
     'StopLossParams',
+    'StockScorer',
+    'ScoringResult',
+    'TradingPhaseManager',
+    'TradingPhase',
+    'CapitalFlowRotator',
+    'RotationSignal',
 ]

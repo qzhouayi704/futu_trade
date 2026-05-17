@@ -13,6 +13,7 @@ from typing import List, Dict, Tuple
 from ...utils.logger import get_flow_logger
 
 from .pipeline_broadcast import PipelineBroadcast
+from .signal_arbitrator import SignalArbitrator
 
 
 class QuotePipeline:
@@ -66,6 +67,7 @@ class QuotePipeline:
         self.strategy_check_interval = 60
         self._loop_count = 0
         self.signal_tracker = None
+        self._signal_arbitrator = SignalArbitrator()
         # 异步任务引用（防止 GC 回收和异常丢失）
         self._pending_tasks: set = set()
 
@@ -105,7 +107,10 @@ class QuotePipeline:
         if quote_cache:
             quote_cache.update_from_quotes(quotes)
 
-        await self._broadcaster.broadcast(quotes, [], [])
+        # P2-1: 广播改为 fire-and-forget，避免广播卡顿阻塞下一轮拉取
+        task = asyncio.create_task(self._broadcaster.broadcast(quotes, [], []))
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
         self.state_manager.set_last_update()
 
         if self._loop_count % 12 == 1:
@@ -128,9 +133,19 @@ class QuotePipeline:
 
         # 日内高抛低吸信号检查（仅持仓股）
         intraday_signals = await self._check_intraday_profit(quotes)
+        
+        # 日内自动化防砸盘风控与真空区止盈（新增）
+        risk_actions = await self._check_intraday_risks(quotes)
+
+        # 资金流向信号检查（与策略检测同频，每60s）
+        flow_signals = []
+        if self._should_run_strategy():
+            flow_signals = await self._check_capital_flow_signals(quotes)
 
         trade_actions: List[Dict] = []
         trade_actions.extend(intraday_signals)
+        trade_actions.extend(risk_actions)
+        trade_actions.extend(flow_signals)
         conditions: List[Dict] = []
         conditions_updated = False
         if self._should_run_strategy():
@@ -142,6 +157,9 @@ class QuotePipeline:
         await self._update_signal_tracking(quotes)
 
         if trade_actions:
+            # === 信号一致性仲裁：消除矛盾信号 ===
+            trade_actions = self._signal_arbitrator.arbitrate(trade_actions)
+
             flow = get_flow_logger("策略信号")
             for a in trade_actions:
                 flow.step(f"{a['signal_type']} {a['stock_code']}",
@@ -162,7 +180,7 @@ class QuotePipeline:
         """判断是否应该执行策略条件检测（与 auto_trade 开关解耦，条件展示始终可用）
 
         启动预热期（前 180 秒 / 36 个循环）跳过策略检测，
-        避免 fetch_kline 与 Scalping 订阅/CentralScheduler 同时竞争 OpenD 资源。
+        避免 fetch_kline 与 CentralScheduler 同时竞争 OpenD 资源。
         """
         # 启动预热：前 36 个周期 (约 180 秒) 不执行策略，等 OpenD 稳定
         warmup_cycles = max(1, 180 // self.push_interval)
@@ -277,6 +295,67 @@ class QuotePipeline:
             return await self._run_in_executor(taker.check, quotes, positions)
         except Exception as e:
             logging.debug(f"日内高抛低吸检查异常: {e}")
+            return []
+
+    async def _check_intraday_risks(self, quotes: List[Dict]) -> List[Dict]:
+        """检查日内自动化风控（跌破强支撑/真空区止盈/大单骤降逃顶）"""
+        actions = []
+        try:
+            # 延迟初始化
+            if not hasattr(self, '_intraday_risk_manager'):
+                futu_trade = getattr(self.container, 'futu_trade_service', None)
+                futu_client = getattr(self.container, 'futu_client', None)
+                db_manager = getattr(self.container, 'db_manager', None)
+                levels_service = getattr(self.container, 'intraday_levels_service', None)
+                
+                if futu_client and db_manager and levels_service:
+                    from ...services.trading.profit.intraday_risk_manager import IntradayRiskManager
+                    self._intraday_risk_manager = IntradayRiskManager(db_manager, futu_client, levels_service, futu_trade)
+                else:
+                    self._intraday_risk_manager = None
+
+            if not self._intraday_risk_manager:
+                return actions
+
+            positions = await self._get_positions_dict()
+            if not positions:
+                return actions
+
+            # 资金流缓存用于大单占比监测
+            capital_flow_engine = getattr(self.container, 'capital_flow_signal_engine', None)
+            
+            for quote in quotes:
+                stock_code = quote.get('code')
+                if stock_code in positions:
+                    capital_flow = None
+                    if capital_flow_engine:
+                        cache = capital_flow_engine.cache.get(stock_code)
+                        if cache:
+                            capital_flow = cache.data
+                    
+                    # check_risks 是 async 的，需要 await
+                    new_actions = await self._intraday_risk_manager.check_risks(
+                        stock_code, quote, positions[stock_code], capital_flow
+                    )
+                    if new_actions:
+                        actions.extend(new_actions)
+        except Exception as e:
+            logging.error(f"日内自动化风控检查异常: {e}")
+            
+        return actions
+
+    async def _check_capital_flow_signals(self, quotes: List[Dict]) -> List[Dict]:
+        """检查资金流向信号（基于操盘规则）"""
+        engine = getattr(self.container, 'capital_flow_signal_engine', None)
+        if not engine:
+            return []
+        try:
+            positions = await self._get_positions_dict()
+            return await self._run_in_executor(
+                engine.check_signals, quotes, positions
+            )
+        except Exception as e:
+            logging.debug(f"资金流向信号检查异常: {e}")
             return []
 
     async def _run_strategy_detection(self, quotes: List[Dict]) -> Tuple[List[Dict], List[Dict]]:

@@ -39,34 +39,10 @@ class SocketEvent(str, Enum):
     # 系统事件
     UPDATE_PENDING = "update_pending"
     ERROR = "error"
+    DEGRADATION_CHANGED = "degradation_changed"  # P3-3: 降级状态变更通知
 
     # 决策助理事件
     ADVISOR_UPDATE = "advisor_update"
-
-    # Scalping 日内超短线事件
-    DELTA_UPDATE = "delta_update"                  # Delta 动量更新
-    MOMENTUM_IGNITION = "momentum_ignition"        # 动能点火事件
-    PRICE_LEVEL_CREATE = "price_level_create"      # 生成阻力/支撑线
-    PRICE_LEVEL_REMOVE = "price_level_remove"      # 撤销阻力/支撑线
-    PRICE_LEVEL_BREAK = "price_level_break"        # 阻力/支撑线被突破
-    POC_UPDATE = "poc_update"                      # POC 控制点更新
-    SCALPING_SIGNAL = "scalping_signal"            # Scalping 交易信号
-
-    # 防诱多/诱空事件
-    TRAP_ALERT = "trap_alert"                      # 诱多/诱空警报
-    FAKE_BREAKOUT_ALERT = "fake_breakout_alert"    # 假突破警报
-    TRUE_BREAKOUT_CONFIRM = "true_breakout_confirm"  # 真突破确认
-    FAKE_LIQUIDITY_ALERT = "fake_liquidity_alert"  # 虚假流动性警报
-    VWAP_EXTENSION_ALERT = "vwap_extension_alert"  # VWAP 超限警报
-    VWAP_EXTENSION_CLEAR = "vwap_extension_clear"  # VWAP 恢复正常
-
-    # Tick 可信度与止损事件
-    STOP_LOSS_ALERT = "stop_loss_alert"            # 止损提示
-    TICK_OUTLIER = "tick_outlier"                   # 异常大单标记
-
-    # 行为模式与行动评分
-    PATTERN_ALERT = "pattern_alert"                # 行为模式预警（8种）
-    ACTION_SIGNAL = "action_signal"                # 行动评分信号（加分制）
 
 
 # ==================== 事件数据模型 ====================

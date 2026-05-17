@@ -122,10 +122,24 @@ class NewsCrawler:
                 await page.goto(self.NEWS_URL, timeout=self.TIMEOUT, wait_until='domcontentloaded')
                 self.logger.info("页面基本内容已加载")
 
-                # 第二阶段：等待新闻内容出现（而不是等待所有网络请求完成）
+                # 第二阶段：关闭可能出现的地区引导弹窗
                 try:
-                    # 尝试等待新闻列表容器出现
-                    await page.wait_for_selector('div[class*="news"], article, .news-list', timeout=self.WAIT_TIMEOUT)
+                    dismiss_btn = await page.wait_for_selector(
+                        'text="繼續留在富途牛牛网站"', timeout=3000
+                    )
+                    if dismiss_btn:
+                        await dismiss_btn.click()
+                        self.logger.info("已关闭地区引导弹窗")
+                        await asyncio.sleep(1)
+                except Exception:
+                    pass  # 没有弹窗，继续
+
+                # 第三阶段：等待新闻内容出现
+                try:
+                    await page.wait_for_selector(
+                        'a.market-item.list-item, a[class*="market-item"], .market-list',
+                        timeout=self.WAIT_TIMEOUT, state='visible'
+                    )
                     self.logger.info("新闻内容已加载")
                 except Exception as e:
                     self.logger.warning(f"等待新闻容器超时，尝试继续: {e}")
@@ -336,13 +350,14 @@ class NewsCrawler:
 
         self.logger.info(f"开始解析HTML，页面长度: {len(html)} 字符")
 
-        # 尝试多种选择器匹配新闻卡片
+        # 尝试多种选择器匹配新闻卡片（按优先级排序）
         selectors = [
-            'div[class*="news-item"]',
-            'div[class*="article-item"]',
-            'a[class*="news-card"]',
-            'div[class*="card"]',
-            'article',
+            'a.market-item.list-item',       # 当前页面结构（2024+）
+            'a[class*="market-item"]',        # 宽松匹配
+            '.market-list > a',              # 通过容器查找
+            'a[class*="news-card"]',         # 旧版备用
+            'div[class*="news-item"]',       # 旧版备用
+            'article',                       # 通用备用
         ]
 
         cards = []
@@ -399,15 +414,16 @@ class NewsCrawler:
 
     def _extract_news_from_element(self, element) -> Optional[RawNewsItem]:
         """从HTML元素提取新闻数据"""
-        # 提取标题
+        # 提取标题（新版用 h2，旧版用 h3 或 .title）
         title = ""
-        title_selectors = ['h2', 'h3', '.title', '[class*="title"]', 'a']
+        title_selectors = ['h2', 'h3', '.title', '[class*="title"]']
         for sel in title_selectors:
             title_elem = element.select_one(sel) if hasattr(element, 'select_one') else None
             if title_elem:
                 title = title_elem.get_text(strip=True)
                 break
         if not title:
+            # 对于 a 标签卡片，取第一段有意义的文本
             title = element.get_text(strip=True)[:200]
 
         if not title or len(title) < 5:
@@ -428,25 +444,47 @@ class NewsCrawler:
         # 生成唯一ID
         news_id = self._generate_news_id(title, news_url)
 
-        # 提取来源
+        # 提取来源和时间（新版结构：多个 span 在底部 div 中）
         source = ""
-        source_selectors = ['.source', '[class*="source"]', '[class*="author"]']
-        for sel in source_selectors:
-            source_elem = element.select_one(sel)
-            if source_elem:
-                source = source_elem.get_text(strip=True)
-                break
+        publish_time = ""
+
+        # 新版结构：卡片底部有一个 div 包含多个 span（来源 · 时间）
+        bottom_spans = element.select('span')
+        if bottom_spans:
+            span_texts = [s.get_text(strip=True) for s in bottom_spans if s.get_text(strip=True) and s.get_text(strip=True) != '·']
+            for text in span_texts:
+                # 判断是时间还是来源
+                if any(c.isdigit() for c in text) and ('分鐘' in text or '小時' in text or ':' in text or '/' in text
+                        or '分钟' in text or '小时' in text):
+                    if not publish_time:
+                        publish_time = text
+                elif not source and text != title and len(text) < 30:
+                    source = text
+
+        # 旧版选择器备用
+        if not source:
+            source_selectors = ['.source', '[class*="source"]', '[class*="author"]']
+            for sel in source_selectors:
+                source_elem = element.select_one(sel)
+                if source_elem:
+                    source = source_elem.get_text(strip=True)
+                    break
         if not source:
             source = "富途资讯"
 
-        # 提取时间
-        publish_time = ""
-        time_selectors = ['time', '.time', '[class*="time"]', '[class*="date"]']
-        for sel in time_selectors:
-            time_elem = element.select_one(sel)
-            if time_elem:
-                publish_time = time_elem.get_text(strip=True)
-                break
+        if not publish_time:
+            time_selectors = ['time', '.time', '[class*="time"]', '[class*="date"]']
+            for sel in time_selectors:
+                time_elem = element.select_one(sel)
+                if time_elem:
+                    publish_time = time_elem.get_text(strip=True)
+                    break
+
+        # 提取摘要（新版可能在 desc span 中）
+        summary = ""
+        desc_elem = element.select_one('[class*="desc"]')
+        if desc_elem:
+            summary = desc_elem.get_text(strip=True)
 
         # 提取图片
         image_url = ""
@@ -460,7 +498,7 @@ class NewsCrawler:
         return RawNewsItem(
             news_id=news_id,
             title=title,
-            summary="",
+            summary=summary,
             source=source,
             publish_time=publish_time,
             news_url=news_url,

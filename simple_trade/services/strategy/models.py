@@ -116,7 +116,7 @@ DEFAULT_STRATEGIES: dict = {
                 'max_change_pct': 5.0,
                 'min_volume': 5000000,
                 'min_price_position': 0,
-                'max_price_position': 40,
+                'max_price_position': 100,
                 'target_profit_pct': 8.0,
                 'trailing_trigger_pct': 6.0,
                 'trailing_callback_pct': 2.0,

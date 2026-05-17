@@ -10,7 +10,6 @@ FastAPI 应用入口
 重构说明：
 - 拆分自原 app.py (418行 → 3个文件)
 - _initialize_system_data → core/initialization.py
-- build_stock_list_for_scalping + _auto_start_scalping → services/scalping/auto_starter.py
 - 本文件只保留: 日志配置、lifespan、create_app
 """
 
@@ -25,7 +24,6 @@ from .core import get_state_manager, ServiceContainer, SystemCoordinator
 from .core.pipeline import QuotePipeline
 from .core.exceptions.exception_handlers import register_exception_handlers
 from .core.initialization import initialize_system_data
-from .services.scalping.auto_starter import auto_start_scalping
 from . import dependencies
 from .utils.logger import print_status, setup_logging
 import logging
@@ -77,6 +75,10 @@ async def lifespan(app: FastAPI):
         BUILD_VERSION = "2026.04.14-v3"
         print_status(f"代码版本: {BUILD_VERSION}", "ok")
         logging.info(f"===== 系统启动 BUILD={BUILD_VERSION} =====")
+
+        # P5-1: 阻塞启动计时
+        import time as _time
+        _t_startup = _time.monotonic()
 
         # 启动时初始化
         config = ConfigManager.load_config("simple_trade/config.json")
@@ -164,9 +166,35 @@ async def lifespan(app: FastAPI):
 
         if init_success:
             _track(_start_quote_pusher_background(), name="quote_pusher_startup")
-            # 启动 Scalping 引擎自动启动任务（传递 quote_pusher + socket_manager）
-            _track(auto_start_scalping(container, state_manager, quote_pusher, socket_manager), name="scalping_auto_start")
             print_status("【行情推送】正在后台启动订阅（HTTP 服务已就绪）...", "info")
+
+            # 启动全局连接监控（Phase 3）
+            if hasattr(container, 'global_connection_manager') and container.global_connection_manager:
+                _track(container.global_connection_manager.start_monitoring(), name="global_connection_monitor")
+                logging.info("全局连接监控已启动")
+
+            # 启动 Phase 4-6 异步服务
+            if hasattr(container, 'unified_cache') and container.unified_cache:
+                _track(container.unified_cache.start_monitoring(), name="unified_cache_monitor")
+                logging.info("统一缓存监控已启动")
+
+            if hasattr(container, 'global_monitoring_dashboard') and container.global_monitoring_dashboard:
+                _track(container.global_monitoring_dashboard.start_monitoring(), name="global_monitoring")
+                logging.info("全局监控面板已启动")
+
+            # P1-2: 链路健康监控
+            from .core.monitoring.link_health import LinkHealthMonitor
+            link_monitor = LinkHealthMonitor()
+            container.link_health_monitor = link_monitor
+            _track(link_monitor.start_monitoring(), name="link_health_monitor")
+            logging.info("链路健康监控已启动")
+
+            # P1-2: 订阅一致性巡检
+            from .core.monitoring.subscription_checker import SubscriptionChecker
+            sub_checker = SubscriptionChecker(container.futu_client, container.subscription_manager)
+            container.subscription_checker = sub_checker
+            _track(sub_checker.start(), name="subscription_checker")
+            logging.info("订阅一致性巡检已启动")
 
             # 启动活跃个股后台预计算（大单追踪 + 量比）
             try:
@@ -179,6 +207,15 @@ async def lifespan(app: FastAPI):
                 logging.info("HighTurnoverEnricher 将在 60 秒后启动")
             except Exception as e:
                 logging.warning(f"HighTurnoverEnricher 启动失败（活跃个股大单数据不可用）: {e}")
+
+            # 启动每日K线自动更新任务（收盘后16:30自动更新）
+            try:
+                from .services.market_data.kline.daily_kline_updater import DailyKlineUpdater
+                daily_kline_updater = DailyKlineUpdater(container)
+                _track(daily_kline_updater.start(), name="daily_kline_updater")
+                logging.info("每日K线自动更新任务已注册（16:30触发）")
+            except Exception as e:
+                logging.warning(f"每日K线自动更新任务启动失败: {e}")
 
             # 自动恢复监控：如果上次关闭前监控在运行，则自动重启
             if state_manager.was_running_before_shutdown():
@@ -205,6 +242,11 @@ async def lifespan(app: FastAPI):
             logging.warning("系统数据初始化失败，跳过行情推送启动")
             print_status("【行情推送】跳过启动（初始化失败）", "warn")
 
+        # P5-1: HTTP 就绪计时
+        _startup_ms = (_time.monotonic() - _t_startup) * 1000
+        print_status(f"HTTP API 就绪（阻塞启动耗时 {_startup_ms:.0f}ms）", "ok")
+        logging.info(f"[P5-1] HTTP API 就绪: blocking_startup_ms={_startup_ms:.0f}")
+
         yield
 
     except Exception as e:
@@ -225,22 +267,6 @@ async def lifespan(app: FastAPI):
         try:
             if quote_pusher_started and quote_pusher:
                 await quote_pusher.stop()
-
-            # 停止 Scalping 引擎（含进程模式的子进程终止）
-            try:
-                scalping_engine = container.scalping_engine if container else None
-                if scalping_engine is not None:
-                    from .services.scalping.scalping_process_manager import ScalpingProcessManager
-                    if isinstance(scalping_engine, ScalpingProcessManager):
-                        await asyncio.wait_for(scalping_engine.shutdown(), timeout=5)
-                        logging.info("Scalping 子进程已终止")
-                    else:
-                        await asyncio.wait_for(scalping_engine.stop(), timeout=5)
-                        logging.info("ScalpingEngine 已停止")
-            except asyncio.TimeoutError:
-                logging.warning("Scalping 停止超时(5s)，强制继续")
-            except Exception as e:
-                logging.error(f"ScalpingEngine 停止失败: {e}", exc_info=True)
 
             try:
                 state = state_manager

@@ -3,6 +3,7 @@
 "use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ThemeProvider } from "next-themes";
 import { SocketProvider } from "@/lib/socket";
 import { ToastProvider } from "@/components/common";
 import { useState } from "react";
@@ -50,10 +51,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <SocketProvider>
-        <ToastProvider>{children}</ToastProvider>
-      </SocketProvider>
-    </QueryClientProvider>
+    <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
+      <QueryClientProvider client={queryClient}>
+        <SocketProvider>
+          <ToastProvider>{children}</ToastProvider>
+        </SocketProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
   );
 }

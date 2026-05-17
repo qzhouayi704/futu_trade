@@ -11,7 +11,6 @@ from datetime import datetime
 
 from .news_crawler import NewsCrawler
 from .news_analyzer import NewsAnalyzer
-from .futu_news_fetcher import FutuNewsFetcher
 from ...database.queries.news_queries import NewsQueries
 
 
@@ -24,7 +23,6 @@ class NewsService:
         self.config = config or {}
 
         # 初始化子服务
-        self.fetcher = FutuNewsFetcher()
         self.crawler = NewsCrawler(debug=debug)
         self.analyzer = NewsAnalyzer(db_manager, config=self.config)
         self.queries = NewsQueries(db_manager)
@@ -51,31 +49,19 @@ class NewsService:
         }
 
         try:
-            # 优先使用富途 API
+            # 使用 Playwright 爬虫抓取新闻
             raw_news = []
-            source = 'futu_api'
+            source = 'playwright'
 
-            if self.fetcher.is_available():
-                try:
-                    raw_news = await self.fetcher.fetch_news(max_items)
-                    if raw_news:
-                        self.logger.info(f"富途 API 获取到 {len(raw_news)} 条新闻")
-                except Exception as e:
-                    self.logger.warning(f"富途 API 获取失败: {e}")
-
-            # 回退到 Playwright
-            if not raw_news:
-                source = 'playwright'
-                if self.crawler.is_available():
-                    self.logger.info("回退到 Playwright 抓取新闻...")
-                    raw_news = await self.crawler.crawl_news_with_retry(max_items, max_retries=3)
-                else:
-                    self.logger.warning("所有数据源均不可用")
-                    return {
-                        'success': False,
-                        'message': '所有数据源均不可用',
-                        **result
-                    }
+            if self.crawler.is_available():
+                raw_news = await self.crawler.crawl_news_with_retry(max_items, max_retries=3)
+            else:
+                self.logger.warning("Playwright 爬虫不可用（缺少依赖）")
+                return {
+                    'success': False,
+                    'message': 'Playwright 爬虫不可用，请安装 playwright 和 beautifulsoup4',
+                    **result
+                }
 
             result['source'] = source
             result['crawled_count'] = len(raw_news)
@@ -217,7 +203,7 @@ class NewsService:
         return {
             'is_crawling': self._is_crawling,
             'last_crawl_time': self._last_crawl_time.isoformat() if self._last_crawl_time else None,
-            'futu_api_available': self.fetcher.is_available(),
+            'last_crawl_result': getattr(self, '_last_crawl_result', None),
             'crawler_available': self.crawler.is_available(),
             'gemini_available': (
                 self.analyzer.gemini_analyzer is not None

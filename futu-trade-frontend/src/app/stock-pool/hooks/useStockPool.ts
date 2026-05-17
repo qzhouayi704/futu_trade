@@ -33,13 +33,15 @@ export function useStockPool() {
   } = useStockPoolStore();
 
   const [loading, setLoading] = useState(false);
+  const [platesLoading, setPlatesLoading] = useState(false);
+  const [stocksLoading, setStocksLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initProgress, setInitProgress] = useState<InitProgress | null>(null);
 
   // 加载板块列表
   const loadPlates = useCallback(
-    async (page: number = 1, pageSize: number = 20) => {
-      setLoading(true);
+    async (page: number = 1, pageSize: number = 50) => {
+      setPlatesLoading(true);
       setError(null);
 
       try {
@@ -61,7 +63,7 @@ export function useStockPool() {
         setError(errorMessage);
         throw err;
       } finally {
-        setLoading(false);
+        setPlatesLoading(false);
       }
     },
     [setPlates, setPlatesTotalCount, setPlatesPage, setPlatesPageSize]
@@ -69,8 +71,8 @@ export function useStockPool() {
 
   // 加载股票列表
   const loadStocks = useCallback(
-    async (page: number = 1, pageSize: number = 20) => {
-      setLoading(true);
+    async (page: number = 1, pageSize: number = 50) => {
+      setStocksLoading(true);
       setError(null);
 
       try {
@@ -80,12 +82,10 @@ export function useStockPool() {
         })) as PaginatedResponse<Stock>;
 
         if (response.success && response.data) {
-          // /stocks/pool returns {stocks: [], plates: [], total_stocks, total_plates}
-          const poolData = response.data as any;
-          const stocksList = Array.isArray(poolData) ? poolData : (poolData.stocks || []);
-          const totalCount = Array.isArray(poolData) ? poolData.length : (poolData.total_stocks || stocksList.length);
+          const stocksList = Array.isArray(response.data) ? response.data : [];
+          const totalCount = response.meta?.total || stocksList.length;
           setStocks(stocksList);
-          setStocksTotalCount(response.meta?.total || totalCount);
+          setStocksTotalCount(totalCount);
           setStocksPage(page);
           setStocksPageSize(pageSize);
         } else {
@@ -96,7 +96,7 @@ export function useStockPool() {
         setError(errorMessage);
         throw err;
       } finally {
-        setLoading(false);
+        setStocksLoading(false);
       }
     },
     [setStocks, setStocksTotalCount, setStocksPage, setStocksPageSize]
@@ -188,12 +188,7 @@ export function useStockPool() {
 
   // 初始化数据
   const initializeData = useCallback(
-    async (options: {
-      initPlates?: boolean;
-      initStocks?: boolean;
-      initKline?: boolean;
-      initHotStocks?: boolean;
-    }) => {
+    async (forceRefresh: boolean = false) => {
       setLoading(true);
       setError(null);
       setInitProgress({
@@ -204,7 +199,7 @@ export function useStockPool() {
       });
 
       try {
-        const response = (await stockApi.initializeData(options)) as ApiResponse<any>;
+        const response = (await stockApi.initializeData(forceRefresh)) as ApiResponse<any>;
 
         if (response.success) {
           setInitProgress({
@@ -327,6 +322,8 @@ export function useStockPool() {
     platesTotalCount,
     stocksTotalCount,
     loading,
+    platesLoading,
+    stocksLoading,
     error,
     initProgress,
 

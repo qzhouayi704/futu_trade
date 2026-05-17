@@ -42,4 +42,21 @@ async def get_monitor_stats(container=Depends(get_container)):
     )
 
 
+@router.get("/api/monitoring/link-health", response_model=APIResponse)
+async def get_link_health(container=Depends(get_container)):
+    """P1-2: 链路健康指标（P50/P95/P99延迟、成功率、重连频率）"""
+    link_monitor = getattr(container, 'link_health_monitor', None)
+    if link_monitor is None:
+        return APIResponse(
+            success=False,
+            data={},
+            message="链路健康监控未启用"
+        )
+    return APIResponse(
+        success=True,
+        data=link_monitor.get_health(),
+        message="获取链路健康指标成功"
+    )
+
+
 logging.info("监控统计路由已注册")

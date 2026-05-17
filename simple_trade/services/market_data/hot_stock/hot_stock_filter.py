@@ -68,9 +68,11 @@ class HotStockFilter:
 
     @staticmethod
     def check_stock_activity(
-        stock_code: str, quote: Dict, thresholds: Dict = None,
+        stock_code: str,
+        quote: Dict,
+        thresholds: Dict = None,
     ) -> bool:
-        """检查单只股票是否满足活跃度条件
+        """检查单只股票是否满足活跃度条件（同步版本，向后兼容）
 
         活跃度条件（成交量、换手率、价格门槛），与三级筛选器第一级复用。
 
@@ -108,6 +110,70 @@ class HotStockFilter:
                 return False
 
         return True
+
+    @staticmethod
+    async def check_stock_activity_with_liquidity(
+        stock_code: str,
+        quote: Dict,
+        thresholds: Dict = None,
+        liquidity_calculator=None,
+    ) -> tuple[bool, dict]:
+        """检查单只股票是否满足活跃度条件（异步版本，支持流动性评分）
+
+        活跃度条件（成交量、换手率、价格门槛），与三级筛选器第一级复用。
+        可选：集成流动性评分检查（需传入 liquidity_calculator）
+
+        Args:
+            stock_code: 股票代码（如 HK.00700, US.AAPL）
+            quote: 实时报价字典，需含 volume, turnover_rate, cur_price/last_price
+            thresholds: 自定义阈值，默认使用 ACTIVITY_THRESHOLDS
+            liquidity_calculator: 流动性计算器（可选）
+
+        Returns:
+            (是否通过, 流动性详情字典)
+        """
+        if not quote:
+            return False, {}
+
+        t = thresholds or ACTIVITY_THRESHOLDS
+        market = "HK" if stock_code.startswith("HK.") else "US"
+
+        # 成交量检查
+        volume = quote.get("volume", 0) or 0
+        min_volume = t.get(f"min_volume_{market.lower()}", 500_000)
+        if volume < min_volume:
+            return False, {'reason': 'low_volume'}
+
+        # 换手率检查
+        turnover_rate = quote.get("turnover_rate", 0) or 0
+        min_turnover = t.get(f"min_turnover_rate_{market.lower()}", 0.1)
+        if turnover_rate < min_turnover:
+            return False, {'reason': 'low_turnover_rate'}
+
+        # 价格检查（仅港股）
+        if market == "HK":
+            price = get_last_price(quote)
+            min_price = t.get("min_price_hk", 1.0)
+            if price < min_price:
+                return False, {'reason': 'low_price'}
+
+        # 新增：流动性评分检查
+        liquidity_details = {}
+        if liquidity_calculator:
+            try:
+                liq_result = await liquidity_calculator.calculate_liquidity_score(
+                    stock_code, quote, include_history=True
+                )
+                liquidity_details = liq_result
+
+                # 流动性评分不达标则过滤（D级以下）
+                if not liq_result['pass_threshold']:
+                    return False, {'reason': 'low_liquidity', **liquidity_details}
+            except Exception as e:
+                logger.warning(f"流动性评分计算失败 {stock_code}: {e}")
+                # 计算失败时不影响筛选，继续通过
+
+        return True, liquidity_details
 
     def filter_hot_stocks(
         self,

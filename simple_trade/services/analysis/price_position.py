@@ -118,8 +118,9 @@ def _calc_daily_signal(
     level: str, change_rate: float, capital_score: float,
 ) -> str:
     """日线级别信号：价格位置 + 资金方向"""
-    capital_bullish = capital_score >= 55
-    capital_bearish = capital_score <= 45
+    # 统一阈值标准（与 StockSnapshot.capital_signal 一致）
+    capital_bullish = capital_score >= 60
+    capital_bearish = capital_score < 45
 
     if level == "low":
         return "low_accumulating" if capital_bullish else "low_declining"
@@ -138,23 +139,17 @@ def _calc_daily_signal(
 def _calc_intraday_signal(
     change_rate: float,
     capital_score: float,
-    scalping_direction: Optional[str],
 ) -> str:
-    """当日级别信号：日内涨跌 + 资金流 + 成交方向"""
-    capital_bullish = capital_score >= 55
-    capital_bearish = capital_score <= 45
+    """当日级别信号：日内涨跌 + 资金流"""
+    # 统一阈值标准（与 StockSnapshot.capital_signal 一致）
+    capital_bullish = capital_score >= 60
+    capital_bearish = capital_score < 45
 
     # 量价背离检测：资金看多但股价跌（或反之）
     if capital_bullish and change_rate < -1.0:
         return "divergence"
     if capital_bearish and change_rate > 1.0:
         return "divergence"
-
-    # Scalping delta 信号可用时优先使用
-    if scalping_direction == "bullish" and capital_bullish:
-        return "strong_buy"
-    if scalping_direction == "bearish" and capital_bearish:
-        return "strong_sell"
 
     if capital_bullish and change_rate > 0.5:
         return "buy"
@@ -197,26 +192,19 @@ def _generate_warnings(
     change_rate: float,
     capital_score: float,
     intraday_signal: str,
-    scalping_direction: Optional[str],
 ) -> List[str]:
     """生成风险警告列表"""
     warnings = []
 
-    # 量价背离
-    if capital_score >= 55 and change_rate < -1.0:
+    # 量价背离（统一阈值标准）
+    if capital_score >= 60 and change_rate < -1.0:
         warnings.append("price_flow_divergence")
-    if capital_score <= 45 and change_rate > 1.0:
+    if capital_score < 45 and change_rate > 1.0:
         warnings.append("price_flow_divergence")
 
     # 高位资金流入
     if level == "high" and capital_score >= 60:
         warnings.append("high_position_inflow")
-
-    # 成交与资金方向矛盾
-    if scalping_direction == "bullish" and capital_score <= 40:
-        warnings.append("signal_contradiction")
-    if scalping_direction == "bearish" and capital_score >= 60:
-        warnings.append("signal_contradiction")
 
     return warnings
 
@@ -226,7 +214,6 @@ def analyze_price_position(
     change_rate: float,
     price_range: Optional[Dict],
     capital_score: float = 50.0,
-    scalping_direction: Optional[str] = None,
 ) -> PricePositionResult:
     """分析单只股票的价格位置和建仓时机
 
@@ -235,7 +222,6 @@ def analyze_price_position(
         change_rate: 当日涨跌幅 (%)
         price_range: {high_20d, low_20d} 来自 batch_get_price_range
         capital_score: 资金评分 0~100
-        scalping_direction: Scalping delta 方向 (bullish/bearish/neutral)
     """
     high_20d = price_range.get("high_20d", 0) if price_range else 0
     low_20d = price_range.get("low_20d", 0) if price_range else 0
@@ -245,13 +231,13 @@ def analyze_price_position(
 
     daily_signal = _calc_daily_signal(level, change_rate, capital_score)
     intraday_signal = _calc_intraday_signal(
-        change_rate, capital_score, scalping_direction,
+        change_rate, capital_score,
     )
     entry_signal = _calc_entry_signal(daily_signal, intraday_signal, level)
 
     warnings = _generate_warnings(
         level, change_rate, capital_score,
-        intraday_signal, scalping_direction,
+        intraday_signal,
     )
 
     return PricePositionResult(

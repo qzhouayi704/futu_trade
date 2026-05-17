@@ -32,6 +32,9 @@ class SubscriptionHelper:
         self.container = container
         self.priority_stocks = set()
 
+        # P5-2: GlobalSubscriptionCoordinator 已精简，不再侜为订阅入口
+        # 统一使用 subscription_manager 订阅
+
         self.activity_filter = ActivityFilterService(
             subscription_manager=subscription_manager,
             quote_service=quote_service, config=config,
@@ -102,7 +105,7 @@ class SubscriptionHelper:
             result['market_info'] = self._resolve_markets(markets)
             markets = result['market_info']['selected_markets']
 
-            market_limits = self._get_config_attr('monitor_stocks_limit_by_market', {'HK': 50, 'US': 50})
+            market_limits = self._get_config_attr('monitor_stocks_limit_by_market', {'HK': 50, 'US': 0})
             af_config = self._get_config_attr('realtime_activity_filter', {})
             af_enabled = af_config.get('enabled', True) if af_config else True
             kline_priority = self._get_config_attr('kline_priority_enabled', True)
@@ -118,42 +121,33 @@ class SubscriptionHelper:
             logging.info(f"【股票池】获取到 {len(target_stocks)} 只股票，准备活跃度筛选")
             target_stocks = self._apply_activity_filter(target_stocks, market_limits, af_enabled, af_config)
 
+            # 空集合保护：筛选后无股票时保留现有订阅，避免清除有效订阅
+            if not target_stocks:
+                existing_count = len(self.subscription_manager.subscribed_stocks) if self.subscription_manager else 0
+                logging.warning(
+                    f"【订阅保护】活跃度筛选后无股票通过，保留现有 {existing_count} 只订阅"
+                )
+                result.update({
+                    'success': existing_count > 0,
+                    'subscribed_count': existing_count,
+                    'message': f'活跃度筛选后无股票，保留现有 {existing_count} 只订阅'
+                })
+                return result
+
             # 订阅前清理不活跃订阅，释放额度
             target_codes = {s['code'] for s in target_stocks}
             self.cleanup_inactive_subscriptions(target_codes)
 
-            # 订阅 QUOTE（必须）
-            subscribe_result = self.subscription_manager.subscribe([s['code'] for s in target_stocks])
+            stock_codes = [s['code'] for s in target_stocks]
+            subscribe_result = self.subscription_manager.subscribe(stock_codes)
+
             if subscribe_result['success']:
                 self._handle_subscribe_success(result, subscribe_result, target_stocks)
 
-                # 如果 Scalping 引擎启用，同时订阅 TICKER 和 ORDER_BOOK
-                if self._is_scalping_enabled():
-                    # 限制 Scalping 订阅数量（从配置读取）
-                    sub_cfg = self._get_config_attr('subscription_config', {})
-                    scalping_max = sub_cfg.get('scalping_max_stocks', 50)
-                    scalping_stocks = [s['code'] for s in target_stocks[:scalping_max]]
-
-                    try:
-                        from futu import SubType
-                        multi_result = self.subscription_manager.subscribe_multi_types(
-                            scalping_stocks,
-                            [SubType.TICKER, SubType.ORDER_BOOK]
-                        )
-
-                        # SubType 的属性是字符串，直接使用字符串作为 key
-                        ticker_success = len(multi_result['by_type'].get('TICKER', {}).get('success', []))
-                        orderbook_success = len(multi_result['by_type'].get('ORDER_BOOK', {}).get('success', []))
-
-                        logging.info(
-                            f"【Scalping订阅】TICKER {ticker_success} 只, "
-                            f"ORDER_BOOK {orderbook_success} 只"
-                        )
-                    except Exception as e:
-                        logging.error(f"Scalping 多类型订阅失败: {e}", exc_info=True)
-
                 # 订阅成功后，延迟提交后台K线下载任务（避免与启动阶段报价轮询争抢 OpenD）
-                if self.background_kline_task:
+                # 收盘后由 DailyKlineUpdater 统一负责，不在此触发
+                active_markets = MarketTimeHelper.get_current_active_markets()
+                if self.background_kline_task and active_markets:
                     import threading
                     def _delayed_kline_submit():
                         import time as _t
@@ -418,35 +412,8 @@ class SubscriptionHelper:
                 counts[m] = counts.get(m, 0) + 1
         return counts
 
-    def _is_scalping_enabled(self) -> bool:
-        """检查 Scalping 引擎是否启用（基于配置）
 
-        注意：SCALPING_MODE=process 时返回 False，因为子进程通过
-        get_rt_ticker()/get_order_book() 独立轮询，不需要主进程的推送订阅。
-        """
-        try:
-            # 进程模式：子进程独立轮询，主进程不需要订阅 TICKER/ORDER_BOOK
-            import os
-            if os.environ.get('SCALPING_MODE', '').lower() == 'process':
-                logging.debug("Scalping 进程模式：跳过主进程 TICKER/ORDER_BOOK 订阅")
-                return False
 
-            # 从配置读取 scalping_max_stocks
-            sub_cfg = self._get_config_attr('subscription_config', {})
-            scalping_max = sub_cfg.get('scalping_max_stocks', 0)
-
-            # 如果配置了 scalping_max_stocks > 0，则启用
-            is_enabled = scalping_max > 0
-
-            if is_enabled:
-                logging.debug(f"Scalping 引擎已启用 (scalping_max_stocks: {scalping_max})")
-            else:
-                logging.debug("Scalping 引擎未启用 (scalping_max_stocks 配置为 0 或未配置)")
-
-            return is_enabled
-        except Exception as e:
-            logging.debug(f"检查 Scalping 引擎状态失败: {e}")
-            return False
 
     # ------------------------------------------------------------------
     # 个股分析临时订阅
@@ -473,7 +440,13 @@ class SubscriptionHelper:
         try:
             from futu import SubType
 
-            # 检查是否已订阅
+            # 始终为分析的股票补充订阅分时数据
+            self.subscription_manager.subscribe_multi_types(
+                [stock_code],
+                [SubType.RT_DATA]
+            )
+
+            # 检查是否已订阅 TICKER
             if stock_code in self.subscription_manager.ticker_subscribed_stocks:
                 return {
                     'success': True,
@@ -493,7 +466,7 @@ class SubscriptionHelper:
                     # 反订阅低优先级股票
                     self.subscription_manager.unsubscribe_multi_types(
                         [replaced_stock],
-                        [SubType.TICKER, SubType.ORDER_BOOK]
+                        [SubType.TICKER, SubType.ORDER_BOOK, SubType.RT_DATA]
                     )
                     logging.info(f"【临时订阅】替换: {replaced_stock} -> {stock_code}")
                 else:
@@ -506,7 +479,7 @@ class SubscriptionHelper:
             # 订阅新股票
             result = self.subscription_manager.subscribe_multi_types(
                 [stock_code],
-                [SubType.TICKER, SubType.ORDER_BOOK]
+                [SubType.TICKER, SubType.ORDER_BOOK, SubType.RT_DATA]
             )
 
             success = result['subscribed_count'] > 0

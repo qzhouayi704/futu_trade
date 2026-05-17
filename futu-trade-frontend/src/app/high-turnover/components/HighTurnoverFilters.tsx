@@ -11,12 +11,16 @@ interface HighTurnoverFiltersProps {
   searchKeyword: string;
   /** 当前选中的成交方向筛选值 */
   directionFilter: "all" | "bullish" | "bearish" | "neutral";
+  /** 当前选中的流动性等级筛选值 */
+  liquidityFilter: "all" | "A" | "B" | "C";
   /** 市场筛选变更回调 */
   onMarketChange: (market: string) => void;
   /** 搜索关键词变更回调 */
   onSearchChange: (keyword: string) => void;
   /** 成交方向筛选变更回调 */
   onDirectionChange: (direction: "all" | "bullish" | "bearish" | "neutral") => void;
+  /** 流动性等级筛选变更回调 */
+  onLiquidityChange: (liquidity: "all" | "A" | "B" | "C") => void;
 }
 
 
@@ -33,13 +37,22 @@ const DIRECTION_OPTIONS = [
   { value: "neutral", label: "中性" },
 ] as const;
 
+const LIQUIDITY_OPTIONS = [
+  { value: "all", label: "全部" },
+  { value: "A", label: "高流动性(A)" },
+  { value: "B", label: "中等(B)" },
+  { value: "C", label: "低(C)" },
+] as const;
+
 export default function HighTurnoverFilters({
   marketFilter,
   searchKeyword,
   directionFilter,
+  liquidityFilter,
   onMarketChange,
   onSearchChange,
   onDirectionChange,
+  onLiquidityChange,
 }: HighTurnoverFiltersProps) {
   return (
     <div className="flex flex-wrap items-center gap-4">
@@ -70,6 +83,23 @@ export default function HighTurnoverFilters({
               size="sm"
               variant={directionFilter === option.value ? "primary" : "secondary"}
               onClick={() => onDirectionChange(option.value)}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {/* 流动性筛选（新增） */}
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium text-gray-700">流动性：</span>
+        <div className="flex gap-2">
+          {LIQUIDITY_OPTIONS.map((option) => (
+            <Button
+              key={option.value}
+              size="sm"
+              variant={liquidityFilter === option.value ? "primary" : "secondary"}
+              onClick={() => onLiquidityChange(option.value)}
             >
               {option.label}
             </Button>

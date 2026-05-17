@@ -1,8 +1,8 @@
-// 板块表格组件
+// 板块表格组件 — 修复市场筛选和市场显示逻辑
 
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Button } from "@/components/common";
 import type { Plate } from "@/types";
 
@@ -15,54 +15,49 @@ interface PlateTableProps {
 
 export function PlateTable({ plates, loading, onDelete, onRefresh }: PlateTableProps) {
   const [marketFilter, setMarketFilter] = useState<string>("");
-  const [typeFilter, setTypeFilter] = useState<string>("");
 
-  // 筛选板块
-  const filteredPlates = plates.filter((plate) => {
-    if (marketFilter && !plate.plate_code.startsWith(marketFilter)) {
-      return false;
-    }
-    // 可以根据需要添加更多筛选逻辑
-    return true;
-  });
+  // 从板块数据中提取可用市场列表
+  const availableMarkets = useMemo(() => {
+    const markets = new Set<string>();
+    plates.forEach((plate) => {
+      if (plate.market) markets.add(plate.market);
+    });
+    return Array.from(markets);
+  }, [plates]);
+
+  // 筛选板块 — 使用后端返回的 market 字段（修复 P7）
+  const filteredPlates = useMemo(() => {
+    return plates.filter((plate) => {
+      if (marketFilter && plate.market !== marketFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [plates, marketFilter]);
 
   return (
     <div>
       {/* 筛选器 */}
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            市场筛选
-          </label>
-          <select
-            value={marketFilter}
-            onChange={(e) => setMarketFilter(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">所有市场</option>
-            <option value="HK">港股</option>
-            <option value="US">美股</option>
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            类型筛选
-          </label>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">所有类型</option>
-            <option value="target">目标板块</option>
-            <option value="normal">普通板块</option>
-          </select>
-        </div>
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          市场筛选
+        </label>
+        <select
+          value={marketFilter}
+          onChange={(e) => setMarketFilter(e.target.value)}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">所有市场</option>
+          {availableMarkets.map((m) => (
+            <option key={m} value={m}>
+              {m === "HK" ? "港股" : m === "US" ? "美股" : m}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* 表格 */}
-      <div className="overflow-x-auto max-h-96 overflow-y-auto border border-gray-200 rounded-lg">
+      <div className="overflow-x-auto max-h-[500px] overflow-y-auto border border-gray-200 rounded-lg">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50 sticky top-0">
             <tr>
@@ -75,10 +70,10 @@ export function PlateTable({ plates, loading, onDelete, onRefresh }: PlateTableP
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 市场
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                 股票数
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
                 操作
               </th>
             </tr>
@@ -99,25 +94,34 @@ export function PlateTable({ plates, loading, onDelete, onRefresh }: PlateTableP
               </tr>
             ) : (
               filteredPlates.map((plate) => (
-                <tr key={plate.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 text-sm text-gray-900">
+                <tr key={plate.id} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-4 py-3 text-sm font-medium text-blue-600">
                     {plate.plate_code}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-900">
                     {plate.plate_name}
                   </td>
-                  <td className="px-4 py-3 text-sm text-gray-900">
-                    {plate.plate_code.startsWith("HK") ? "港股" : "美股"}
+                  <td className="px-4 py-3 text-sm">
+                    {/* 修复 P13: 使用后端返回的 market 字段 */}
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                        plate.market === "HK"
+                          ? "bg-red-100 text-red-700"
+                          : "bg-blue-100 text-blue-700"
+                      }`}
+                    >
+                      {plate.market === "HK" ? "港股" : plate.market === "US" ? "美股" : plate.market}
+                    </span>
                   </td>
-                  <td className="px-4 py-3 text-sm text-gray-900">
+                  <td className="px-4 py-3 text-sm text-right text-gray-900 font-medium">
                     {plate.stock_count || 0}
                   </td>
-                  <td className="px-4 py-3 text-sm">
+                  <td className="px-4 py-3 text-sm text-center">
                     <Button
                       variant="danger"
                       size="sm"
                       onClick={() => onDelete(plate.id, plate.plate_name)}
-                      className="flex items-center gap-1"
+                      className="flex items-center gap-1 mx-auto"
                     >
                       <i className="fas fa-trash"></i>
                       删除
@@ -128,6 +132,12 @@ export function PlateTable({ plates, loading, onDelete, onRefresh }: PlateTableP
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* 统计 */}
+      <div className="mt-3 text-sm text-gray-500">
+        共 {filteredPlates.length} 个板块
+        {marketFilter && ` (已筛选: ${marketFilter === "HK" ? "港股" : "美股"})`}
       </div>
     </div>
   );

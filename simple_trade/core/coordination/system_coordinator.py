@@ -67,34 +67,35 @@ class SystemCoordinator:
 
     async def _initialize_subscription(self, futu_available: bool):
         """初始化订阅 - 委托给 subscription_helper"""
+        if not futu_available:
+            print_status("【系统协调器】富途API不可用，跳过订阅", "warn")
+            return
+
         subscribed_count = self.container.subscription_manager.subscribed_count
+        # 始终执行订阅（subscribe_target_stocks 内部有去重保护）
+        print_status(
+            f"【系统协调器】初始化订阅...（当前已有 {subscribed_count} 只）",
+            "info"
+        )
 
-        if subscribed_count == 0 and futu_available:
-            print_status("【系统协调器】初始化订阅...", "info")
+        from ...utils.market_helper import MarketTimeHelper
+        current_markets = MarketTimeHelper.get_current_active_markets()
+        if not current_markets:
+            current_markets = [MarketTimeHelper.get_primary_market()]
 
-            from ...utils.market_helper import MarketTimeHelper
-            current_markets = MarketTimeHelper.get_current_active_markets()
-            if not current_markets:
-                current_markets = [MarketTimeHelper.get_primary_market()]
+        subscription_result = await asyncio.get_event_loop().run_in_executor(
+            None, self.container.subscription_helper.subscribe_target_stocks, current_markets
+        )
 
-            subscription_result = await asyncio.get_event_loop().run_in_executor(
-                None, self.container.subscription_helper.subscribe_target_stocks, current_markets
+        if subscription_result['success']:
+            print_status(
+                f"【系统协调器】订阅完成: {subscription_result.get('subscribed_count', 0)} 只股票",
+                "ok"
             )
-
-            if subscription_result['success']:
-                print_status(
-                    f"【系统协调器】订阅完成: {subscription_result.get('subscribed_count', 0)} 只股票",
-                    "ok"
-                )
-            else:
-                print_status(
-                    f"【系统协调器】订阅失败: {subscription_result.get('message', '')}",
-                    "warn"
-                )
         else:
             print_status(
-                f"【系统协调器】已有 {subscribed_count} 只股票订阅",
-                "info"
+                f"【系统协调器】订阅失败: {subscription_result.get('message', '')}",
+                "warn"
             )
 
     async def _sync_positions(self):

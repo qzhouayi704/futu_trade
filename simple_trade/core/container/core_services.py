@@ -17,6 +17,10 @@ from ...api.quote_service import QuoteService
 from ...api.stock_data import StockDataService
 from ...services.market_data.quote_cache import QuoteCache
 from ...utils.logger import print_status
+from ..subscription.subscription_recovery_helper import SubscriptionRecoveryHelper
+from ..connection.global_connection_manager import GlobalConnectionManager
+from ..cache.unified_data_cache import UnifiedDataCache
+from ..monitoring.global_monitoring_dashboard import GlobalMonitoringDashboard
 
 # 富途连接重试配置
 FUTU_RETRY_INTERVAL = 10  # 每次重试间隔（秒）
@@ -34,6 +38,15 @@ class CoreServices:
         self.quote_service: Optional[QuoteService] = None
         self.stock_data_service: Optional[StockDataService] = None
         self.quote_cache: QuoteCache = QuoteCache()
+
+        # 全局服务
+        self.global_subscription_coordinator: Optional[SubscriptionRecoveryHelper] = None
+        self.global_connection_manager: Optional[GlobalConnectionManager] = None
+
+        # 缓存
+        self.unified_cache: Optional[UnifiedDataCache] = None
+        # P5-2: 懒加载，访问 /api/monitoring/global 时才创建
+        self._global_monitoring_dashboard: Optional[GlobalMonitoringDashboard] = None
 
     def initialize(self):
         """初始化核心服务"""
@@ -58,6 +71,37 @@ class CoreServices:
             config=self.config
         )
         logging.info("订阅管理器初始化完成")
+
+        # 注册重连回调：重连后清除所有内存订阅状态
+        def _on_futu_reconnect():
+            logging.warning("OpenD重连成功，清除所有内存订阅状态以触发重新订阅")
+            all_stocks = list(self.subscription_manager.subscribed_stocks)
+            if all_stocks:
+                self.subscription_manager.force_clear_subscriptions(all_stocks)
+
+        self.futu_client.register_reconnect_callback(_on_futu_reconnect)
+        logging.info("重连回调已注册")
+
+        # P5-2: 简化为 SubscriptionRecoveryHelper
+        self.global_subscription_coordinator = SubscriptionRecoveryHelper(
+            self.futu_client,
+            self.subscription_manager
+        )
+        logging.info("订阅恢复助手初始化完成")
+
+        # 全局连接管理器
+        self.global_connection_manager = GlobalConnectionManager(
+            self.futu_client,
+            self.global_subscription_coordinator
+        )
+        logging.info("全局连接管理器初始化完成")
+
+        # 统一缓存层
+        self.unified_cache = UnifiedDataCache(self.db_manager)
+        logging.info("统一缓存层初始化完成")
+
+        # P5-2: GlobalMonitoringDashboard 改为懒加载，跳过初始化
+        logging.info("全局监控面板将在首次访问时初始化（懒加载）")
 
         # 4. 行情服务
         self.quote_service = QuoteService(self.futu_client, self.subscription_manager)
@@ -122,6 +166,37 @@ class CoreServices:
         self.subscription_manager = SubscriptionManager(
             self.futu_client, db_manager=self.db_manager, config=self.config
         )
+
+        # 注册重连回调：重连后清除所有内存订阅状态
+        def _on_futu_reconnect():
+            logging.warning("OpenD重连成功，清除所有内存订阅状态以触发重新订阅")
+            all_stocks = list(self.subscription_manager.subscribed_stocks)
+            if all_stocks:
+                self.subscription_manager.force_clear_subscriptions(all_stocks)
+
+        self.futu_client.register_reconnect_callback(_on_futu_reconnect)
+        logging.info("重连回调已注册")
+
+        # P5-2: 简化为 SubscriptionRecoveryHelper
+        self.global_subscription_coordinator = SubscriptionRecoveryHelper(
+            self.futu_client,
+            self.subscription_manager
+        )
+        logging.info("订阅恢复助手初始化完成")
+
+        self.global_connection_manager = GlobalConnectionManager(
+            self.futu_client,
+            self.global_subscription_coordinator
+        )
+        logging.info("全局连接管理器初始化完成")
+
+        # 统一缓存层
+        self.unified_cache = UnifiedDataCache(self.db_manager)
+        logging.info("统一缓存层初始化完成")
+
+        # P5-2: GlobalMonitoringDashboard 改为懒加载，跳过初始化
+        logging.info("全局监控面板将在首次访问时初始化（懒加载）")
+
         self.quote_service = QuoteService(self.futu_client, self.subscription_manager)
         self.stock_data_service = StockDataService(
             futu_client=self.futu_client,
@@ -175,3 +250,16 @@ class CoreServices:
 
         except Exception as e:
             logging.error(f"核心服务清理失败: {e}")
+
+    @property
+    def global_monitoring_dashboard(self):
+        """P5-2: 懒加载全局监控面板"""
+        if self._global_monitoring_dashboard is None:
+            self._global_monitoring_dashboard = GlobalMonitoringDashboard(
+                global_coordinator=self.global_subscription_coordinator,
+                global_connection_manager=self.global_connection_manager,
+                unified_cache=self.unified_cache,
+            )
+            logging.info("全局监控面板已懒加载初始化")
+        return self._global_monitoring_dashboard
+

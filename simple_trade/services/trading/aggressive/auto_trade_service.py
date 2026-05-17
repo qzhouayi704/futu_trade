@@ -135,6 +135,24 @@ class AutoTradeService:
 
     # ---- 业务方法 ----
 
+    def _get_recent_buy_count(self, stock_code: str, days: int = 30) -> int:
+        """查询近N天内同一股票的买入次数"""
+        db = self._get_db()
+        if not db:
+            return 0
+        try:
+            rows = db.execute_query(
+                """SELECT COUNT(*) FROM trade_history
+                   WHERE stock_code = ? AND trade_side = 'BUY'
+                   AND create_time >= date('now', ?)""",
+                (stock_code, f'-{days} days'),
+            )
+            return rows[0][0] if rows else 0
+        except Exception as e:
+            logging.warning(f"[自动交易] 查询买入次数失败 {stock_code}: {e}")
+            return 0
+
+
     def start_auto_trade(
         self,
         stock_code: str,
@@ -154,6 +172,14 @@ class AutoTradeService:
 
         if prev_close <= 0:
             return {'success': False, 'message': '前收盘价无效'}
+
+        # 同一股票限买检查: 30天内最多买入2次（回测验证: 反复抄底同一股是亏损主因）
+        recent_buy_count = self._get_recent_buy_count(stock_code, days=30)
+        if recent_buy_count >= 2:
+            return {
+                'success': False,
+                'message': f'{stock_code} 近30天已买入{recent_buy_count}次，触发限买规则(最多2次)'
+            }
 
         task = AutoTradeTask(
             stock_code=stock_code, quantity=quantity, zone=zone,

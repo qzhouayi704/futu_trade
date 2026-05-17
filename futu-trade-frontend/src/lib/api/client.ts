@@ -18,7 +18,7 @@ const TIMEOUT_RULES: Array<{ match: (url: string) => boolean; timeout: number }>
   // 超长耗时接口 → 300s（refresh因富途API限频10次/30秒，74板块需约4-5分钟）
   { match: (u) => /\/(refresh|init)/.test(u), timeout: 300000 },
   // 长耗时接口 → 60s
-  { match: (u) => /\/(news\/crawl|monitor\/start|advisor\/evaluate)/.test(u), timeout: 60000 },
+  { match: (u) => /\/(news\/crawl|monitor\/start|advisor\/evaluate|ai-analysis\/analyze)/.test(u), timeout: 120000 },
   // 中等耗时接口 → 30s
   { match: (u) => /\/(enhanced-heat|high-turnover|top-hot|plate-strength)/.test(u), timeout: 30000 },
   // 启动期可能排队等待 FutuOpenD 的接口 → 20s

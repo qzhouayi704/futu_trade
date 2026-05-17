@@ -48,8 +48,9 @@ export const stockApi = {
     limit?: number;
     search?: string;
     market?: string;
+    plate_id?: number;
   }): Promise<ApiResponse<Stock[]>> => {
-    return apiClient.get("/stocks/pool", { params });
+    return apiClient.get("/data", { params: { data_type: 'stocks', ...params } });
   },
 
   // 添加股票
@@ -105,26 +106,19 @@ export const stockApi = {
     return apiClient.post("/stocks/init", { force_refresh: forceRefresh });
   },
 
-  // 初始化数据（带选项）
-  initializeData: async (options: {
-    initPlates?: boolean;
-    initStocks?: boolean;
-    initKline?: boolean;
-    initHotStocks?: boolean;
-  }): Promise<ApiResponse> => {
-    // 根据选项决定是否强制刷新
-    const forceRefresh = options.initPlates || options.initStocks || false;
-    return apiClient.post("/stocks/init", { force_refresh: forceRefresh });
+  // 初始化数据（强制刷新）
+  initializeData: async (forceRefresh: boolean = false): Promise<ApiResponse> => {
+    return apiClient.post("/init", { force_refresh: forceRefresh });
   },
 
   // 增量更新数据（不删除现有数据）
   refreshData: async (): Promise<ApiResponse> => {
-    return apiClient.post("/stocks/refresh");
+    return apiClient.post("/refresh");
   },
 
   // 重置数据（清空并重新初始化）
   resetData: async (): Promise<ApiResponse> => {
-    return apiClient.post("/stocks/init", { force_refresh: true });
+    return apiClient.post("/init", { force_refresh: true });
   },
 
   // 获取初始化状态

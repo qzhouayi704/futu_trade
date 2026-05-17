@@ -174,6 +174,16 @@ export interface HighTurnoverStock {
   plates: { plate_code: string; plate_name: string }[];
   ticker_summary: TickerSummary | null;
   is_position?: boolean;
+  // 流动性字段（新增）
+  liquidity_score?: number;           // 流动性评分(0-100)
+  liquidity_level?: string;           // 流动性等级(A/B/C/D)
+  volume_score?: number;              // 成交量评分
+  turnover_rate_score?: number;       // 换手率评分
+  amount_score?: number;              // 成交额评分
+  amplitude_score?: number;           // 振幅评分
+  stability_score?: number;           // 稳定性评分
+  is_volume_anomaly?: boolean;        // 是否异常放量
+  kline_data_missing?: boolean;       // K线数据不足，评分待完善
 }
 
 // 高换手率 API 响应
@@ -222,6 +232,19 @@ export interface TopHotStock {
   condition: Record<string, unknown> | null;
   capital_flow_summary?: CapitalFlowSummary | null;
   capital_signal?: 'bullish' | 'bearish' | 'neutral';
+  plates?: { plate_code: string; plate_name: string }[];
+  volume_ratio?: number;
+  stock_tag?: { label: string; phase: string; risk_note: string } | null;
+  consensus?: {
+    verdict: string;
+    verdict_label: string;
+    score: number;
+    confidence: number;
+    total_score?: number;
+    passed?: boolean;
+    veto_reason?: string | null;
+    votes?: { name: string; score: number; max_score: number; signal: string; details?: { label: string; value: string }[] }[];
+  } | null;
 }
 
 export interface DataReadyStatus {

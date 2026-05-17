@@ -240,3 +240,64 @@ def get_api_status(api_name: str = 'default') -> dict:
         'max_requests': limiter.max_requests,
         'time_window': limiter.time_window,
     }
+
+
+# ========== P4-1: 优先级限流器 ==========
+
+
+class PriorityRateLimiter:
+    """P4-1: 带优先级的频率限制器
+
+    - P0（交易）：独享专用限流器，100 QPS
+    - P1-P3（报价/K线/分析）：共享通用限流器
+    """
+
+    # 优先级常量
+    PRIORITY_TRADE = 0     # 交易（最高）
+    PRIORITY_QUOTE = 1     # 实时报价
+    PRIORITY_KLINE = 2     # K线/历史数据
+    PRIORITY_ANALYSIS = 3  # 分析/板块
+
+    def __init__(self):
+        # P0 专用限流器（交易操作独享通道）
+        self._trade_limiter = RateLimiter(max_requests=100, time_window=30)
+        # P1-P3 共享限流器
+        self._shared_limiter = get_global_rate_limiter(max_requests=60, time_window=30)
+
+    def wait_if_needed(self, priority: int = 1) -> float:
+        """根据优先级等待
+
+        Args:
+            priority: 0=交易, 1=报价, 2=K线, 3=分析
+
+        Returns:
+            等待时间（秒）
+        """
+        if priority == self.PRIORITY_TRADE:
+            return self._trade_limiter.wait_if_needed()
+        return self._shared_limiter.wait_if_needed()
+
+    def get_status(self) -> dict:
+        return {
+            'trade': {
+                'current_rate': self._trade_limiter.get_current_rate(),
+                'max_requests': self._trade_limiter.max_requests,
+            },
+            'shared': {
+                'current_rate': self._shared_limiter.get_current_rate(),
+                'max_requests': self._shared_limiter.max_requests,
+            }
+        }
+
+
+# 全局优先级限流器
+_priority_limiter: Optional[PriorityRateLimiter] = None
+
+
+def get_priority_limiter() -> PriorityRateLimiter:
+    """获取全局优先级限流器"""
+    global _priority_limiter
+    if _priority_limiter is None:
+        _priority_limiter = PriorityRateLimiter()
+    return _priority_limiter
+

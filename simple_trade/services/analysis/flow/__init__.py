@@ -8,9 +8,11 @@
 from .capital_flow_analyzer import CapitalFlowAnalyzer
 from .big_order_tracker import BigOrderTracker
 from .plate_overview_service import PlateOverviewService
+from .capital_flow_signal_engine import CapitalFlowSignalEngine
 
 __all__ = [
     'CapitalFlowAnalyzer',
     'BigOrderTracker',
     'PlateOverviewService',
+    'CapitalFlowSignalEngine',
 ]

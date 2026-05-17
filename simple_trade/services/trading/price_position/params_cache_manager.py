@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, Set
 
 from .pp_live_models import CachedAnalysisParams, FailureRecord
+from ....utils.market_helper import MarketTimeHelper
 
 
 # 缓存过期时间：当日 17:00（港股收盘后）
@@ -160,12 +161,24 @@ class ParamsCacheManager:
                 error_message=error
             )
 
+    # 最大并发分析数（避免同时下载K线挤爆OpenD）
+    _MAX_CONCURRENT = 3
+
     def request_analysis(self, stock_code: str):
         """
         异步触发回测分析，完成后自动写入缓存。
         重复调用同一股票会被忽略。
+        限制并发数避免大量K线下载同时挤爆OpenD。
         """
+        # 非交易时段不触发分析（避免无谓的K线下载和API频率限制）
+        if not MarketTimeHelper.is_any_market_trading():
+            return
+
         if stock_code in self._cache or stock_code in self._pending:
+            return
+
+        # 并发限制：避免同时分析过多股票挤爆OpenD资源
+        if len(self._pending) >= self._MAX_CONCURRENT:
             return
 
         # 检查失败记录
@@ -256,6 +269,41 @@ class ParamsCacheManager:
             logging.error(f"[参数缓存] {stock_code} 分析异常: {e}")
         finally:
             self._pending.discard(stock_code)
+
+    def pre_warm(self, stock_codes: list):
+        """预热：为昨日活跃股票立即触发分析（绕过交易时段检查）
+
+        用于次日开盘前，预先加载回测参数，确保开盘即有交易规则可用。
+        """
+        if not self._analysis_service:
+            logging.warning("[参数缓存] AnalysisService 未注入，预热跳过")
+            return
+
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            logging.warning("[参数缓存] 事件循环未就绪，预热跳过")
+            return
+
+        count = 0
+        for code in stock_codes:
+            if code in self._cache or code in self._pending:
+                continue
+            # 跳过永久失败的股票
+            if code in self._failure_records:
+                record = self._failure_records[code]
+                if record.error_type == 'permanent':
+                    continue
+            if len(self._pending) >= self._MAX_CONCURRENT:
+                break  # 达到并发上限，剩余的等正常流程触发
+
+            self._pending.add(code)
+            count += 1
+            asyncio.run_coroutine_threadsafe(self._poll_analysis(code), loop)
+
+        if count > 0:
+            logging.info(
+                f"[参数缓存] 预热触发 {count}/{len(stock_codes)} 只昨日活跃股票分析"
+            )
 
     def clear_expired(self):
         """清除所有过期缓存"""

@@ -10,6 +10,8 @@ from ...database.core.db_manager import DatabaseManager
 from ...api.futu_client import FutuClient
 from ..pool.stock_pool import get_global_stock_pool
 from ...core.models import StockWithPlate
+from ..core.stock_marker import StockMarkerService
+from ...utils.market_helper import MarketTimeHelper
 
 
 class RealtimeStockQueryService:
@@ -162,9 +164,9 @@ class RealtimeStockQueryService:
             # 构建SQL查询，使用stock_plates多对多关联，包含自选股优先级字段
             # 同时检查 is_target=1（目标板块）和 is_enabled=1（启用状态）
             # 排除OTC股票和低活跃度股票（但允许超过重检周期的低活跃度股票重新参与筛选）
-            # 低活跃度标记在超过 recheck_days 天后过期，股票将重新参与活跃度筛选
-            # 【时区修复】使用 'localtime' 确保时间比较一致（low_activity_checked_at 存储的是本地时间）
-            # 【永久排除】排除 low_activity_count >= 3 的股票（连续3次标记为低活跃度）
+            # 【交易时段保护】非交易时段不排除低活跃度股票，避免误判
+            low_activity_threshold = StockMarkerService.LOW_ACTIVITY_THRESHOLD
+            is_trading = MarketTimeHelper.is_any_market_trading()
             # 构建持仓股票绕过条件
             position_bypass = ''
             position_params_for_sql = []
@@ -172,6 +174,24 @@ class RealtimeStockQueryService:
                 position_placeholders = ','.join(['?' for _ in position_codes])
                 position_bypass = f' OR s.code IN ({position_placeholders})'
                 position_params_for_sql = list(position_codes)
+
+            # 构建低活跃度排除条件（仅交易时段生效）
+            if is_trading:
+                low_activity_filter = f"""
+                  AND (s.low_activity_count IS NULL OR s.low_activity_count < {low_activity_threshold}{position_bypass})
+                  AND (
+                      s.is_low_activity IS NULL
+                      OR s.is_low_activity = 0
+                      OR (s.is_low_activity = 1
+                          AND s.low_activity_checked_at IS NOT NULL
+                          AND datetime(s.low_activity_checked_at) < datetime('now', 'localtime', '-{recheck_days} days'))
+                      {position_bypass}
+                  )
+                """
+            else:
+                # 非交易时段：不排除低活跃度股票，避免误判
+                low_activity_filter = ""
+                logging.debug("【交易时段保护】当前非交易时段，跳过低活跃度排除过滤")
 
             sql = f'''
                 SELECT DISTINCT s.id, s.code, s.name, s.market, p.plate_name, p.priority,
@@ -181,32 +201,28 @@ class RealtimeStockQueryService:
                 INNER JOIN plates p ON sp.plate_id = p.id
                 WHERE p.is_target = 1 AND p.is_enabled = 1
                   AND (s.is_otc IS NULL OR s.is_otc = 0)
-                  AND (s.low_activity_count IS NULL OR s.low_activity_count < 3{position_bypass})
-                  AND (
-                      s.is_low_activity IS NULL
-                      OR s.is_low_activity = 0
-                      OR (s.is_low_activity = 1
-                          AND s.low_activity_checked_at IS NOT NULL
-                          AND datetime(s.low_activity_checked_at) < datetime('now', 'localtime', '-{recheck_days} days'))
-                      {position_bypass}
-                  )
+                  {low_activity_filter}
             '''
 
-            # 【调试日志】统计被永久排除的股票数量
-            permanently_excluded_sql = '''
-                SELECT COUNT(*) FROM stocks s
-                INNER JOIN stock_plates sp ON s.id = sp.stock_id
-                INNER JOIN plates p ON sp.plate_id = p.id
-                WHERE p.is_target = 1 AND p.is_enabled = 1
-                  AND (s.is_otc IS NULL OR s.is_otc = 0)
-                  AND s.low_activity_count >= 3
-            '''
-            try:
-                perm_excluded_count = self.db_manager.execute_query(permanently_excluded_sql)
-                if perm_excluded_count and perm_excluded_count[0][0] > 0:
-                    logging.info(f"【永久排除】{perm_excluded_count[0][0]} 只股票因连续3次标记为低活跃度被永久排除")
-            except Exception as e:
-                logging.debug(f"统计永久排除数量失败: {e}")
+            # 【调试日志】统计被排除的股票数量
+            if is_trading:
+                excluded_by_count_sql = f'''
+                    SELECT COUNT(*) FROM stocks s
+                    INNER JOIN stock_plates sp ON s.id = sp.stock_id
+                    INNER JOIN plates p ON sp.plate_id = p.id
+                    WHERE p.is_target = 1 AND p.is_enabled = 1
+                      AND (s.is_otc IS NULL OR s.is_otc = 0)
+                      AND s.low_activity_count >= {low_activity_threshold}
+                '''
+                try:
+                    count_result = self.db_manager.execute_query(excluded_by_count_sql)
+                    if count_result and count_result[0][0] > 0:
+                        logging.info(
+                            f"【低活跃排除】{count_result[0][0]} 只股票因连续"
+                            f"{low_activity_threshold}次低活跃被临时排除"
+                        )
+                except Exception as e:
+                    logging.debug(f"统计排除数量失败: {e}")
 
             # 【调试日志】统计被临时排除的低活跃度股票数量
             excluded_sql = f'''
@@ -215,7 +231,7 @@ class RealtimeStockQueryService:
                 INNER JOIN plates p ON sp.plate_id = p.id
                 WHERE p.is_target = 1 AND p.is_enabled = 1
                   AND (s.is_otc IS NULL OR s.is_otc = 0)
-                  AND (s.low_activity_count IS NULL OR s.low_activity_count < 3)
+                  AND (s.low_activity_count IS NULL OR s.low_activity_count < {low_activity_threshold})
                   AND s.is_low_activity = 1
                   AND s.low_activity_checked_at IS NOT NULL
                   AND datetime(s.low_activity_checked_at) >= datetime('now', 'localtime', '-{recheck_days} days')
@@ -227,7 +243,7 @@ class RealtimeStockQueryService:
             except Exception as e:
                 logging.debug(f"统计临时排除数量失败: {e}")
 
-            params = list(position_params_for_sql) * 2  # position_bypass 出现两次
+            params = list(position_params_for_sql) * 2 if is_trading and position_params_for_sql else []
 
             # 添加市场筛选条件
             if markets:

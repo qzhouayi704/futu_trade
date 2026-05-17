@@ -166,6 +166,33 @@ class TickerQueries:
                 }
             return {}
 
+    def insert_ticker_batch(self, records: list[tuple]) -> int:
+        """批量插入逐笔数据
+
+        Args:
+            records: [(stock_code, price, volume, turnover, direction, timestamp, trade_date), ...]
+
+        Returns:
+            插入的记录数
+        """
+        if not records:
+            return 0
+        sql = (
+            "INSERT OR IGNORE INTO ticker_data "
+            "(stock_code, price, volume, turnover, direction, timestamp, trade_date) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        _CHUNK_SIZE = 500
+        total_written = 0
+        with self.conn_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            for i in range(0, len(records), _CHUNK_SIZE):
+                chunk = records[i: i + _CHUNK_SIZE]
+                cursor.executemany(sql, chunk)
+                total_written += cursor.rowcount
+            conn.commit()
+        return total_written
+
     def cleanup_old_data(self, keep_days: int = 7) -> int:
         """清理超过指定天数的旧数据
 

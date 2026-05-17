@@ -33,7 +33,7 @@ export function HotStocksCard({ stocks, loading = false }: HotStocksCardProps) {
             热门股票排行
           </h3>
           <Link
-            href="/stock-pool-monitor"
+            href="/market-scan"
             className="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1"
           >
             查看全部

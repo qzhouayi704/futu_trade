@@ -242,14 +242,20 @@ class LeaderStockFilter:
                 self.logger.debug(f"{stock_code} 大单卖出为主")
                 return False
 
-        # 检查追高风险
-        if self.enhanced_calculator:
-            klines = kline_data.get(stock_code) if kline_data else None
-            is_risky, reason = self.enhanced_calculator.check_chase_high_risk(
-                stock_code, quote, klines
-            )
-            if is_risky:
-                self.logger.debug(f"{stock_code} 追高风险: {reason}")
+        # 追高风险检查（内联，不再依赖 enhanced_calculator）
+        klines = kline_data.get(stock_code) if kline_data else None
+        if klines is not None and hasattr(klines, '__len__') and len(klines) >= 30:
+            from ..analysis.signal.snapshot_builder import SnapshotBuilder
+            current_price = quote.get('last_price') or quote.get('cur_price', 0)
+            price_pos = SnapshotBuilder._calc_price_position(current_price, klines, days=30)
+            if price_pos and price_pos > 40:
+                self.logger.debug(f"{stock_code} 追高风险: 价格位置过高({price_pos:.1f}%)")
+                return False
+
+            # 成交量异常检查
+            volume_ratio = quote.get('volume_ratio', 0)
+            if volume_ratio > 10:
+                self.logger.debug(f"{stock_code} 追高风险: 成交量异常({volume_ratio:.1f}倍)")
                 return False
 
         return True

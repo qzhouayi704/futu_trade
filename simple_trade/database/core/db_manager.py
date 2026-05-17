@@ -25,6 +25,7 @@ from ..queries.kline_queries import KlineQueries
 from ..queries.system_queries import SystemQueries
 from ..queries.advisor_queries import AdvisorQueries
 from ..queries.ticker_queries import TickerQueries
+from ..queries.rt_data_queries import RtDataQueries
 
 
 class DatabaseManager:
@@ -55,6 +56,7 @@ class DatabaseManager:
         self.system_queries = SystemQueries(self.conn_manager)
         self.advisor_queries = AdvisorQueries(self.conn_manager)
         self.ticker_queries = TickerQueries(self.conn_manager)
+        self.rt_data_queries = RtDataQueries(self.conn_manager)
 
         # 写入队列（序列化所有写操作，消除 "database is locked"）
         self.write_queue = DatabaseWriteQueue()

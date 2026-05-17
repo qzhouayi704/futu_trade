@@ -18,6 +18,10 @@ def build_stock_response(
     is_position: bool = False,
     capital_flow_data: Optional[Dict[str, Any]] = None,
     price_position_result=None,
+    plates: Optional[list] = None,
+    volume_ratio: float = 0,
+    stock_tag: Optional[Dict[str, Any]] = None,
+    consensus_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """构建股票响应数据
 
@@ -37,9 +41,20 @@ def build_stock_response(
             'main_net_inflow': capital_flow_data['main_net_inflow'],
             'big_order_buy_ratio': capital_flow_data['big_order_buy_ratio'],
             'capital_score': capital_flow_data['capital_score'],
+            'inflow_change': capital_flow_data.get('inflow_change', 0),
         }
         score = capital_flow_data['capital_score']
-        capital_signal = "bullish" if score >= 60 else ("bearish" if score <= 40 else "neutral")
+        # 统一5档信号标准（与 StockSnapshot.capital_signal 一致）
+        if score >= 70:
+            capital_signal = "bullish"
+        elif score >= 60:
+            capital_signal = "bullish"
+        elif score >= 45:
+            capital_signal = "neutral"
+        elif score >= 30:
+            capital_signal = "bearish"
+        else:
+            capital_signal = "bearish"
     else:
         capital_flow_summary = None
         capital_signal = "neutral"
@@ -68,6 +83,9 @@ def build_stock_response(
         'condition': condition,
         'capital_flow_summary': capital_flow_summary,
         'capital_signal': capital_signal,
+        'plates': plates or [],
+        'volume_ratio': volume_ratio,
+        'stock_tag': stock_tag,
     }
 
     # 双时间框架信号（价格位置分析）
@@ -84,6 +102,10 @@ def build_stock_response(
             'entry_label': pp.entry_label,
             'warnings': pp.warnings,
         })
+
+    # 多策略共识信号
+    if consensus_data is not None:
+        result['consensus'] = consensus_data
 
     return result
 

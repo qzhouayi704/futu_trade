@@ -78,6 +78,12 @@ class QuoteCache:
             )
             return self._quotes_cache['data'].copy()
 
+    def get_last_quotes(self) -> Optional[List[Dict]]:
+        """获取最后一次缓存的报价数据（不检查 TTL，用于盘前/收盘后展示）"""
+        with self._lock:
+            data = self._quotes_cache.get('data', [])
+            return data.copy() if data else None
+
     def update_quotes_cache(self, quotes: List[Dict]):
         """更新报价缓存"""
         with self._lock:

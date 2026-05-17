@@ -11,7 +11,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 from futu import RET_OK, SubType
 
@@ -52,39 +52,34 @@ class TickerService:
 
     CACHE_TTL = 15  # 15秒缓存（逐笔成交数据变化快）
 
-    def __init__(self, futu_client, state_manager=None):
+    def __init__(self, futu_client, state_manager=None, subscription_manager=None, db_manager=None):
         self._futu_client = futu_client
         self._state_manager = state_manager
+        self._subscription_manager = subscription_manager
+        self._db_manager = db_manager
         self._cache: Dict[str, TickerData] = {}
-        self._subscribed: Set[str] = set()
-        self._failed: Set[str] = set()  # 订阅失败的股票集合
 
     def _ensure_subscribed(self, stock_code: str) -> bool:
-        """确保股票已订阅 TICKER 类型，按需订阅"""
-        # 跳过已订阅或已知失败的股票
-        if stock_code in self._subscribed:
+        """确保股票已订阅 TICKER 类型，委托给 SubscriptionManager"""
+        # 通过 SubscriptionManager 检查订阅状态
+        if self._subscription_manager and stock_code in self._subscription_manager.ticker_subscribed_stocks:
             return True
-        if stock_code in self._failed:
+
+        if not self._subscription_manager:
+            logger.warning(f"SubscriptionManager 未注入，无法订阅 {stock_code}")
             return False
+
         try:
-            ret, err = self._futu_client.client.subscribe(
+            result = self._subscription_manager.subscribe_multi_types(
                 [stock_code], [SubType.TICKER]
             )
-            if ret == RET_OK:
-                self._subscribed.add(stock_code)
+            if result.get('subscribed_count', 0) > 0:
                 logger.debug(f"订阅逐笔成交成功: {stock_code}")
                 return True
             else:
-                # 记录失败的股票，避免重复尝试
-                self._failed.add(stock_code)
-                # 额度不足时标记为特殊状态，仍可尝试获取数据
-                if '额度不足' in str(err):
-                    logger.debug(f"逐笔成交订阅额度不足(已记录): {stock_code}")
-                    return False
-                logger.debug(f"订阅逐笔成交失败(已记录): {stock_code}, {err}")
+                logger.debug(f"订阅逐笔成交失败: {stock_code}")
                 return False
         except Exception as e:
-            self._failed.add(stock_code)
             logger.error(f"订阅逐笔成交异常: {stock_code}, {e}")
             return False
 
@@ -185,15 +180,41 @@ class TickerService:
                 f"BUY={buy_count}, SELL={sell_count}, NEUTRAL={neutral_count}"
             )
 
-            return TickerData(
+            result = TickerData(
                 stock_code=stock_code,
                 records=records,
                 total_count=len(records),
                 updated_at=datetime.now(),
             )
+            self._persist_ticker_data(stock_code, records)
+            return result
         except Exception as e:
             logger.error(f"解析逐笔成交数据异常 {stock_code}: {e}")
             return None
+
+    def _persist_ticker_data(self, stock_code: str, records: List[TickerRecord]) -> None:
+        """将解析后的逐笔数据异步写入数据库（失败不影响主流程）"""
+        if not self._db_manager or not records:
+            return
+        try:
+            from ....database.queries.ticker_queries import TickerQueries
+            trade_date = datetime.now().strftime("%Y-%m-%d")
+            rows = [
+                (
+                    stock_code,
+                    r.price,
+                    r.volume,
+                    r.turnover if r.turnover else r.price * r.volume,
+                    r.direction,
+                    int(datetime.now().timestamp() * 1000),
+                    trade_date,
+                )
+                for r in records
+            ]
+            queries = TickerQueries(self._db_manager.conn_manager)
+            queries.insert_ticker_batch(rows)
+        except Exception as e:
+            logger.warning(f"逐笔数据落库失败 {stock_code}: {e}")
 
     def _normalize_direction(self, direction_raw) -> str:
         """标准化成交方向值为 BUY/SELL/NEUTRAL"""

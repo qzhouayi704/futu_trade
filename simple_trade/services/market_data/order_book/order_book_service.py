@@ -42,30 +42,31 @@ class OrderBookService:
     基于富途 get_order_book API。
     """
 
-    def __init__(self, futu_client):
+    def __init__(self, futu_client, subscription_manager=None):
         self._futu_client = futu_client
+        self._subscription_manager = subscription_manager
         self._cache: Dict[str, OrderBookData] = {}
         self._cache_ttl = 30  # 30秒缓存（盘口变化快）
-        self._subscribed: Set[str] = set()  # 已订阅 ORDER_BOOK 的股票
 
     def _ensure_subscribed(self, stock_code: str) -> bool:
-        """确保股票已订阅 ORDER_BOOK 类型，按需订阅"""
-        if stock_code in self._subscribed:
+        """确保股票已订阅 ORDER_BOOK 类型，委托给 SubscriptionManager"""
+        # 通过 SubscriptionManager 检查订阅状态
+        if self._subscription_manager and stock_code in self._subscription_manager.orderbook_subscribed_stocks:
             return True
+
+        if not self._subscription_manager:
+            logger.warning(f"SubscriptionManager 未注入，无法订阅 {stock_code}")
+            return False
+
         try:
-            ret, err = self._futu_client.client.subscribe(
+            result = self._subscription_manager.subscribe_multi_types(
                 [stock_code], [SubType.ORDER_BOOK]
             )
-            if ret == RET_OK:
-                self._subscribed.add(stock_code)
+            if result.get('subscribed_count', 0) > 0:
                 logger.debug(f"订阅盘口成功: {stock_code}")
                 return True
             else:
-                # 额度不足时标记为特殊状态，仍可尝试获取数据
-                if '额度不足' in str(err):
-                    logger.info(f"盘口订阅额度不足: {stock_code}，将尝试直接获取数据")
-                    return False
-                logger.warning(f"订阅盘口失败: {stock_code}, {err}")
+                logger.warning(f"订阅盘口失败: {stock_code}")
                 return False
         except Exception as e:
             logger.error(f"订阅盘口异常: {stock_code}, {e}")

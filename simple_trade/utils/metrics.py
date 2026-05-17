@@ -9,7 +9,7 @@
     m = get_metrics()
     m.counter("api.futu.calls").inc()
     m.histogram("api.futu.latency_ms").observe(12.5)
-    m.gauge("scalping.active_stocks").set(5)
+    m.gauge("ticker.active_stocks").set(5)
 
     snapshot = m.snapshot()  # 返回 dict，可直接 JSON 序列化
 """

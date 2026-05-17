@@ -112,9 +112,12 @@ class NewsAnalyzer:
             gemini_config = config['gemini']
             try:
                 self.gemini_analyzer = GeminiNewsAnalyzer(
-                    api_key=gemini_config['api_key'],
-                    model=gemini_config.get('model', 'gemini-3-flash-preview'),
-                    timeout=gemini_config.get('timeout', 30)
+                    api_key=gemini_config.get('api_key', ''),
+                    model=gemini_config.get('model', 'gemini-2.5-flash'),
+                    timeout=gemini_config.get('timeout', 30),
+                    vertexai=gemini_config.get('vertexai', False),
+                    project=gemini_config.get('project', ''),
+                    location=gemini_config.get('location', ''),
                 )
                 if self.gemini_analyzer.is_available():
                     self.logger.info("Gemini 分析器已启用")

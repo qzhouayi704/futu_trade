@@ -18,7 +18,8 @@ export function useBackendReady() {
 
     const checkBackend = async () => {
       try {
-        const response = await fetch(`${BACKEND_URL}/health`, {
+        // 使用相对路径 /health 利用 Next.js 配置的 rewrite，避免浏览器直接请求 127.0.0.1 产生的跨域/本地网络拦截问题
+        const response = await fetch('/health', {
           method: "GET",
           cache: "no-store",
         });

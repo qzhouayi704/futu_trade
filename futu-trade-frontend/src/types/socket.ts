@@ -1,21 +1,6 @@
 // Socket.IO 事件类型定义
 
 import type { Position } from './trade';
-import type {
-  DeltaUpdateData,
-  MomentumIgnitionData,
-  PriceLevelData,
-  PocUpdateData,
-  ScalpingSignalData,
-  TrapAlertData,
-  FakeBreakoutAlertData,
-  TrueBreakoutConfirmData,
-  FakeLiquidityAlertData,
-  VwapExtensionAlertData,
-  VwapExtensionClearData,
-  StopLossAlertData,
-  TickOutlierData,
-} from './scalping';
 
 export interface QuoteData {
   code: string;
@@ -72,21 +57,4 @@ export interface SocketEvents {
   conditions_update: (data: { conditions: ConditionData[] }) => void;
   monitor_status: (data: { is_running: boolean }) => void;
   system_status: (data: { is_running: boolean; market?: string }) => void;
-
-  // Scalping 事件
-  delta_update: (data: DeltaUpdateData) => void;
-  momentum_ignition: (data: MomentumIgnitionData) => void;
-  price_level_create: (data: PriceLevelData) => void;
-  price_level_remove: (data: PriceLevelData) => void;
-  price_level_break: (data: PriceLevelData) => void;
-  poc_update: (data: PocUpdateData) => void;
-  scalping_signal: (data: ScalpingSignalData) => void;
-  trap_alert: (data: TrapAlertData) => void;
-  fake_breakout_alert: (data: FakeBreakoutAlertData) => void;
-  true_breakout_confirm: (data: TrueBreakoutConfirmData) => void;
-  fake_liquidity_alert: (data: FakeLiquidityAlertData) => void;
-  vwap_extension_alert: (data: VwapExtensionAlertData) => void;
-  vwap_extension_clear: (data: VwapExtensionClearData) => void;
-  stop_loss_alert: (data: StopLossAlertData) => void;
-  tick_outlier: (data: TickOutlierData) => void;
 }

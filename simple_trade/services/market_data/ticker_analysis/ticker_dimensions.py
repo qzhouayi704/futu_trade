@@ -20,17 +20,8 @@ def _calc_net_ratio(records: List[TickerRecord]) -> float:
 
 def analyze_active_buy_sell(
     records: List[TickerRecord],
-    scalping_delta: Optional[float] = None,
-    scalping_delta_direction: Optional[str] = None,
 ) -> TickerDimensionSignal:
-    """主动买卖力量分析：引入时间衰减权重（最早0.3→最新1.0线性插值）。
-
-    当 Scalping 系统运行时，可传入 Delta 数据进行交叉验证：
-    - scalping_delta: Scalping DeltaCalculator 的最近周期净动量
-    - scalping_delta_direction: "bullish" / "bearish" / "neutral"
-
-    若 Scalping Delta 方向与 Ticker direction 矛盾，评分向 0 收敛（× 0.4）。
-    """
+    """主动买卖力量分析：引入时间衰减权重（最早0.3→最新1.0线性插值）。"""
     if not records:
         return _empty_signal("主动买卖", {
             "buy_count": 0, "sell_count": 0, "neutral_count": 0,
@@ -90,16 +81,7 @@ def analyze_active_buy_sell(
         score = 0.0
     score = _clamp(score)
 
-    # Scalping Delta 交叉验证：方向矛盾时衰减评分
-    delta_cross_note = ""
-    if scalping_delta_direction and scalping_delta_direction != "neutral" and abs(score) > 5:
-        ticker_bullish = score > 0
-        delta_bullish = scalping_delta_direction == "bullish"
-        if ticker_bullish != delta_bullish:
-            delta_cross_note = (
-                f"Scalping Delta({scalping_delta:.1f})方向与成交方向矛盾，评分衰减"
-            )
-            score *= 0.4  # 矛盾时向 0 收敛
+
 
     # 数据时间范围
     time_range_start = records[0].time
@@ -135,12 +117,7 @@ def analyze_active_buy_sell(
         "timeline": calc_buy_sell_timeline(records),
     }
 
-    # 附加 Scalping Delta 交叉验证信息
-    if scalping_delta is not None:
-        details["scalping_delta"] = round(scalping_delta, 2)
-        details["scalping_delta_direction"] = scalping_delta_direction or "neutral"
-    if delta_cross_note:
-        details["delta_cross_note"] = delta_cross_note
+
 
     desc = _buy_sell_description(score, buy_sell_ratio)
     return TickerDimensionSignal(

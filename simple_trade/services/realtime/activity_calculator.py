@@ -107,17 +107,15 @@ class ActivityCalculator:
 
     def check_activity_cache(
         self,
-        stocks: List[Dict[str, Any]],
-        cache_minutes: int = 30
+        stocks: List[Dict[str, Any]]
     ) -> tuple:
         """检查当天活跃度缓存，返回缓存命中和未命中的股票
 
-        使用 daily_active_stocks 表存储当天的活跃度筛选结果，
-        仅返回 cache_minutes 分钟内的未过期缓存记录，过期记录需重新筛选。
+        使用 daily_active_stocks 表存储当天的活跃度筛选结果（按天有效）。
+        定时重筛由外部定时器负责清空缓存后重新触发。
 
         Args:
             stocks: 股票列表
-            cache_minutes: 缓存过期时间（分钟），默认 30 分钟
 
         Returns:
             (缓存命中的活跃股票列表, 需要重新筛选的股票列表)
@@ -130,7 +128,7 @@ class ActivityCalculator:
 
         try:
             today = datetime.now().strftime('%Y-%m-%d')
-            checked_stocks = self.db_manager.stock_activity_queries.get_daily_checked_stocks_with_expiry(today, cache_minutes)
+            checked_stocks = self.db_manager.stock_activity_queries.get_daily_checked_stocks(today)
 
             if not checked_stocks:
                 # 当天没有任何缓存，全部需要检查
@@ -159,7 +157,7 @@ class ActivityCalculator:
                     uncached.append(stock)
 
             self.logger.info(
-                f"活跃度缓存(过期{cache_minutes}分钟): 活跃{len(cached_active)}只, "
+                f"活跃度缓存(当天): 活跃{len(cached_active)}只, "
                 f"不活跃{cached_inactive_count}只, "
                 f"检查失败{check_failed_count}只, 待检查{len(uncached)}只"
             )
@@ -397,7 +395,8 @@ class ActivityCalculator:
             # 不活跃 → 写入标记（供跨天优化使用）
             if self._stock_marker and not check_failed:
                 if is_active:
-                    self._stock_marker.clear_low_activity_mark([code])
+                    # 活跃股票：衰减 count（渐进恢复，而非直接清零）
+                    self._stock_marker.decrement_low_activity_count([code])
                 else:
                     self._stock_marker.mark_low_activity_stocks(
                         [code], {code: activity_score}

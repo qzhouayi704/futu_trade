@@ -19,6 +19,7 @@ from .risk import (
     DynamicStopLossStrategy,
     DynamicStopLossConfig,
 )
+from .risk.smart_position_manager import SmartPositionManager, PositionConfig
 from .profit import (
     LotTakeProfitService,
     LotOrderTakeProfitService,

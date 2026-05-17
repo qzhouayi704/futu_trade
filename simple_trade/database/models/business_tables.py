@@ -201,6 +201,7 @@ class BusinessTables:
             net_inflow_ratio DECIMAL(5,4),
             big_order_buy_ratio DECIMAL(5,4),
             capital_score DECIMAL(5,2),
+            inflow_change DECIMAL(15,2) DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(stock_code, timestamp)
         )
@@ -396,6 +397,78 @@ class BusinessTables:
         )
     '''
 
+    # 盘后优选结果持久化表
+    OVERNIGHT_SCREEN_RESULTS_TABLE = '''
+        CREATE TABLE IF NOT EXISTS overnight_screen_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            screen_date TEXT NOT NULL,
+            candidates_json TEXT NOT NULL,
+            total_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(screen_date)
+        )
+    '''
+
     SCALPING_EVENTS_INDEXES = [
         'CREATE INDEX IF NOT EXISTS idx_scalping_events_stock_date ON scalping_events(stock_code, trade_date)',
+    ]
+
+    # 历史基准统计表（用于动态阈值自适应）
+    MARKET_BASELINES_TABLE = '''
+        CREATE TABLE IF NOT EXISTS market_baselines (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_code  VARCHAR(20) NOT NULL,
+            metric_key  VARCHAR(50) NOT NULL,
+            window_days INTEGER NOT NULL,
+            mean        REAL,
+            stddev      REAL,
+            p25         REAL,
+            p50         REAL,
+            p75         REAL,
+            p90         REAL,
+            sample_count INTEGER DEFAULT 0,
+            computed_at  TIMESTAMP NOT NULL,
+            UNIQUE(stock_code, metric_key, window_days)
+        )
+    '''
+
+    # 分时数据持久化表（保存获取到的RT_DATA）
+    RT_DATA_TABLE = '''
+        CREATE TABLE IF NOT EXISTS rt_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_code VARCHAR(20) NOT NULL,
+            time VARCHAR(30) NOT NULL,
+            cur_price DECIMAL(10,3),
+            avg_price DECIMAL(10,3),
+            volume BIGINT,
+            turnover DECIMAL(15,2),
+            trade_date TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(stock_code, time)
+        )
+    '''
+
+    # 分时数据表索引
+    RT_DATA_INDEXES = [
+        'CREATE INDEX IF NOT EXISTS idx_rt_data_stock_date ON rt_data(stock_code, trade_date)',
+        'CREATE INDEX IF NOT EXISTS idx_rt_data_time ON rt_data(time)',
+    ]
+
+    # CCASS 经纪商持仓数据（T+1，来自 HKEX）
+    CCASS_HOLDINGS_TABLE = '''
+        CREATE TABLE IF NOT EXISTS ccass_holdings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_code VARCHAR(20) NOT NULL,
+            holding_date TEXT NOT NULL,
+            participant_id VARCHAR(20),
+            participant_name TEXT NOT NULL,
+            shareholding BIGINT DEFAULT 0,
+            percent DECIMAL(10,4) DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(stock_code, holding_date, participant_id)
+        )
+    '''
+
+    CCASS_HOLDINGS_INDEXES = [
+        'CREATE INDEX IF NOT EXISTS idx_ccass_stock_date ON ccass_holdings(stock_code, holding_date)',
     ]

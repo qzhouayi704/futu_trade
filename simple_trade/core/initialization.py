@@ -13,7 +13,9 @@
 """
 
 import asyncio
+import json
 import logging
+import os
 
 from ..core.container.service_container import ServiceContainer
 from ..utils.logger import print_status, get_flow_logger
@@ -100,21 +102,32 @@ async def initialize_system_data(container: ServiceContainer, state_manager) -> 
         flow.error("股票池初始化异常", err=e)
         success = False
 
-    # 4. 清理当天不完整K线数据（非关键）- 使用异步线程
+    # 4. 清理当天不完整K线数据（仅盘中清理，收盘后数据已完整）
     if container.futu_client.is_available():
-        try:
-            await asyncio.to_thread(
-                container.kline_service.clean_today_incomplete_kline
-            )
-            flow.step("K线数据清理")
-        except Exception as e:
-            flow.warn("K线数据清理异常", error=str(e))
+        from ..utils.market_helper import MarketTimeHelper
+        active_markets = MarketTimeHelper.get_current_active_markets()
+        if active_markets:
+            # 盘中启动：今天数据可能不完整，清理
+            try:
+                await asyncio.to_thread(
+                    container.kline_service.clean_today_incomplete_kline
+                )
+                flow.step("K线数据清理")
+            except Exception as e:
+                flow.warn("K线数据清理异常", error=str(e))
+        else:
+            # 收盘后启动：今天数据已完整，跳过清理
+            flow.step("K线数据清理(跳过-收盘后)")
 
     # 5. 同步持仓股票到股票池（非关键）
     await _sync_positions_on_startup(container)
     flow.step("持仓同步")
 
-    # 6. 如果系统未运行，清空所有订阅（关键）
+    # 6. 预热价格位置参数缓存（从昨日活跃股票池）
+    await _pre_warm_price_position(container)
+    flow.step("价格位置预热")
+
+    # 7. 如果系统未运行，清空所有订阅（关键）
     if not state_manager.is_running():
         if container.subscription_helper:
             try:
@@ -126,3 +139,43 @@ async def initialize_system_data(container: ServiceContainer, state_manager) -> 
 
     flow.end(success=success)
     return success
+
+
+async def _pre_warm_price_position(container: ServiceContainer):
+    """从昨日活跃股票池预热价格位置分析参数"""
+    try:
+        persist_file = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            'data', 'prev_day_stocks.json'
+        )
+        if not os.path.exists(persist_file):
+            logging.info("【预热】无昨日股票池文件，跳过")
+            return
+
+        with open(persist_file, 'r') as f:
+            data = json.load(f)
+
+        codes = data.get('codes', [])
+        prev_date = data.get('date', '')
+        if not codes:
+            return
+
+        # 新鲜度检查：超过 3 天的数据忽略
+        if prev_date:
+            from datetime import datetime, timedelta
+            try:
+                saved_date = datetime.strptime(prev_date, '%Y-%m-%d').date()
+                if (datetime.now().date() - saved_date).days > 3:
+                    logging.info(f"【预热】昨日股票池已过期({prev_date})，跳过")
+                    return
+            except ValueError:
+                pass
+
+        sms = getattr(container, 'strategy_monitor_service', None)
+        if sms and hasattr(sms, 'params_cache_manager'):
+            sms.params_cache_manager.pre_warm(codes)
+            logging.info(
+                f"【预热】加载 {len(codes)} 只昨日({prev_date})活跃股票"
+            )
+    except Exception as e:
+        logging.warning(f"【预热】加载昨日股票池失败: {e}")

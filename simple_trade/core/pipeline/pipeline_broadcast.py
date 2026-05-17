@@ -24,6 +24,7 @@ class PipelineBroadcast:
     async def broadcast(self, quotes: List[Dict], trade_actions: List[Dict],
                         conditions: List[Dict]):
         """统一广播到前端，确保 quotes_update 事件仅广播一次"""
+        import asyncio
         try:
             alerts = await self._check_alerts(quotes)
 
@@ -33,14 +34,22 @@ class PipelineBroadcast:
 
             signals_by_strategy = self.state_manager.get_signals_by_strategy() \
                 if hasattr(self.state_manager, 'get_signals_by_strategy') else {}
-            await self.socket_manager.emit_to_all(SocketEvent.QUOTES_UPDATE, {
-                'quotes': quotes,
-                'alerts': alerts,
-                'conditions': conditions,
-                'trade_actions': trade_actions,
-                'signals_by_strategy': signals_by_strategy,
-                'timestamp': datetime.now().isoformat()
-            })
+
+            # P2-1: 广播加超时保护（3秒），慢客户端不影响推送周期
+            try:
+                await asyncio.wait_for(
+                    self.socket_manager.emit_to_all(SocketEvent.QUOTES_UPDATE, {
+                        'quotes': quotes,
+                        'alerts': alerts,
+                        'conditions': conditions,
+                        'trade_actions': trade_actions,
+                        'signals_by_strategy': signals_by_strategy,
+                        'timestamp': datetime.now().isoformat()
+                    }),
+                    timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                logging.warning("广播超时(3s)，丢弃本轮")
 
             if trade_actions:
                 await self._broadcast_strategy_signals(trade_actions)

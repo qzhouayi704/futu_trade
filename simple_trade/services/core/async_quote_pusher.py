@@ -13,6 +13,7 @@
 
 import logging
 import asyncio
+import time
 from typing import Optional, Dict, Any, List
 
 from ...utils.logger import print_status, get_flow_logger
@@ -42,6 +43,11 @@ class AsyncQuotePusher:
         # 第一层防御：构造时即获取当前市场，避免首轮推送循环误判市场切换
         self.last_active_markets: List[str] = MarketTimeHelper.get_current_active_markets() or []
         self.first_quote_ready = asyncio.Event()  # 首次报价就绪事件
+        self._last_refilter_time: float = time.time()  # 上次活跃度重筛时间
+        self._refilter_interval: int = 1800  # 活跃度重筛间隔（秒），默认30分钟
+        self._last_pool_scan_time: float = 0  # 上次全池扫描时间
+        self._pool_scan_interval: int = 180  # 全池扫描间隔（秒），3分钟
+        self._pool_scanner = None  # 延迟初始化
 
         # 从配置获取推送间隔
         if container.config:
@@ -100,8 +106,20 @@ class AsyncQuotePusher:
                     return result
 
                 subscribed_count = subscription_result.get('subscribed_count', 0)
-                flow.step("订阅完成", count=subscribed_count,
-                          markets=','.join(current_markets))
+
+                # 竞态保护：如果自己的订阅返回0，但其他路径（如系统协调器）
+                # 已在并行完成订阅，使用实际订阅数
+                if subscribed_count == 0:
+                    actual_count = self.container.subscription_manager.subscribed_count
+                    if actual_count > 0:
+                        subscribed_count = actual_count
+                        flow.step("使用已有订阅", count=actual_count)
+                    else:
+                        flow.step("订阅完成", count=0,
+                                  markets=','.join(current_markets))
+                else:
+                    flow.step("订阅完成", count=subscribed_count,
+                              markets=','.join(current_markets))
 
             # 启动推送任务
             self.is_running = True
@@ -148,6 +166,14 @@ class AsyncQuotePusher:
         """推送循环 - 报价获取 + 条件性监控"""
         print_status("【行情推送】推送循环开始", "info")
 
+        # P1-1: 推送循环埋点
+        import os, json
+        from ...utils.logger import create_dedicated_logger
+        _log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'logs')
+        _cycle_logger = create_dedicated_logger(
+            'quote_cycle_trace', os.path.join(_log_dir, 'quote_cycle.log')
+        )
+
         first_quote_fetched = False
         first_quote_timeout = 60  # 60 秒超时
         start_time = asyncio.get_running_loop().time()
@@ -156,13 +182,33 @@ class AsyncQuotePusher:
         while self.is_running:
             try:
                 # 1. 始终执行报价获取周期
+                t0 = time.time()
                 quotes = await self.quote_pipeline.run_quote_cycle()
+                fetch_ms = (time.time() - t0) * 1000
+
+                # 2. 仅在监控启动时执行监控周期
+                t1 = time.time()
+                if self.state_manager.is_running() and quotes:
+                    try:
+                        await self.quote_pipeline.run_monitoring_cycle(quotes)
+                    except Exception as e:
+                        logging.error(f"监控周期异常（不影响报价获取）: {e}", exc_info=True)
+                broadcast_ms = (time.time() - t1) * 1000
+
+                # P1-1: 记录每轮指标
+                _cycle_logger.info(json.dumps({
+                    "flow": "quote_cycle",
+                    "fetch_ms": round(fetch_ms, 1),
+                    "broadcast_ms": round(broadcast_ms, 1),
+                    "quote_count": len(quotes) if quotes else 0,
+                    "consecutive_failures": consecutive_failures,
+                }, ensure_ascii=False))
 
                 # 首次报价成功后设置事件
                 if not first_quote_fetched and quotes:
                     first_quote_fetched = True
                     self.first_quote_ready.set()
-                    print_status("【行情推送】首次报价获取成功，通知 Scalping 引擎", "ok")
+                    print_status("【行情推送】首次报价获取成功，系统已就绪", "ok")
 
                 # 检查首次报价超时
                 if not first_quote_fetched:
@@ -172,16 +218,11 @@ class AsyncQuotePusher:
                         self.first_quote_ready.set()
                         first_quote_fetched = True  # 防止重复设置
 
-                # 2. 仅在监控启动时执行监控周期
-                if self.state_manager.is_running() and quotes:
-                    try:
-                        await self.quote_pipeline.run_monitoring_cycle(quotes)
-                    except Exception as e:
-                        logging.error(f"监控周期异常（不影响报价获取）: {e}", exc_info=True)
-
-                # 3. 仅在监控运行时检查市场切换
+                # 3. 仅在监控运行时检查市场切换和定时重筛
                 if self.state_manager.is_running():
                     await self._check_market_switch()
+                    self._check_periodic_refilter()
+                    await self._check_pool_scan()
 
                 # 成功时重置连续失败计数器
                 consecutive_failures = 0
@@ -198,6 +239,136 @@ class AsyncQuotePusher:
                 await asyncio.sleep(backoff)
 
         print_status("【行情推送】推送循环结束", "info")
+
+    def _check_periodic_refilter(self):
+        """检查是否需要定时重新筛选活跃度
+
+        每 _refilter_interval 秒（默认30分钟）清空当天活跃度缓存并触发后台重筛。
+        重筛完成后会自动重新订阅股票。
+        仅在盘中执行，收盘后跳过（避免换手率为0导致活跃股被清空）。
+        """
+        now = time.time()
+        elapsed = now - self._last_refilter_time
+        if elapsed < self._refilter_interval:
+            return
+
+        # 收盘后不重筛，保留当天活跃股数据用于盘后分析
+        # K线更新由 DailyKlineUpdater（16:30自动触发）负责
+        active_markets = MarketTimeHelper.get_current_active_markets()
+        if not active_markets:
+            return
+
+        self._last_refilter_time = now
+
+        try:
+            from ...routers.data.activity_refilter import trigger_refilter_async
+            from datetime import date
+
+            # 清空当天缓存
+            today = date.today().strftime('%Y-%m-%d')
+            cleared = self.container.db_manager.stock_activity_queries.clear_daily_activity_records(today)
+            logging.info(
+                f"【定时重筛】已清空 {cleared} 条活跃度缓存，触发后台重新筛选"
+            )
+
+            # 触发异步重筛（后台线程执行，不阻塞推送循环）
+            started = trigger_refilter_async(self.container)
+            if started:
+                logging.info("【定时重筛】后台重筛任务已启动")
+            else:
+                logging.info("【定时重筛】无需重筛（正在进行中或无待检查股票）")
+
+        except Exception as e:
+            logging.error(f"【定时重筛】触发失败: {e}", exc_info=True)
+
+    async def _check_pool_scan(self):
+        """每3分钟执行全池快照扫描，发现异动股"""
+        now = time.time()
+        if now - self._last_pool_scan_time < self._pool_scan_interval:
+            return
+
+        # 仅盘中执行
+        active_markets = MarketTimeHelper.get_current_active_markets()
+        if not active_markets:
+            return
+
+        self._last_pool_scan_time = now
+
+        # 延迟初始化扫描器
+        if self._pool_scanner is None:
+            try:
+                from ...services.market_data.pool_snapshot_scanner import PoolSnapshotScanner
+                self._pool_scanner = PoolSnapshotScanner(self.container)
+                logging.info("【全池扫描】扫描器初始化完成")
+            except Exception as e:
+                logging.error(f"【全池扫描】初始化失败: {e}")
+                return
+
+        try:
+            # 在后台线程执行扫描（避免阻塞推送循环）
+            anomalies = await asyncio.get_event_loop().run_in_executor(
+                None, self._pool_scanner.scan
+            )
+
+            if anomalies:
+                # 推送异动通知到前端
+                await self._broadcast_anomalies(anomalies)
+
+                # 尝试替换订阅（最多5只）
+                rotation = self._pool_scanner.get_rotation_candidates()[:5]
+                if rotation:
+                    self._rotate_subscriptions(rotation)
+
+        except Exception as e:
+            logging.warning(f"【全池扫描】执行失败: {e}")
+
+    async def _broadcast_anomalies(self, anomalies):
+        """通过WebSocket推送异动通知"""
+        try:
+            data = [{
+                'code': a.code,
+                'name': a.name,
+                'change_rate': a.change_rate,
+                'volume_ratio': a.volume_ratio,
+                'turnover_rate': a.turnover_rate,
+                'price': a.price,
+                'anomaly_type': a.anomaly_type,
+                'has_shrinkage': a.has_shrinkage,
+                'detected_at': a.detected_at,
+                'detail': a.detail,
+            } for a in anomalies]
+
+            await self.socket_manager.emit('pool_anomaly', {
+                'anomalies': data,
+                'count': len(data),
+                'scan_time': time.strftime('%H:%M:%S'),
+            })
+        except Exception as e:
+            logging.debug(f"【全池扫描】WebSocket推送失败: {e}")
+
+    def _rotate_subscriptions(self, new_codes):
+        """将异动股替换进订阅列表"""
+        try:
+            sub_mgr = self.container.subscription_manager
+            if not sub_mgr:
+                return
+
+            subscribed = sub_mgr.subscribed_stocks
+            already_in = [c for c in new_codes if c in subscribed]
+            to_add = [c for c in new_codes if c not in subscribed]
+
+            if not to_add:
+                return
+
+            # 订阅新异动股（subscription_manager内部有额度管理）
+            result = sub_mgr.subscribe(to_add)
+            if result.get('success'):
+                logging.info(
+                    f"【异动轮换】新增订阅 {len(to_add)} 只异动股: "
+                    f"{to_add[:5]}"
+                )
+        except Exception as e:
+            logging.warning(f"【异动轮换】订阅失败: {e}")
 
     async def _check_market_switch(self):
         """检查并处理市场切换"""

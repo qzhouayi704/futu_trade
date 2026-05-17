@@ -45,7 +45,8 @@ class KlineQueries(BaseQueries):
 
             # 排除"今天"的数据，只返回已收盘的历史数据
             query = '''
-                SELECT time_key, open_price, high_price, low_price, close_price, volume
+                SELECT time_key, open_price, high_price, low_price, close_price,
+                       volume, turnover, pe_ratio, turnover_rate
                 FROM kline_data
                 WHERE stock_code = ? AND time_key < ?
                 ORDER BY time_key DESC
@@ -53,8 +54,8 @@ class KlineQueries(BaseQueries):
             '''
             rows = self.execute_query(query, (stock_code, today_str, days))
 
-            # 使用 KlineData 数据模型转换，并按日期升序
-            kline_objects = [KlineData.from_db_row(row) for row in reversed(rows)]
+            # 使用 KlineData 数据模型转换（完整9字段），并按日期升序
+            kline_objects = [KlineData.from_db_row_full(row) for row in reversed(rows)]
             kline_data = [kline.to_dict() for kline in kline_objects]
 
             logging.debug(f"K线查询: {stock_code} ({market}), 排除日期>={today_str}, 返回{len(kline_data)}条")

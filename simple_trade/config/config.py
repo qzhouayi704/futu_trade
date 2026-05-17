@@ -108,20 +108,7 @@ class SubscriptionConfig(_ConfigMixin):
     max_quote_subscription: int = 300
     max_ticker_subscription: int = 100
     max_orderbook_subscription: int = 100
-    scalping_max_stocks: int = 15
     enable_auto_replace: bool = True
-
-
-@dataclass
-class ScalpingProcessConfig(_ConfigMixin):
-    """Scalping 多进程超时配置"""
-    spawn_timeout: float = 60.0       # 子进程初始化超时（秒）
-    start_timeout: float = 60.0       # start 命令超时（秒）
-    stop_timeout: float = 5.0         # stop 命令超时（秒）
-    snapshot_timeout: float = 5.0     # snapshot 命令超时（秒）
-    heartbeat_interval: float = 30.0  # 子进程心跳间隔（秒）
-    heartbeat_timeout: float = 60.0   # 心跳超时判定（秒）
-    max_restarts: int = 3             # 最大自动重启次数
 
 
 @dataclass
@@ -130,7 +117,6 @@ class LoggingConfig(_ConfigMixin):
     console_level: str = "WARNING"
     file_level: str = "INFO"
     enable_quote_debug: bool = False
-    enable_scalping_debug: bool = False
     quote_log_interval: int = 10
 
 
@@ -184,8 +170,6 @@ class Config:
     })                                      # 按市场的订阅数量限制
     kline_priority_enabled: bool = True     # K线优先订阅开关
     log_kline_detail: bool = True           # 是否记录K线详细日志
-    scalping_enabled: bool = False          # Scalping模块开关
-    max_scalping_stocks: int = 50           # Scalping最大监控股票数
     
     # ==================== 优先级配置 ====================
     priority_thresholds: dict = field(default_factory=lambda: {
@@ -244,9 +228,6 @@ class Config:
     # ==================== 订阅配置 ====================
     subscription_config: SubscriptionConfig = field(default_factory=SubscriptionConfig)
 
-    # ==================== Scalping 多进程配置 ====================
-    scalping_process: ScalpingProcessConfig = field(default_factory=ScalpingProcessConfig)
-
     def __post_init__(self):
         """JSON 加载时自动将 dict 转换为嵌套 dataclass"""
         _conversions = {
@@ -258,7 +239,6 @@ class Config:
             'gemini_analyst': GeminiAnalystConfig,
             'logging': LoggingConfig,
             'subscription_config': SubscriptionConfig,
-            'scalping_process': ScalpingProcessConfig,
         }
         for attr, cls in _conversions.items():
             val = getattr(self, attr)
@@ -295,7 +275,6 @@ class ConfigValidator:
         'max_subscription_stocks': {'type': int, 'min': 1, 'max': 1000},
         'kline_priority_enabled': {'type': bool},
         'log_kline_detail': {'type': bool},
-        'max_scalping_stocks': {'type': int, 'min': 1, 'max': 200},
         
         # 数据限制配置
         'max_recent_signals': {'type': int, 'min': 1, 'max': 1000},
@@ -593,8 +572,8 @@ class ConfigManager:
             "预警配置": ["alert_5min_rise_threshold", "alert_5min_fall_threshold",
                         "alert_5min_amplitude_threshold", "price_history_duration",
                         "alert_cooldown_seconds", "alert_percent_increment_threshold"],
-            "监控配置": ["max_stocks_monitor", "max_subscription_stocks", 
-                        "kline_priority_enabled", "log_kline_detail", "max_scalping_stocks"],
+            "监控配置": ["max_stocks_monitor", "max_subscription_stocks",
+                        "kline_priority_enabled", "log_kline_detail"],
             "优先级配置": ["priority_thresholds"],
             "数据限制配置": ["max_recent_signals", "max_active_stocks", "max_subscribed_stocks",
                           "max_plate_stocks", "max_quality_plates", "max_target_plates",

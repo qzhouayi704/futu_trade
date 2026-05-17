@@ -182,25 +182,45 @@ async def trigger_crawl(
     request: TriggerCrawlRequest = Body(...),
     container=Depends(get_container)
 ):
-    """手动触发新闻抓取"""
-    # 如果是调试模式，临时创建调试版服务
-    if request.debug:
-        from ...services.news import NewsService
-        from dataclasses import asdict
-        config = asdict(container.config) if hasattr(container, 'config') else {}
-        debug_service = NewsService(container.db_manager, config=config, debug=True)
-        result = await debug_service.crawl_and_analyze(request.max_items)
-    else:
-        news_service = _get_news_service(container)
-        result = await news_service.crawl_and_analyze(request.max_items)
+    """手动触发新闻抓取（异步后台执行，立即返回）"""
+    import asyncio
 
-    if not result.get('success', False):
-        raise BusinessError(result.get('message', '抓取失败'))
+    news_service = _get_news_service(container)
+
+    # 如果已在抓取中，直接返回
+    if news_service._is_crawling:
+        return APIResponse(
+            success=True,
+            data={'is_crawling': True},
+            message="新闻正在抓取中，请稍后查看"
+        )
+
+    # 后台任务：抓取并保存结果到 service 状态
+    async def _background_crawl():
+        try:
+            if request.debug:
+                from ...services.news import NewsService
+                from dataclasses import asdict
+                config = asdict(container.config) if hasattr(container, 'config') else {}
+                debug_service = NewsService(container.db_manager, config=config, debug=True)
+                result = await debug_service.crawl_and_analyze(request.max_items)
+            else:
+                result = await news_service.crawl_and_analyze(request.max_items)
+            # 保存最后一次抓取结果供轮询查询
+            news_service._last_crawl_result = result
+        except Exception as e:
+            logging.error(f"后台新闻抓取失败: {e}")
+            news_service._last_crawl_result = {
+                'success': False, 'message': str(e),
+                'crawled_count': 0, 'new_count': 0
+            }
+
+    asyncio.create_task(_background_crawl())
 
     return APIResponse(
         success=True,
-        data=result,
-        message=f"抓取完成，新增 {result.get('new_count', 0)} 条新闻"
+        data={'is_crawling': True},
+        message="新闻抓取已启动，请稍后查看"
     )
 
 

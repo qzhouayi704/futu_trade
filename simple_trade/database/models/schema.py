@@ -117,6 +117,16 @@ class DatabaseSchema(BaseTables, BusinessTables):
         'CREATE INDEX IF NOT EXISTS idx_scalping_delta_code_date ON scalping_delta_history(stock_code, trade_date)',
         'CREATE INDEX IF NOT EXISTS idx_scalping_poc_code_date ON scalping_poc_snapshot(stock_code, trade_date)',
         'CREATE INDEX IF NOT EXISTS idx_scalping_levels_code_date ON scalping_price_levels(stock_code, trade_date)',
+
+        # === 盘后优选结果表索引 ===
+        'CREATE INDEX IF NOT EXISTS idx_overnight_screen_date ON overnight_screen_results(screen_date DESC)',
+
+        # === 历史基准表索引 ===
+        'CREATE INDEX IF NOT EXISTS idx_baselines_code_key ON market_baselines(stock_code, metric_key)',
+        
+        # === 分时数据持久化表索引 ===
+        'CREATE INDEX IF NOT EXISTS idx_rt_data_code_date ON rt_data(stock_code, trade_date)',
+        'CREATE INDEX IF NOT EXISTS idx_rt_data_time ON rt_data(time)',
     ]
 
     @classmethod
@@ -151,6 +161,14 @@ class DatabaseSchema(BaseTables, BusinessTables):
             cls.SCALPING_PRICE_LEVELS_TABLE,
             cls.TICKER_DATA_TABLE,
             cls.SCALPING_EVENTS_TABLE,
+            # === 盘后优选 ===
+            cls.OVERNIGHT_SCREEN_RESULTS_TABLE,
+            # === 历史基准 ===
+            cls.MARKET_BASELINES_TABLE,
+            # === 分时数据 ===
+            cls.RT_DATA_TABLE,
+            # === CCASS 持仓 ===
+            cls.CCASS_HOLDINGS_TABLE,
         ]
 
     @classmethod
@@ -163,6 +181,12 @@ class DatabaseSchema(BaseTables, BusinessTables):
         # 添加 Scalping 事件索引
         if hasattr(cls, 'SCALPING_EVENTS_INDEXES'):
             indexes.extend(cls.SCALPING_EVENTS_INDEXES)
+        # 添加分时数据索引
+        if hasattr(cls, 'RT_DATA_INDEXES'):
+            indexes.extend(cls.RT_DATA_INDEXES)
+        # 添加 CCASS 持仓索引
+        if hasattr(cls, 'CCASS_HOLDINGS_INDEXES'):
+            indexes.extend(cls.CCASS_HOLDINGS_INDEXES)
         return indexes
 
 
@@ -195,3 +219,5 @@ class TableNames:
     SCALPING_POC_SNAPSHOT = "scalping_poc_snapshot"
     SCALPING_PRICE_LEVELS = "scalping_price_levels"
     SCALPING_EVENTS = "scalping_events"
+    OVERNIGHT_SCREEN_RESULTS = "overnight_screen_results"
+    RT_DATA = "rt_data"

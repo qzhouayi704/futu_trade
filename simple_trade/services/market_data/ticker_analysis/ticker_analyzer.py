@@ -67,8 +67,6 @@ class TickerAnalyzer:
         self, stock_code: str, current_price: float = 0.0,
         quote: Optional[Dict[str, Any]] = None,
         avg_daily_turnover: float = 0.0,
-        scalping_delta: Optional[float] = None,
-        scalping_delta_direction: Optional[str] = None,
     ) -> Optional[TickerAnalysis]:
         """执行完整的成交分析
 
@@ -77,8 +75,6 @@ class TickerAnalyzer:
             current_price: 当前价格（用于密集价位的支撑/阻力判断）
             quote: 实时报价快照（含 turnover、change_pct 等）
             avg_daily_turnover: 历史日均成交额（从K线数据库计算）
-            scalping_delta: Scalping Delta 净动量（可选，来自 StateManager）
-            scalping_delta_direction: Scalping Delta 方向（可选）
 
         Returns:
             TickerAnalysis 或 None（数据不可用时）
@@ -110,8 +106,6 @@ class TickerAnalyzer:
         dims = [
             analyze_active_buy_sell(
                 records,
-                scalping_delta=scalping_delta,
-                scalping_delta_direction=scalping_delta_direction,
             ),
             analyze_big_order_ratio(records, dynamic_threshold),
             analyze_volume_clusters(records, current_price),

@@ -59,10 +59,13 @@ class MarketHeatMonitor:
             0-100 的市场热度分数
         """
         if not quotes:
-            logger.warning("实时报价数据不可用，返回默认市场热度 50.0")
+            if not getattr(self, '_warned_no_quotes', False):
+                logger.warning("实时报价数据不可用，返回默认市场热度 50.0")
+                self._warned_no_quotes = True
             return 50.0
 
         total = len(quotes)
+        self._warned_no_quotes = False  # 收到有效数据，重置告警标记
 
         # 1. 上涨股票比例（change_pct > 0）
         up_count = sum(1 for q in quotes if q.get("change_pct", 0) > 0)

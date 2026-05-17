@@ -137,6 +137,15 @@ class QuoteService:
                     f"获取报价失败(订阅问题): 请求{len(stock_codes)}只, "
                     f"股票={stock_codes[:10]}, 错误: {error_str[:200]}"
                 )
+                # 订阅状态不同步：清除这批股票的内存订阅状态，
+                # 避免后续循环反复请求已失效的订阅
+                try:
+                    self._subscription_manager.force_clear_subscriptions(stock_codes)
+                    self.logger.warning(
+                        f"已清除 {len(stock_codes)} 只股票的订阅状态（订阅已失效）"
+                    )
+                except Exception as clear_err:
+                    self.logger.error(f"清除订阅状态失败: {clear_err}")
             else:
                 self.logger.warning(
                     f"获取报价失败: 请求{len(stock_codes)}只, "

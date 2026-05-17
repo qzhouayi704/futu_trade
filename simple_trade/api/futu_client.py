@@ -16,10 +16,60 @@
 import time
 import logging
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from simple_trade.utils.api_protection import futu_api_protected
 from simple_trade.utils.rate_limiter import get_global_rate_limiter, RateLimiter
 from simple_trade.utils.metrics import get_metrics
+
+
+class AdaptiveTimeoutManager:
+    """P2-3: 自适应超时管理器
+
+    - 报价类: max(5s, P95延迟 × 3)，上限 30s
+    - 交易类: 固定 30s
+    - 历史K线: 固定 60s
+    - 每小时滚动重算
+    """
+
+    def __init__(self):
+        self._latencies: deque = deque(maxlen=500)  # 最近 500 次调用
+        self._lock = threading.Lock()
+        self._cached_timeout = 15.0  # 默认
+        self._last_recalc = 0.0
+        self._recalc_interval = 3600  # 每小时重算
+
+    def record(self, duration_s: float):
+        """记录一次 API 调用耗时"""
+        with self._lock:
+            self._latencies.append(duration_s)
+
+    def get_quote_timeout(self) -> float:
+        """获取报价类超时（动态）"""
+        now = time.monotonic()
+        if now - self._last_recalc > self._recalc_interval:
+            self._recalculate()
+            self._last_recalc = now
+        return self._cached_timeout
+
+    @staticmethod
+    def get_trade_timeout() -> float:
+        return 30.0
+
+    @staticmethod
+    def get_kline_timeout() -> float:
+        return 60.0
+
+    def _recalculate(self):
+        """重算 P95 超时"""
+        with self._lock:
+            if len(self._latencies) < 10:
+                self._cached_timeout = 15.0
+                return
+            sorted_lats = sorted(self._latencies)
+            p95_idx = int(len(sorted_lats) * 0.95)
+            p95 = sorted_lats[min(p95_idx, len(sorted_lats) - 1)]
+            self._cached_timeout = max(5.0, min(p95 * 3, 30.0))
 
 # 富途API
 try:
@@ -49,18 +99,42 @@ class FutuClient:
         thread_name_prefix="futu-api",
     )
 
+    # P1-1: 独立 API 调用日志
+    _api_logger = None
+
+    @classmethod
+    def _get_api_logger(cls):
+        """懒初始化 API 调用日志器"""
+        if cls._api_logger is None:
+            import os
+            from simple_trade.utils.logger import create_dedicated_logger
+            log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
+            cls._api_logger = create_dedicated_logger(
+                'futu_api_trace', os.path.join(log_dir, 'futu_api.log')
+            )
+        return cls._api_logger
+
     def __init__(self, host: str = "127.0.0.1", port: int = 11111):
         self.host = host
         self.port = port
         self.client = None  # OpenQuoteContext instance (主连接：报价/K线/板块)
-        self.scalping_client = None  # 第二个 OpenQuoteContext (Scalping专用：Ticker/OrderBook)
         self.is_connected = False
         self._ticker_failed_stocks = set()  # 缓存订阅失败的股票，避免重复警告
+        self._reconnect_lock = threading.Lock()  # 防止并发重连
+        self._last_reconnect_time = 0.0  # 最后一次重连时间
+        self._reconnect_cooldown = 10.0  # 重连冷却时间（秒）
 
-        # 限流器：通用行情接口 60次/30秒（K线、快照、资金流、报价共享）
+        # P2-3: 自适应超时管理器
+        self.timeout_manager = AdaptiveTimeoutManager()
+
+        # 限流器：通用行情接口 60次/30秒（快照、报价共享）
         self._quote_limiter = get_global_rate_limiter(max_requests=60, time_window=30)
+        # K线独立限流器 60次/30秒（不再与报价共享，避免K线下载阻塞报价获取）
+        self._kline_limiter = RateLimiter(max_requests=60, time_window=30)
         # 板块接口专用限流器 10次/30秒
         self._plate_limiter = RateLimiter(max_requests=10, time_window=30)
+        # 资金流向专用限流器 28次/30秒（API限制30次/30秒，预留安全余量）
+        self._capital_flow_limiter = RateLimiter(max_requests=28, time_window=30)
         # 全局 QPS 限流：所有 OpenD 请求共享 5 req/s 上限
         self._global_qps_interval = 0.2  # 200ms 最小间隔
         self._last_request_time = 0.0
@@ -79,9 +153,22 @@ class FutuClient:
             if elapsed < self._global_qps_interval:
                 time.sleep(self._global_qps_interval - elapsed)
             self._last_request_time = time.monotonic()
+        # P2-3: 记录调用间隔用于自适应超时计算
+        self.timeout_manager.record(time.monotonic() - self._last_request_time + 0.2)
         # metrics 埋点
         get_metrics().counter("api.futu.calls").inc()
         get_metrics().rate("api.futu.qps", window_seconds=60).inc()
+
+    def _log_api_call(self, api_name: str, duration_ms: float,
+                      success: bool, retry: int = 0, detail: str = ""):
+        """P1-1: 记录 API 调用到独立日志文件"""
+        import json
+        entry = {
+            "flow": "futu_api", "api": api_name,
+            "duration_ms": round(duration_ms, 1), "retry": retry,
+            "success": success, "detail": detail,
+        }
+        self._get_api_logger().info(json.dumps(entry, ensure_ascii=False))
 
     def connect(self) -> bool:
         """连接富途API"""
@@ -106,16 +193,6 @@ class FutuClient:
                 self.is_connected = True
                 logging.info("富途API连接成功")
                 logging.debug(f"历史K线额度信息: {data}")
-
-                # 创建第二个 Context 专供 Scalping (Ticker/OrderBook)
-                try:
-                    self.scalping_client = OpenQuoteContext(
-                        host=self.host, port=self.port, is_encrypt=False
-                    )
-                    logging.info("Scalping专用连接已创建")
-                except Exception as e:
-                    logging.warning(f"Scalping专用连接创建失败，将退化为单连接: {e}")
-                    self.scalping_client = None
 
                 # 测试板块列表
                 test_ret, test_data = self.client.get_plate_list(Market.HK, 'ALL')
@@ -142,40 +219,8 @@ class FutuClient:
             self._cleanup()
             return False
 
-    def register_scalping_handlers(self, ticker_handler, orderbook_handler) -> bool:
-        """注册 Scalping 推送处理器到 scalping_client
-
-        Args:
-            ticker_handler: TickerHandlerBase 子类实例
-            orderbook_handler: OrderBookHandlerBase 子类实例
-
-        Returns:
-            是否注册成功
-        """
-        ctx = self.scalping_client or self.client
-        if ctx is None:
-            logging.warning("无法注册推送处理器: 连接未建立")
-            return False
-        try:
-            ctx.set_handler(ticker_handler)
-            ctx.set_handler(orderbook_handler)
-            logging.info("Scalping 推送处理器已注册 (Ticker + OrderBook)")
-            return True
-        except Exception as e:
-            logging.warning(f"注册推送处理器失败: {e}")
-            return False
-
     def disconnect(self):
         """断开连接"""
-        # 关闭 Scalping 专用连接
-        if self.scalping_client:
-            try:
-                self.scalping_client.close()
-                logging.info("Scalping专用连接已关闭")
-            except Exception as e:
-                logging.error(f"关闭Scalping专用连接失败: {e}")
-            finally:
-                self.scalping_client = None
         # 关闭主连接
         if self.client:
             try:
@@ -189,8 +234,65 @@ class FutuClient:
     def _cleanup(self):
         """清理连接状态"""
         self.client = None
-        self.scalping_client = None
         self.is_connected = False
+
+    @staticmethod
+    def _is_connection_error(data) -> bool:
+        """判断返回数据是否为连接断开错误"""
+        if data is None:
+            return False
+        error_str = str(data).lower()
+        return any(kw in error_str for kw in (
+            'connection closed', 'connection reset', 'broken pipe',
+            'not connected', 'timed out', 'connection refused',
+        ))
+
+    def _reconnect_opend(self) -> bool:
+        """纯连接恢复（不触发回调）
+
+        带冷却时间，防止频繁重连。
+        线程安全：使用 Lock 防止并发重连。
+        回调通知统一由 GlobalConnectionManager 管理。
+
+        Returns:
+            是否重连成功
+        """
+        now = time.monotonic()
+        if now - self._last_reconnect_time < self._reconnect_cooldown:
+            logging.debug("重连冷却中，跳过")
+            return self.is_connected
+
+        if not self._reconnect_lock.acquire(blocking=False):
+            logging.debug("其他线程正在重连，跳过")
+            return self.is_connected
+
+        try:
+            self._last_reconnect_time = now
+            logging.warning("检测到连接断开，尝试自动重连 OpenD...")
+
+            # 先关闭旧连接
+            if self.client:
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+            self._cleanup()
+            # 重新建立连接
+            success = self.connect()
+            if success:
+                logging.info("自动重连 OpenD 成功")
+                # 清空 ticker 失败缓存，让重连后重试
+                self._ticker_failed_stocks.clear()
+                # 注意：不触发回调，回调通知统一由 GlobalConnectionManager 管理
+            else:
+                logging.error("自动重连 OpenD 失败")
+            return success
+
+        except Exception as e:
+            logging.error(f"自动重连异常: {e}")
+            return False
+        finally:
+            self._reconnect_lock.release()
 
     def is_available(self) -> bool:
         """检查富途API是否可用"""
@@ -213,6 +315,7 @@ class FutuClient:
         """获取板块列表（10次/30秒）"""
         if not self.is_available():
             return RET_ERROR, "富途API不可用"
+        self._throttle()  # 全局QPS限流
         self._plate_limiter.wait_if_needed()
         return self.client.get_plate_list(market, plate_type)
 
@@ -221,6 +324,7 @@ class FutuClient:
         """获取板块股票（10次/30秒）"""
         if not self.is_available():
             return RET_ERROR, "富途API不可用"
+        self._throttle()  # 全局QPS限流
         self._plate_limiter.wait_if_needed()
         return self.client.get_plate_stock(plate_code)
 
@@ -228,7 +332,7 @@ class FutuClient:
 
     def request_history_kline(self, code: str, start: str, end: str,
                               ktype=None, autype=None, fields=None,
-                              max_count: int = 1000, timeout: int = 10):
+                              max_count: int = 1000, timeout: int = None):
         """获取历史K线数据
 
         Args:
@@ -239,13 +343,16 @@ class FutuClient:
             autype: 复权类型
             fields: 字段列表
             max_count: 最大返回条数
-            timeout: 超时时间（秒），默认30秒
+            timeout: 超时时间（秒），None 时使用自适应超时
         """
+        if timeout is None:
+            timeout = int(self.timeout_manager.get_kline_timeout())
         if not self.is_available():
             return RET_ERROR, None, None
 
         try:
-            self._quote_limiter.wait_if_needed()
+            self._throttle()  # 全局QPS限流
+            self._kline_limiter.wait_if_needed()  # K线独立限流（不再与报价共享）
             if ktype is None:
                 ktype = KLType.K_DAY
             if autype is None:
@@ -295,7 +402,8 @@ class FutuClient:
         """获取K线额度（60次/30秒）"""
         if not self.is_available():
             return RET_ERROR, "富途API不可用"
-        self._quote_limiter.wait_if_needed()
+        self._throttle()  # 全局QPS限流
+        self._kline_limiter.wait_if_needed()  # K线独立限流
         return self.client.get_history_kl_quota(get_detail=get_detail)
 
     def get_kline_quota_detail(self) -> dict:
@@ -378,7 +486,8 @@ class FutuClient:
             return RET_ERROR, "富途API不可用"
 
         try:
-            self._quote_limiter.wait_if_needed()
+            self._throttle()  # 全局QPS限流
+            self._capital_flow_limiter.wait_if_needed()
             period = PeriodType.INTRADAY if period_type == 'INTRADAY' else PeriodType.DAY
             kwargs = {'period_type': period}
             if start:
@@ -422,7 +531,8 @@ class FutuClient:
             return RET_ERROR, "富途API不可用"
 
         try:
-            self._quote_limiter.wait_if_needed()
+            self._throttle()  # 全局QPS限流
+            self._capital_flow_limiter.wait_if_needed()
             ret, data = self.client.get_capital_distribution(stock_code)
 
             if ret == RET_OK:
@@ -460,10 +570,8 @@ class FutuClient:
             return RET_ERROR, "富途API不可用"
 
         try:
-            # 优先使用 scalping_client（分流），退化到主 client
-            ctx = self.scalping_client or self.client
             self._throttle()
-            ret, data = ctx.get_rt_ticker(stock_code, num=num)
+            ret, data = self.client.get_rt_ticker(stock_code, num=num)
 
             if ret == RET_OK:
                 # 调试：打印 DataFrame 列名和前几行数据（仅首次）
@@ -479,10 +587,9 @@ class FutuClient:
                 return ret, data
             else:
                 # 只在首次失败时输出 WARNING，避免重复日志
-                ctx_name = 'scalping_client' if (self.scalping_client and ctx == self.scalping_client) else 'main_client'
                 if stock_code not in self._ticker_failed_stocks:
                     logging.warning(
-                        f"获取逐笔成交失败: {stock_code}, 连接={ctx_name}, "
+                        f"获取逐笔成交失败: {stock_code}, "
                         f"错误: {data}"
                     )
                     self._ticker_failed_stocks.add(stock_code)
@@ -493,6 +600,39 @@ class FutuClient:
 
         except Exception as e:
             logging.error(f"获取逐笔成交异常: {stock_code}, {e}")
+            return RET_ERROR, str(e)
+
+    def get_rt_data(self, stock_code: str):
+        """获取分时数据 (Intraday Data)
+        
+        Args:
+            stock_code: 股票代码，如 'HK.00700'
+            
+        Returns:
+            (ret_code, data) - 成功返回(RET_OK, DataFrame)，失败返回(RET_ERROR, error_msg)
+            DataFrame包含字段：
+            - time: 时间
+            - cur_price: 当前价格
+            - avg_price: 均价 (VWAP)
+            - volume: 成交量
+            - turnover: 成交额
+        """
+        if not self.is_available():
+            return RET_ERROR, "富途API不可用"
+
+        try:
+            self._throttle()
+            ret, data = self.client.get_rt_data(stock_code)
+
+            if ret == RET_OK:
+                logging.debug(f"获取分时数据成功: {stock_code}, 共{len(data)}条")
+                return ret, data
+            else:
+                logging.debug(f"获取分时数据失败: {stock_code}, 错误: {data}")
+                return ret, None
+
+        except Exception as e:
+            logging.error(f"获取分时数据异常: {stock_code}, {e}")
             return RET_ERROR, str(e)
 
     def get_broker_queue(self, stock_code: str):
@@ -513,6 +653,7 @@ class FutuClient:
             return RET_ERROR, "富途API不可用", None
 
         try:
+            self._throttle()  # 全局QPS限流
             ret, bid_data, ask_data = self.client.get_broker_queue(stock_code)
 
             if ret == RET_OK:
@@ -545,18 +686,15 @@ class FutuClient:
             return RET_ERROR, "富途API不可用"
 
         try:
-            # 优先使用 scalping_client（分流），退化到主 client
-            ctx = self.scalping_client or self.client
             self._throttle()
-            ret, data = ctx.get_order_book(stock_code)
+            ret, data = self.client.get_order_book(stock_code)
 
             if ret == RET_OK:
                 logging.debug(f"获取摆盘数据成功: {stock_code}")
                 return ret, data
             else:
-                ctx_name = 'scalping_client' if (self.scalping_client and ctx == self.scalping_client) else 'main_client'
                 logging.warning(
-                    f"获取摆盘数据失败: {stock_code}, 连接={ctx_name}, "
+                    f"获取摆盘数据失败: {stock_code}, "
                     f"错误: {data}"
                 )
                 return ret, data
@@ -568,7 +706,7 @@ class FutuClient:
     # ========== 集中入口：快照和报价（60次/30秒） ==========
 
     def get_market_snapshot(self, codes):
-        """获取市场快照（60次/30秒）
+        """获取市场快照（60次/30秒，带自动重连）
 
         所有调用方应通过此方法获取快照数据，不要直接调用 self.client.get_market_snapshot。
 
@@ -583,14 +721,24 @@ class FutuClient:
         try:
             if not codes:
                 return RET_ERROR, "股票代码列表不能为空"
+            self._throttle()  # 全局QPS限流
             self._quote_limiter.wait_if_needed()
-            return self.client.get_market_snapshot(codes)
+            ret, data = self.client.get_market_snapshot(codes)
+
+            # 检测连接断开，自动重连后重试一次
+            if ret != RET_OK and self._is_connection_error(data):
+                if self._reconnect_opend():
+                    self._throttle()  # 重连后也需要限流
+                    self._quote_limiter.wait_if_needed()
+                    ret, data = self.client.get_market_snapshot(codes)
+
+            return ret, data
         except Exception as e:
             logging.error(f"获取市场快照异常: {e}")
             return RET_ERROR, str(e)
 
     def get_stock_quote(self, stock_codes):
-        """获取股票报价（60次/30秒）
+        """获取股票报价（60次/30秒，带自动重连）
 
         所有调用方应通过此方法获取报价，不要直接调用 self.client.get_stock_quote。
 
@@ -607,7 +755,64 @@ class FutuClient:
                 return RET_ERROR, "股票代码列表不能为空"
             self._quote_limiter.wait_if_needed()
             self._throttle()
-            return self.client.get_stock_quote(stock_codes)
+            ret, data = self.client.get_stock_quote(stock_codes)
+
+            # 检测连接断开，自动重连后重试一次
+            if ret != RET_OK and self._is_connection_error(data):
+                if self._reconnect_opend():
+                    self._quote_limiter.wait_if_needed()
+                    self._throttle()
+                    ret, data = self.client.get_stock_quote(stock_codes)
+
+            return ret, data
         except Exception as e:
             logging.error(f"获取股票报价异常: {e}")
             return RET_ERROR, str(e)
+
+    # ========== 受保护的订阅/反订阅入口 ==========
+
+    def subscribe_stocks(self, stock_codes: list, sub_types: list):
+        """受保护的订阅入口（带限流+自动重连）
+
+        所有订阅操作应通过此方法，不要直接调用 self.client.subscribe()。
+        """
+        if not self.is_available():
+            return RET_ERROR, "富途API不可用"
+        try:
+            self._throttle()
+            ret, err = self.client.subscribe(stock_codes, sub_types)
+            if ret != RET_OK and self._is_connection_error(err):
+                if self._reconnect_opend():
+                    self._throttle()
+                    ret, err = self.client.subscribe(stock_codes, sub_types)
+            return ret, err
+        except Exception as e:
+            logging.error(f"订阅异常: {stock_codes}, {e}")
+            return RET_ERROR, str(e)
+
+    def unsubscribe_stocks(self, stock_codes: list, sub_types: list):
+        """受保护的反订阅入口（带限流+自动重连）
+
+        所有反订阅操作应通过此方法，不要直接调用 self.client.unsubscribe()。
+        """
+        if not self.is_available():
+            return RET_ERROR, "富途API不可用"
+        try:
+            self._throttle()
+            ret, err = self.client.unsubscribe(stock_codes, sub_types)
+            if ret != RET_OK and self._is_connection_error(err):
+                if self._reconnect_opend():
+                    self._throttle()
+                    ret, err = self.client.unsubscribe(stock_codes, sub_types)
+            return ret, err
+        except Exception as e:
+            logging.error(f"反订阅异常: {stock_codes}, {e}")
+            return RET_ERROR, str(e)
+
+    # ========== 重连回调机制 ==========
+
+    def register_reconnect_callback(self, callback):
+        """注册重连成功后的回调函数"""
+        if not hasattr(self, '_on_reconnect_callbacks'):
+            self._on_reconnect_callbacks = []
+        self._on_reconnect_callbacks.append(callback)
