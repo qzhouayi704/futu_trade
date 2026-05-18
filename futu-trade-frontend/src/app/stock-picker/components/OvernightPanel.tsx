@@ -10,9 +10,11 @@ import { formatPrice, formatPercent } from "@/lib/utils";
 // 分类颜色
 const categoryColors: Record<string, string> = {
   "强势延续": "bg-red-100 text-red-700 border-red-200",
+  "趋势追涨": "bg-red-100 text-red-700 border-red-200",
   "趋势反转": "bg-emerald-100 text-emerald-700 border-emerald-200",
   "资金吸筹": "bg-blue-100 text-blue-700 border-blue-200",
   "综合优选": "bg-purple-100 text-purple-700 border-purple-200",
+  "蓄势突破": "bg-orange-100 text-orange-700 border-orange-200",
 };
 
 // 评级颜色
@@ -43,6 +45,20 @@ const dimNames: Record<string, string> = {
   leader_bonus: "龙头加分",
   volume_price_fit: "量价配合",
   opportunity_score: "机会评分",
+  scorer_trend: "趋势评分",
+  scorer_reversal: "反转评分",
+  momentum_accumulation: "个股蓄势",
+  momentum_catalyst: "题材催化",
+  momentum_phase: "阶段判断",
+  momentum_risk: "风控适配",
+};
+
+// MOMENTUM 维度满分（用于评分条百分比计算）
+const dimMaxScores: Record<string, number> = {
+  momentum_accumulation: 40,
+  momentum_catalyst: 25,
+  momentum_phase: 20,
+  momentum_risk: 15,
 };
 
 export default function OvernightPanel() {
@@ -466,20 +482,56 @@ export default function OvernightPanel() {
                     {/* 各维度评分 */}
                     <div className="mb-3">
                       <h4 className="text-xs font-semibold text-gray-500 mb-1.5">维度评分</h4>
-                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                        {Object.entries(c.scores).map(([key, val]) => (
-                          <div key={key} className="bg-gray-50 rounded p-2">
-                            <div className="text-[10px] text-gray-400">{dimNames[key] || key}</div>
-                            <div className="flex items-center gap-1 mt-0.5">
-                              <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden">
-                                <div className={`h-full rounded-full ${scoreBarColor(val)}`} style={{ width: `${val}%` }} />
+                      <div className={`grid gap-2 ${c.category === "蓄势突破" ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-5"}`}>
+                        {Object.entries(c.scores).map(([key, val]) => {
+                          const maxScore = dimMaxScores[key] || 100;
+                          const pct = Math.min(100, (val / maxScore) * 100);
+                          return (
+                            <div key={key} className="bg-gray-50 rounded p-2">
+                              <div className="text-[10px] text-gray-400">{dimNames[key] || key}</div>
+                              <div className="flex items-center gap-1 mt-0.5">
+                                <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${scoreBarColor(pct)}`} style={{ width: `${pct}%` }} />
+                                </div>
+                                <span className="text-xs font-semibold text-gray-700 w-12 text-right">{val.toFixed(0)}/{maxScore}</span>
                               </div>
-                              <span className="text-xs font-semibold text-gray-700 w-7 text-right">{val.toFixed(0)}</span>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
+
+                    {/* 蓄势突破交易建议 */}
+                    {c.category === "蓄势突破" && c.key_metrics.buy_price && (
+                      <div className="mb-3 bg-orange-50 border border-orange-200 rounded-lg p-3">
+                        <h4 className="text-xs font-semibold text-orange-700 mb-2 flex items-center gap-1">
+                          <i className="fas fa-lightbulb" /> 交易建议
+                        </h4>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                          <div>
+                            <div className="text-orange-400">入场价</div>
+                            <div className="font-bold text-orange-800">{Number(c.key_metrics.buy_price).toFixed(2)}</div>
+                          </div>
+                          <div>
+                            <div className="text-orange-400">止损价</div>
+                            <div className="font-bold text-red-600">{Number(c.key_metrics.stop_loss).toFixed(2)} (-{c.key_metrics.stop_loss_pct}%)</div>
+                          </div>
+                          <div>
+                            <div className="text-orange-400">目标价</div>
+                            <div className="font-bold text-emerald-600">{Number(c.key_metrics.target_price).toFixed(2)} (+{c.key_metrics.target_pct}%)</div>
+                          </div>
+                          <div>
+                            <div className="text-orange-400">持有天数</div>
+                            <div className="font-bold text-gray-700">≤{c.key_metrics.max_hold_days}天</div>
+                          </div>
+                        </div>
+                        {c.key_metrics.entry_note && (
+                          <div className="mt-2 text-[11px] text-orange-600">
+                            💡 {c.key_metrics.entry_note}
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* 降权警告 */}
                     {c.penalty_reasons.length > 0 && (
