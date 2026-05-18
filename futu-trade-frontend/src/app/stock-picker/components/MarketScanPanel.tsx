@@ -16,6 +16,7 @@ import { StockInsightDrawer } from "@/app/market-scan/components/StockInsightDra
 import { IntradayLevelsPanel } from "@/app/market-scan/components/IntradayLevelsPanel";
 import { AIAnalysisButton } from "@/app/components/AIAnalysisDialog";
 import PoolAnomalyBanner from "@/app/market-scan/components/PoolAnomalyBanner";
+import ScoredAnomalyPanel from "@/app/market-scan/components/ScoredAnomalyPanel";
 import LiquidityScoreCell from "@/app/high-turnover/components/LiquidityScoreCell";
 import TradeDirectionBadge from "@/app/high-turnover/components/TradeDirectionBadge";
 import BuyRatioCell from "@/app/high-turnover/components/BuyRatioCell";
@@ -628,6 +629,7 @@ export default function MarketScanPanel() {
 
       {/* 全池异动提醒 */}
       <PoolAnomalyBanner />
+      <ScoredAnomalyPanel />
 
       {/* 筛选栏 */}
       <Card className="mb-6">
