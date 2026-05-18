@@ -12,6 +12,7 @@ from datetime import datetime, date
 from typing import Dict, List, Any, Optional
 
 from .overnight_models import OvernightCandidate, WEIGHTS
+from .momentum_scorer import MomentumScorer
 
 logger = logging.getLogger("overnight_screener")
 
@@ -54,21 +55,42 @@ class OvernightScreener:
 
     async def run_screen(self, stock_list: List[Dict[str, Any]]) -> List[OvernightCandidate]:
         """
-        主入口：双模式选股
+        主入口：三模式选股
 
-        每只股票同时评估 TREND 和 REVERSAL 两种模式，
+        每只股票同时评估 TREND、REVERSAL、MOMENTUM 三种模式，
         分别排除、评分、排名，最终合并输出。
 
         Returns:
-            合并的候选列表（TREND Top10 + REVERSAL Top10），按总分降序
+            合并的候选列表（TREND Top10 + REVERSAL Top10 + MOMENTUM Top10），按总分降序
         """
         if not stock_list:
             return []
 
-        logger.info(f"[盘后优选] 开始双模评分，共 {len(stock_list)} 只股票")
+        logger.info(f"[盘后优选] 开始三模评分，共 {len(stock_list)} 只股票")
 
         trend_candidates = []
         reversal_candidates = []
+        momentum_candidates = []
+
+        # --- MOMENTUM 预计算: 板块缓存 ---
+        momentum_scorer = MomentumScorer(self.db)
+        all_klines_cache = {}
+        stock_plates_map = {}
+        for stock in stock_list:
+            code = stock.get('code', '')
+            if not code:
+                continue
+            klines = self._get_klines(code, 25)
+            all_klines_cache[code] = klines
+            # 获取板块归属
+            plates = self._get_stock_plates(code)
+            stock_plates_map[code] = plates
+
+        momentum_scorer.precompute_plate_cache(
+            [{'code': s.get('code', ''), 'plates': stock_plates_map.get(s.get('code', ''), [])}
+             for s in stock_list],
+            all_klines_cache
+        )
 
         for stock in stock_list:
             code = stock.get('code', '')
@@ -82,7 +104,7 @@ class OvernightScreener:
                 continue
 
             # 收集指标和K线
-            klines = self._get_klines(code, 25)
+            klines = all_klines_cache.get(code) or self._get_klines(code, 25)
             indicators = self._build_scorer_indicators(stock, klines, code)
 
             # --- TREND 候选 ---
@@ -92,23 +114,19 @@ class OvernightScreener:
                 c_t.key_metrics = self._collect_metrics(stock)
                 c_t.category = "趋势追涨"
 
-                # StockScorer TREND 评分
                 from ..strategy.stock_scorer import StockScorer, PASSING_SCORE
                 scorer = StockScorer()
                 trend_score, trend_details = scorer._score_trend(indicators)
                 c_t.scores['scorer_trend'] = trend_score
                 c_t.total_score = trend_score
 
-                # 盘后独有加分
                 bonus = self._overnight_bonus(stock, code)
                 c_t.total_score += bonus['total']
                 c_t.reasons = bonus['reasons']
 
-                # 降权
                 c_t.penalty_factor, c_t.penalty_reasons = self._check_penalties(stock, code)
                 c_t.total_score *= c_t.penalty_factor
 
-                # 判定
                 c_t.verdict = self._verdict(c_t.total_score)
                 if trend_score >= PASSING_SCORE:
                     trend_candidates.append(c_t)
@@ -119,19 +137,16 @@ class OvernightScreener:
                 c_r.key_metrics = self._collect_metrics(stock)
                 c_r.category = "趋势反转"
 
-                # StockScorer REVERSAL 评分
                 from ..strategy.stock_scorer import StockScorer, PASSING_SCORE
                 scorer = StockScorer()
                 rev_score, rev_details = scorer._score_reversal(indicators)
                 c_r.scores['scorer_reversal'] = rev_score
                 c_r.total_score = rev_score
 
-                # 盘后独有加分
                 bonus = self._overnight_bonus(stock, code)
                 c_r.total_score += bonus['total']
                 c_r.reasons = bonus['reasons']
 
-                # 降权
                 c_r.penalty_factor, c_r.penalty_reasons = self._check_penalties(stock, code)
                 c_r.total_score *= c_r.penalty_factor
 
@@ -139,17 +154,42 @@ class OvernightScreener:
                 if rev_score >= PASSING_SCORE:
                     reversal_candidates.append(c_r)
 
+            # --- MOMENTUM 候选 ---
+            if klines and len(klines) >= 5:
+                m_result = momentum_scorer.score_stock(
+                    code, klines, stock_plates_map.get(code, [])
+                )
+                if m_result['total'] >= 45:  # MOMENTUM 及格线较低（蓄势信号本身有价值）
+                    c_m = OvernightCandidate(stock_code=code, stock_name=name)
+                    c_m.key_metrics = self._collect_metrics(stock)
+                    c_m.category = "蓄势突破"
+                    c_m.total_score = m_result['total']
+                    c_m.verdict = m_result['verdict']
+                    c_m.reasons = m_result['signals']
+                    c_m.scores = {
+                        'momentum_accumulation': m_result['dimensions']['accumulation'],
+                        'momentum_catalyst': m_result['dimensions']['catalyst'],
+                        'momentum_phase': m_result['dimensions']['phase'],
+                        'momentum_risk': m_result['dimensions']['risk'],
+                    }
+                    # 附加交易建议到 key_metrics
+                    c_m.key_metrics.update(m_result.get('trade_suggestion', {}))
+                    momentum_candidates.append(c_m)
+
         # 排序 + 排名
         trend_candidates.sort(key=lambda x: x.total_score, reverse=True)
         reversal_candidates.sort(key=lambda x: x.total_score, reverse=True)
+        momentum_candidates.sort(key=lambda x: x.total_score, reverse=True)
 
         for i, c in enumerate(trend_candidates[:10]):
             c.rank = i + 1
         for i, c in enumerate(reversal_candidates[:10]):
             c.rank = i + 1
+        for i, c in enumerate(momentum_candidates[:10]):
+            c.rank = i + 1
 
         # 合并输出
-        result = trend_candidates[:10] + reversal_candidates[:10]
+        result = trend_candidates[:10] + reversal_candidates[:10] + momentum_candidates[:10]
 
         logger.info(
             f"[盘后优选] 完成 | TREND: {len(trend_candidates)}只(Top1={trend_candidates[0].total_score:.0f}分)"
@@ -158,6 +198,10 @@ class OvernightScreener:
         logger.info(
             f"[盘后优选] 完成 | REVERSAL: {len(reversal_candidates)}只(Top1={reversal_candidates[0].total_score:.0f}分)"
             if reversal_candidates else "[盘后优选] REVERSAL: 0只"
+        )
+        logger.info(
+            f"[盘后优选] 完成 | MOMENTUM: {len(momentum_candidates)}只(Top1={momentum_candidates[0].total_score:.0f}分)"
+            if momentum_candidates else "[盘后优选] MOMENTUM: 0只"
         )
         return result
 
@@ -790,3 +834,17 @@ class OvernightScreener:
             'amplitude': stock.get('amplitude', 0),
             'turnover': stock.get('turnover', 0),
         }
+
+    def _get_stock_plates(self, code: str) -> List[str]:
+        """获取股票所属板块名称列表"""
+        try:
+            rows = self.db.execute_query(
+                "SELECT p.plate_name FROM stock_plates sp "
+                "JOIN stocks s ON sp.stock_id = s.id "
+                "JOIN plates p ON sp.plate_id = p.id "
+                "WHERE s.code = ?",
+                (code,)
+            )
+            return [r[0] for r in rows] if rows else []
+        except Exception:
+            return []
