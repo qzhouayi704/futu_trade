@@ -47,8 +47,17 @@ export const overnightApi = {
     return json.data;
   },
 
-  async getResult(): Promise<ScreenResult> {
-    const res = await fetch(`${API_BASE}/result`);
+  async getDates(): Promise<{ date: string; count: number }[]> {
+    const res = await fetch(`${API_BASE}/dates`);
+    const json = await res.json();
+    return json.data?.dates || [];
+  },
+
+  async getResult(screenDate?: string): Promise<ScreenResult> {
+    const url = screenDate
+      ? `${API_BASE}/result?screen_date=${screenDate}`
+      : `${API_BASE}/result`;
+    const res = await fetch(url);
     const json = await res.json();
     return json.data || { candidates: [], timestamp: "", total: 0 };
   },

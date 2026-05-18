@@ -55,25 +55,38 @@ export default function OvernightPanel() {
   const [timestamp, setTimestamp] = useState("");
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [availableDates, setAvailableDates] = useState<{ date: string; count: number }[]>([]);
+  const [selectedDate, setSelectedDate] = useState<string>("");
+
+  // 加载可用日期列表
+  const loadDates = useCallback(async () => {
+    try {
+      const dates = await overnightApi.getDates();
+      setAvailableDates(dates);
+      if (dates.length > 0 && !selectedDate) {
+        setSelectedDate(dates[0].date);
+      }
+    } catch { /* ignore */ }
+  }, [selectedDate]);
 
   // 加载已有结果
-  const loadResult = useCallback(async () => {
+  const loadResult = useCallback(async (dateToLoad?: string) => {
     try {
-      const data = await overnightApi.getResult();
+      const data = await overnightApi.getResult(dateToLoad);
       if (data.candidates?.length) {
         setCandidates(data.candidates);
         setTimestamp(data.timestamp || "");
+      } else {
+        setCandidates([]);
+        setTimestamp("");
       }
-      if (data.breakout_candidates?.length) {
-        setBreakoutList(data.breakout_candidates);
-      }
-      if (data.consolidation_candidates?.length) {
-        setConsolList(data.consolidation_candidates);
-      }
+      setBreakoutList(data.breakout_candidates || []);
+      setConsolList(data.consolidation_candidates || []);
     } catch { /* ignore */ }
   }, []);
 
-  useEffect(() => { loadResult(); }, [loadResult]);
+  useEffect(() => { loadDates(); }, [loadDates]);
+  useEffect(() => { if (selectedDate) loadResult(selectedDate); }, [selectedDate, loadResult]);
 
   // 触发优选
   const handleTrigger = async () => {
@@ -99,7 +112,8 @@ export default function OvernightPanel() {
               showToast("error", "失败", status.error);
             } else {
               showToast("success", "完成", "盘后优选评分已完成");
-              loadResult();
+              await loadDates();
+              loadResult(selectedDate);
             }
           }
         } catch {
@@ -123,7 +137,7 @@ export default function OvernightPanel() {
   return (
     <div className="container mx-auto px-4 py-6 max-w-7xl">
       {/* 标题栏 */}
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
             <i className="fas fa-moon text-indigo-600" />
@@ -136,11 +150,6 @@ export default function OvernightPanel() {
           </h1>
           <p className="text-gray-500 mt-1 text-sm">
             收盘后全规则综合评分，筛选明日交易候选
-            {timestamp && (
-              <span className="ml-2 text-xs text-gray-400">
-                生成于 {new Date(timestamp).toLocaleString("zh-CN")}
-              </span>
-            )}
           </p>
         </div>
         <Button
@@ -154,6 +163,29 @@ export default function OvernightPanel() {
           {running ? progress : "生成明日优选"}
         </Button>
       </div>
+
+      {/* 日期选择器 */}
+      {availableDates.length > 0 && (
+        <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1">
+          <span className="text-xs text-gray-400 shrink-0">日期：</span>
+          {availableDates.map(d => (
+            <button
+              key={d.date}
+              onClick={() => setSelectedDate(d.date)}
+              className={`px-3 py-1.5 text-xs rounded-lg border transition-all whitespace-nowrap ${
+                selectedDate === d.date
+                  ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-indigo-300 hover:text-indigo-600"
+              }`}
+            >
+              {d.date}
+              <span className={`ml-1 ${selectedDate === d.date ? "text-indigo-200" : "text-gray-400"}`}>
+                ({d.count})
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* 分类筛选标签 */}
       {candidates.length > 0 && (

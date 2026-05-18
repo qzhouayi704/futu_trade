@@ -56,37 +56,67 @@ async def get_status():
     })
 
 
+@router.get("/dates", response_model=APIResponse)
+async def get_dates(container=Depends(get_container)):
+    """获取所有可用的优选日期列表"""
+    try:
+        rows = container.db_manager.execute_query(
+            "SELECT screen_date, total_count FROM overnight_screen_results "
+            "ORDER BY screen_date DESC"
+        )
+        dates = [{"date": r[0], "count": r[1] or 0} for r in rows] if rows else []
+        return APIResponse(success=True, message=f"共 {len(dates)} 个日期", data={"dates": dates})
+    except Exception as e:
+        logger.warning(f"获取优选日期列表失败: {e}")
+        return APIResponse(success=True, message="获取日期失败", data={"dates": []})
+
+
 @router.get("/result", response_model=APIResponse)
-async def get_result(container=Depends(get_container)):
-    """获取优选结果（优先内存，其次DB持久化）"""
+async def get_result(screen_date: Optional[str] = None, container=Depends(get_container)):
+    """获取优选结果（优先内存，其次DB持久化），支持按日期查询"""
     if _task_status["running"]:
         return APIResponse(success=True, message="任务运行中", data={"running": True, "candidates": []})
 
-    result = _task_status.get("result")
-    timestamp = _task_status.get("timestamp")
+    result = None
+    timestamp = None
 
-    # 内存无结果，从DB加载最近一次
-    if not result:
+    # 指定日期 → 直接从DB查询
+    if screen_date:
         try:
             rows = container.db_manager.execute_query(
                 "SELECT candidates_json, created_at FROM overnight_screen_results "
-                "ORDER BY screen_date DESC LIMIT 1"
+                "WHERE screen_date = ?", (screen_date,)
             )
             if rows:
                 result = json.loads(rows[0][0])
                 timestamp = rows[0][1]
-                # 回填内存缓存
-                _task_status["result"] = result
-                _task_status["timestamp"] = timestamp
         except Exception as e:
-            logger.warning(f"从DB加载盘后优选结果失败: {e}")
+            logger.warning(f"从DB加载 {screen_date} 优选结果失败: {e}")
+    else:
+        # 未指定日期 → 优先内存，其次DB最新
+        result = _task_status.get("result")
+        timestamp = _task_status.get("timestamp")
+
+        if not result:
+            try:
+                rows = container.db_manager.execute_query(
+                    "SELECT candidates_json, created_at FROM overnight_screen_results "
+                    "ORDER BY screen_date DESC LIMIT 1"
+                )
+                if rows:
+                    result = json.loads(rows[0][0])
+                    timestamp = rows[0][1]
+                    _task_status["result"] = result
+                    _task_status["timestamp"] = timestamp
+            except Exception as e:
+                logger.warning(f"从DB加载盘后优选结果失败: {e}")
 
     if not result:
         return APIResponse(success=True, message="暂无结果，请先触发优选", data={"candidates": [], "total": 0})
 
-    # 附加突破候选股数据
-    breakout_data = _task_status.get("breakout_candidates", [])
-    consolidation_data = _task_status.get("consolidation_candidates", [])
+    # 附加突破候选股数据（仅当前会话有效）
+    breakout_data = _task_status.get("breakout_candidates", []) if not screen_date else []
+    consolidation_data = _task_status.get("consolidation_candidates", []) if not screen_date else []
 
     return APIResponse(success=True, message=f"共 {len(result)} 只推荐股票", data={
         "candidates": result,
