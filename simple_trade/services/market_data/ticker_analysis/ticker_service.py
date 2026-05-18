@@ -128,8 +128,8 @@ class TickerService:
             )
 
             if ret != RET_OK or data is None or data.empty:
-                logger.debug(f"获取逐笔成交数据失败: {stock_code}")
-                return None
+                logger.debug(f"富途API获取逐笔成交数据失败或为空: {stock_code}，尝试从数据库回读")
+                return await self._read_ticker_from_db(stock_code, num)
 
             result = self._parse_ticker_data(stock_code, data)
             if result:
@@ -138,6 +138,57 @@ class TickerService:
 
         except Exception as e:
             logger.error(f"获取逐笔成交数据异常 {stock_code}: {e}")
+            return await self._read_ticker_from_db(stock_code, num)
+
+
+    async def _read_ticker_from_db(self, stock_code: str, num: int = 500) -> Optional[TickerData]:
+        """当API无数据时，从数据库回读当天的逐笔数据"""
+        if not self._db_manager:
+            return None
+        try:
+            from ....database.queries.ticker_queries import TickerQueries
+            queries = TickerQueries(self._db_manager.conn_manager)
+            loop = asyncio.get_event_loop()
+            
+            # 从DB读取当天的最新数据
+            trade_date = datetime.now().strftime("%Y-%m-%d")
+            db_records = await loop.run_in_executor(
+                None, lambda: queries.get_ticker_data(stock_code, trade_date, num)
+            )
+            
+            if not db_records:
+                return None
+                
+            # 转换为 TickerRecord 列表
+            records: List[TickerRecord] = []
+            for row in db_records:
+                timestamp_ms = row.get('timestamp', 0)
+                time_str = datetime.fromtimestamp(timestamp_ms / 1000).strftime('%Y-%m-%d %H:%M:%S') if timestamp_ms else ""
+                
+                records.append(TickerRecord(
+                    time=time_str,
+                    price=float(row.get('price', 0)),
+                    volume=int(row.get('volume', 0)),
+                    turnover=float(row.get('turnover', 0)),
+                    direction=row.get('direction', 'NEUTRAL'),
+                ))
+            
+            # DB返回是降序的(最新的在前)，为了和API返回(升序)保持一致，进行反转
+            records.reverse()
+            
+            logger.debug(f"{stock_code} 从数据库回读了 {len(records)} 条当日逐笔数据")
+            
+            result = TickerData(
+                stock_code=stock_code,
+                records=records,
+                total_count=len(records),
+                updated_at=datetime.now(),
+            )
+            # 存入缓存
+            self._cache[stock_code] = result
+            return result
+        except Exception as e:
+            logger.warning(f"从数据库回读逐笔数据失败 {stock_code}: {e}")
             return None
 
 

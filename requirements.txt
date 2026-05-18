@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-socketio
+websockets
+pandas
+numpy
+python-dotenv
+requests
+aiohttp
+google-genai
+futu-api
+psutil
+aiosqlite
