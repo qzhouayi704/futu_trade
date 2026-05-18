@@ -495,26 +495,49 @@ class AsyncQuotePusher:
             logging.debug(f"【全池扫描】WebSocket推送失败: {e}")
 
     def _rotate_subscriptions(self, new_codes):
-        """将异动股替换进订阅列表"""
+        """将异动股替换进订阅列表（含 QUOTE + TICKER 逐笔）"""
         try:
             sub_mgr = self.container.subscription_manager
             if not sub_mgr:
                 return
 
             subscribed = sub_mgr.subscribed_stocks
-            already_in = [c for c in new_codes if c in subscribed]
             to_add = [c for c in new_codes if c not in subscribed]
 
             if not to_add:
+                # 即使已订阅QUOTE，也检查是否需要补订TICKER
+                ticker_subscribed = sub_mgr.ticker_subscribed_stocks
+                need_ticker = [c for c in new_codes if c not in ticker_subscribed]
+                if need_ticker:
+                    try:
+                        from futu import SubType
+                        sub_mgr.subscribe_multi_types(need_ticker[:5], [SubType.TICKER])
+                        logging.info(
+                            f"【异动轮换】补订TICKER {len(need_ticker)}只: {need_ticker[:5]}"
+                        )
+                    except Exception as e:
+                        logging.debug(f"【异动轮换】补订TICKER失败: {e}")
                 return
 
-            # 订阅新异动股（subscription_manager内部有额度管理）
-            result = sub_mgr.subscribe(to_add)
-            if result.get('success'):
-                logging.info(
-                    f"【异动轮换】新增订阅 {len(to_add)} 只异动股: "
-                    f"{to_add[:5]}"
+            # 新股票：同时订阅 QUOTE + TICKER
+            try:
+                from futu import SubType
+                result = sub_mgr.subscribe_multi_types(
+                    to_add[:5], [SubType.QUOTE, SubType.TICKER]
                 )
+                if result.get('success'):
+                    logging.info(
+                        f"【异动轮换】新增订阅 {len(to_add)} 只异动股(QUOTE+TICKER): "
+                        f"{to_add[:5]}"
+                    )
+            except ImportError:
+                # futu 未安装时回退到仅 QUOTE 订阅
+                result = sub_mgr.subscribe(to_add)
+                if result.get('success'):
+                    logging.info(
+                        f"【异动轮换】新增订阅 {len(to_add)} 只异动股(仅QUOTE): "
+                        f"{to_add[:5]}"
+                    )
         except Exception as e:
             logging.warning(f"【异动轮换】订阅失败: {e}")
 
