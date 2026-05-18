@@ -282,7 +282,7 @@ class AsyncQuotePusher:
             logging.error(f"【定时重筛】触发失败: {e}", exc_info=True)
 
     async def _check_pool_scan(self):
-        """每3分钟执行全池快照扫描，发现异动股"""
+        """每3分钟执行全池快照扫描，发现异动股 → 评分 → 预警/交易"""
         now = time.time()
         if now - self._last_pool_scan_time < self._pool_scan_interval:
             return
@@ -319,8 +319,156 @@ class AsyncQuotePusher:
                 if rotation:
                     self._rotate_subscriptions(rotation)
 
+                # 对异动股进行评分并生成预警
+                await self._score_and_alert_anomalies(anomalies)
+
         except Exception as e:
             logging.warning(f"【全池扫描】执行失败: {e}")
+
+    async def _score_and_alert_anomalies(self, anomalies):
+        """对异动股进行评分，达标则推送预警并可选创建交易任务"""
+        try:
+            from ...services.strategy.stock_scorer import StockScorer, PASSING_SCORE
+
+            db = self.container.db_manager
+            scorer = StockScorer()
+            scored_alerts = []
+
+            for anomaly in anomalies:
+                code = anomaly.code
+                try:
+                    # 构建评分指标
+                    indicators = {
+                        'today_change': anomaly.change_rate,
+                        'vol_ratio': anomaly.volume_ratio,
+                        'day_amplitude': 0,
+                    }
+
+                    # 从K线补充历史指标
+                    rows = db.execute_query(
+                        "SELECT close_price FROM kline_data "
+                        "WHERE stock_code = ? ORDER BY time_key DESC LIMIT 6",
+                        (code,)
+                    )
+                    if rows and len(rows) >= 2:
+                        closes = [r[0] for r in rows]
+                        indicators['prev_day_change'] = (
+                            (closes[0] - closes[1]) / closes[1] * 100
+                            if closes[1] > 0 else 0
+                        )
+                        if len(closes) >= 6:
+                            indicators['change_5d'] = (
+                                (closes[0] - closes[5]) / closes[5] * 100
+                                if closes[5] > 0 else 0
+                            )
+
+                    # 从资金流缓存补充
+                    cap_rows = db.execute_query(
+                        "SELECT net_inflow_ratio FROM capital_flow_cache "
+                        "WHERE stock_code = ? ORDER BY timestamp DESC LIMIT 1",
+                        (code,)
+                    )
+                    if cap_rows and cap_rows[0][0] is not None:
+                        indicators['flow_ratio'] = cap_rows[0][0]
+
+                    # 评分
+                    result = scorer.score_stock(code, anomaly.name, indicators)
+
+                    if result.passed:
+                        scored_alerts.append({
+                            'code': code,
+                            'name': anomaly.name,
+                            'price': anomaly.price,
+                            'change_rate': anomaly.change_rate,
+                            'volume_ratio': anomaly.volume_ratio,
+                            'anomaly_type': anomaly.anomaly_type,
+                            'has_shrinkage': anomaly.has_shrinkage,
+                            'score': result.total_score,
+                            'mode': result.mode,
+                            'passed': True,
+                            'details': [
+                                {'dim': d.dimension, 'score': d.score,
+                                 'max': d.max_score, 'note': d.note}
+                                for d in result.details
+                            ],
+                            'trade_params': result.trade_params.to_dict()
+                            if result.trade_params else None,
+                            'detected_at': anomaly.detected_at,
+                        })
+
+                        logging.info(
+                            f"【异动评分】{code} {anomaly.name} "
+                            f"涨{anomaly.change_rate:+.1f}% 量比{anomaly.volume_ratio:.1f} "
+                            f"→ {result.mode}模式 {result.total_score}分 ✓通过"
+                        )
+
+                except Exception as e:
+                    logging.debug(f"【异动评分】{code} 评分失败: {e}")
+
+            # 推送评分预警到前端
+            if scored_alerts:
+                await self.socket_manager.emit('anomaly_scored', {
+                    'alerts': scored_alerts,
+                    'count': len(scored_alerts),
+                    'scan_time': time.strftime('%H:%M:%S'),
+                })
+                logging.info(
+                    f"【异动评分】{len(scored_alerts)}只通过评分: "
+                    + ", ".join(f"{a['code']}({a['score']}分)" for a in scored_alerts[:5])
+                )
+
+                # 如果 auto_trade 已开启，自动创建交易任务
+                self._try_create_anomaly_trades(scored_alerts)
+
+        except Exception as e:
+            logging.warning(f"【异动评分】评分流程失败: {e}")
+
+    def _try_create_anomaly_trades(self, scored_alerts):
+        """为评分通过的异动股创建交易任务（仅当auto_trade开启时）"""
+        try:
+            auto_trade_svc = getattr(self.container, 'auto_trade_service', None)
+            if not auto_trade_svc:
+                return
+
+            # 检查auto_trade总开关
+            config = getattr(self.container, 'config', None)
+            if config and not getattr(config, 'auto_trade_enabled', False):
+                return
+
+            created = 0
+            for alert in sorted(scored_alerts, key=lambda x: x['score'], reverse=True):
+                if created >= 3:  # 每轮最多创建3个
+                    break
+
+                code = alert['code']
+                price = alert['price']
+                params = alert.get('trade_params', {})
+
+                buy_dip_pct = params.get('buy_dip_pct', 1.0)
+                sell_rise_pct = params.get('take_profit_pct', 10.0)
+                stop_loss_pct = params.get('stop_loss_pct', 5.0)
+
+                result = auto_trade_svc.start_auto_trade(
+                    stock_code=code,
+                    quantity=100,
+                    zone='anomaly',
+                    buy_dip_pct=buy_dip_pct,
+                    sell_rise_pct=sell_rise_pct,
+                    stop_loss_pct=stop_loss_pct,
+                    prev_close=price,
+                )
+                if result.get('success'):
+                    created += 1
+                    logging.info(
+                        f"【异动交易】已创建: {code} {alert['name']} "
+                        f"评分{alert['score']} 入场价{price * (1 - buy_dip_pct/100):.2f}"
+                    )
+
+            if created > 0:
+                logging.info(f"【异动交易】本轮创建 {created} 个交易任务")
+
+        except Exception as e:
+            logging.warning(f"【异动交易】创建失败: {e}")
 
     async def _broadcast_anomalies(self, anomalies):
         """通过WebSocket推送异动通知"""
