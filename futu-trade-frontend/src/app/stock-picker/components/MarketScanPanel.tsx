@@ -939,48 +939,78 @@ export default function MarketScanPanel() {
                     {levelsStock?.code === stock.code && (
                       <tr className="bg-gray-50 border-b border-gray-100 shadow-inner">
                         <td colSpan={11} className="p-4">
-                          {/* 实时大单动能面板 */}
-                          <div className="mb-4 bg-white rounded-lg border border-gray-200 p-4 flex items-center justify-between shadow-sm relative overflow-hidden">
-                            {/* 动能背景光晕 */}
-                            <div className={`absolute top-0 right-0 w-64 h-64 rounded-full blur-3xl opacity-10 -mr-10 -mt-20 pointer-events-none ${
-                              stock.capital_signal === "bullish" ? "bg-red-500" :
-                              stock.capital_signal === "bearish" ? "bg-green-500" : "bg-gray-400"
-                            }`}></div>
-                            
-                            <div className="flex items-center gap-8 relative z-10">
-                              <div>
-                                <div className="text-xs text-gray-500 mb-1">今日主力大单净流入</div>
-                                <div className={`text-xl font-bold ${stock.capital_flow_summary && stock.capital_flow_summary.main_net_inflow > 0 ? "text-red-600" : stock.capital_flow_summary && stock.capital_flow_summary.main_net_inflow < 0 ? "text-green-600" : "text-gray-900"}`}>
-                                  {stock.capital_flow_summary ? formatInflowZh(stock.capital_flow_summary.main_net_inflow) : "-"}
+                          {/* 实时成交动能面板 */}
+                          {stock.ticker_summary ? (() => {
+                            const ts = stock.ticker_summary;
+                            const signalColor = ts.score > 20 ? "bg-red-500" : ts.score < -20 ? "bg-green-500" : "bg-gray-400";
+                            const netColor = ts.net_turnover > 0 ? "text-red-600" : ts.net_turnover < 0 ? "text-green-600" : "text-gray-900";
+                            return (
+                              <div className="mb-4 bg-white rounded-lg border border-gray-200 p-4 flex items-center justify-between shadow-sm relative overflow-hidden">
+                                <div className={`absolute top-0 right-0 w-64 h-64 rounded-full blur-3xl opacity-10 -mr-10 -mt-20 pointer-events-none ${signalColor}`}></div>
+                                <div className="flex items-center gap-8 relative z-10">
+                                  <div>
+                                    <div className="text-xs text-gray-500 mb-1">主动买卖净额</div>
+                                    <div className={`text-xl font-bold ${netColor}`}>
+                                      {ts.net_turnover > 0 ? "+" : ""}{formatInflowZh(ts.net_turnover)}
+                                    </div>
+                                  </div>
+                                  <div className="h-10 w-px bg-gray-200"></div>
+                                  <div>
+                                    <div className="text-xs text-gray-500 mb-1">买卖力量比</div>
+                                    <div className={`text-xl font-bold ${ts.buy_sell_ratio > 1.2 ? "text-red-600" : ts.buy_sell_ratio < 0.8 ? "text-green-600" : "text-gray-900"}`}>
+                                      {ts.buy_sell_ratio.toFixed(2)}
+                                    </div>
+                                  </div>
+                                  <div className="h-10 w-px bg-gray-200"></div>
+                                  <div>
+                                    <div className="text-xs text-gray-500 mb-1">大单成交占比</div>
+                                    <div className="text-xl font-bold text-gray-900">
+                                      {ts.big_order_pct.toFixed(1)}%
+                                    </div>
+                                  </div>
+                                  <div className="h-10 w-px bg-gray-200"></div>
+                                  <div>
+                                    <div className="text-xs text-gray-500 mb-1">成交面判定</div>
+                                    <div className="text-lg font-bold">
+                                      {ts.bias === "strong_bullish" ? (
+                                        <span className="text-red-600 flex items-center gap-2"><i className="fas fa-rocket animate-pulse"></i> {ts.bias_label}</span>
+                                      ) : ts.bias === "bullish" ? (
+                                        <span className="text-red-500 flex items-center gap-2"><i className="fas fa-arrow-up"></i> {ts.bias_label}</span>
+                                      ) : ts.bias === "bearish" ? (
+                                        <span className="text-green-600 flex items-center gap-2"><i className="fas fa-arrow-down"></i> {ts.bias_label}</span>
+                                      ) : (
+                                        <span className="text-gray-500 flex items-center gap-2"><i className="fas fa-minus"></i> {ts.bias_label}</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="text-xs text-gray-400 max-w-xs text-right relative z-10 bg-white/80 p-2 rounded">
+                                  <i className="fas fa-check-circle text-emerald-500 mr-1"></i>
+                                  基于<b>逐笔成交</b>实时分析，统计每笔成交的主动买卖方向。
                                 </div>
                               </div>
-                              <div className="h-10 w-px bg-gray-200"></div>
-                              <div>
-                                <div className="text-xs text-gray-500 mb-1">大单买入占比</div>
-                                <div className="text-xl font-bold text-gray-900">
-                                  {stock.capital_flow_summary ? (stock.capital_flow_summary.big_order_buy_ratio * 100).toFixed(1) + "%" : "-"}
+                            );
+                          })() : (
+                            <div className="mb-4 bg-gray-50 rounded-lg border border-dashed border-gray-300 p-4 flex items-center justify-between">
+                              <div className="flex items-center gap-3 text-gray-400">
+                                <i className="fas fa-chart-bar text-2xl"></i>
+                                <div>
+                                  <div className="text-sm font-medium text-gray-500">暂无逐笔成交数据</div>
+                                  <div className="text-xs text-gray-400">该股票未订阅逐笔数据，当盘中出现异动时系统将自动订阅</div>
                                 </div>
                               </div>
-                              <div className="h-10 w-px bg-gray-200"></div>
-                              <div>
-                                <div className="text-xs text-gray-500 mb-1">当前动能走势预测</div>
-                                <div className="text-lg font-bold">
-                                  {stock.capital_signal === "bullish" ? (
-                                    <span className="text-red-600 flex items-center gap-2"><i className="fas fa-rocket animate-pulse"></i> 主力资金持续流入</span>
-                                  ) : stock.capital_signal === "bearish" ? (
-                                    <span className="text-green-600 flex items-center gap-2"><i className="fas fa-arrow-down animate-bounce"></i> 主力资金持续流出</span>
-                                  ) : (
-                                    <span className="text-gray-500 flex items-center gap-2"><i className="fas fa-minus"></i> 主力资金观望</span>
-                                  )}
-                                </div>
-                              </div>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setInsightStock({ code: stock.code, name: stock.name });
+                                  setInsightDrawerOpen(true);
+                                }}
+                                className="px-3 py-1.5 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors flex items-center gap-1"
+                              >
+                                <i className="fas fa-search"></i> 深度分析
+                              </button>
                             </div>
-                            
-                            <div className="text-xs text-gray-400 max-w-xs text-right relative z-10 bg-white/80 p-2 rounded">
-                              <i className="fas fa-info-circle mr-1"></i>
-                              上方为<b>全天大单累计数据</b>，下方图表为<b>近期阻力价位搏杀情况</b>。若全天大单呈净流入，回踩支撑位时即为黄金买点。
-                            </div>
-                          </div>
+                          )}
 
 
                           {/* 多策略投票总览 — StockScorer 6维评分 */}
