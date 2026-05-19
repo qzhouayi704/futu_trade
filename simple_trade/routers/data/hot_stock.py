@@ -237,6 +237,36 @@ async def get_top_hot_stocks(
     arbiter = SignalArbiter()
     _scorer = StockScorer()
 
+    # ===== 批量预查询 K线数据（消除逐只 DB 查询瓶颈）=====
+    import datetime as _dt
+    _today = _dt.datetime.now().strftime('%Y-%m-%d')
+    _kline_cache: dict = {}  # {stock_code: [row, ...]}  每行=(time_key, open, high, low, close, volume, turnover_rate)
+    db = getattr(container, 'db_manager', None)
+    if db and stock_codes_list:
+        try:
+            _placeholders = ",".join(["?"] * len(stock_codes_list))
+            _kl_rows = db.execute_query(f"""
+                SELECT stock_code, time_key, open_price, high_price, low_price,
+                       close_price, volume, turnover_rate
+                FROM kline_data
+                WHERE stock_code IN ({_placeholders}) AND date(time_key) < ?
+                ORDER BY stock_code, time_key DESC
+            """, tuple(stock_codes_list) + (_today,))
+            # 按 stock_code 分组，每只最多取25条
+            _code_count: dict = {}
+            for r in (_kl_rows or []):
+                code = r[0]
+                cnt = _code_count.get(code, 0)
+                if cnt >= 25:
+                    continue
+                _code_count[code] = cnt + 1
+                _kline_cache.setdefault(code, []).append(r[1:])  # 去掉 stock_code
+            # 反转为时间升序
+            for code in _kline_cache:
+                _kline_cache[code].reverse()
+        except Exception as e:
+            logging.warning(f"【TopHot】批量K线预查询失败: {e}")
+
     result_stocks = []
     for stock in top_stocks:
         stock_code = stock['code']
@@ -271,32 +301,22 @@ async def get_top_hot_stocks(
                 'risk_note': cached.get('stock_tag_risk', ''),
             }
         elif not stock_tag:
-            # Fallback: 实时从 DB K线计算（enricher 未跑时）
+            # Fallback: 从批量预查询的 K线缓存计算（enricher 未跑时）
             try:
                 from ...services.market_data.stock_profile_tagger import StockProfileTagger
                 _tagger = StockProfileTagger()
-                db = getattr(container, 'db_manager', None)
-                if db:
-                    import datetime as _dt
-                    _today = _dt.datetime.now().strftime('%Y-%m-%d')
-                    _rows = db.execute_query("""
-                        SELECT time_key, open_price, high_price, low_price, close_price,
-                               volume, turnover_rate
-                        FROM kline_data WHERE stock_code = ? AND date(time_key) < ?
-                        ORDER BY time_key DESC LIMIT 15
-                    """, (stock_code, _today))
-                    if _rows and len(_rows) >= 5:
-                        _cols = ["time_key","open_price","high_price","low_price",
-                                 "close_price","volume","turnover_rate"]
-                        _klines = [dict(zip(_cols, r)) for r in _rows]
-                        _klines.reverse()
-                        _tag = _tagger.tag_stock(stock_code, _klines, cur_price)
-                        if _tag.label != '正常':
-                            stock_tag = {
-                                'label': _tag.label,
-                                'phase': _tag.phase,
-                                'risk_note': _tag.risk_note,
-                            }
+                _rows = _kline_cache.get(stock_code, [])[:15]
+                if len(_rows) >= 5:
+                    _cols = ["time_key","open_price","high_price","low_price",
+                             "close_price","volume","turnover_rate"]
+                    _klines = [dict(zip(_cols, r)) for r in _rows]
+                    _tag = _tagger.tag_stock(stock_code, _klines, cur_price)
+                    if _tag.label != '正常':
+                        stock_tag = {
+                            'label': _tag.label,
+                            'phase': _tag.phase,
+                            'risk_note': _tag.risk_note,
+                        }
             except Exception:
                 pass
 
@@ -316,42 +336,33 @@ async def get_top_hot_stocks(
                     'flow_ratio': cf_data.get('net_inflow_ratio', 0) if cf_data else 0,
                 }
             if not _kline_indicators.get('change_5d'):
-                # Fallback: 从 DB K线实时计算
-                db = getattr(container, 'db_manager', None)
-                if db:
-                    import datetime as _dt
-                    _today = _dt.datetime.now().strftime('%Y-%m-%d')
-                    _rows = db.execute_query("""
-                        SELECT time_key, open_price, high_price, low_price, close_price,
-                               volume, turnover_rate
-                        FROM kline_data WHERE stock_code = ? AND date(time_key) < ?
-                        ORDER BY time_key DESC LIMIT 25
-                    """, (stock_code, _today))
-                    if _rows and len(_rows) >= 5:
-                        _klines = list(reversed(_rows))
-                        # 5日涨幅
-                        if len(_klines) >= 6:
-                            c_now, c_5d = _klines[-1][4], _klines[-6][4]
-                            _kline_indicators['change_5d'] = round((c_now - c_5d) / c_5d * 100, 2) if c_5d else 0
-                        # K线20日位置
-                        recent = _klines[-min(20, len(_klines)):]
-                        highs = [r[2] for r in recent]
-                        lows = [r[3] for r in recent]
-                        h, l = max(highs), min(lows)
-                        _kline_indicators['kline_pos_20d'] = round((cur_price - l) / (h - l), 4) if h != l else 0.5
-                        # 前日涨幅
-                        if len(_klines) >= 3:
-                            c_prev, c_prev2 = _klines[-2][4], _klines[-3][4]
-                            _kline_indicators['prev_day_change'] = round((c_prev - c_prev2) / c_prev2 * 100, 2) if c_prev2 else 0
-                        # 日振幅
-                        amp = quote.get('amplitude', 0)
-                        if not amp and cur_price > 0:
-                            day_high = quote.get('high_price', 0) or _klines[-1][2]
-                            day_low = quote.get('low_price', 0) or _klines[-1][3]
-                            amp = round((day_high - day_low) / cur_price * 100, 2) if cur_price else 0
-                        _kline_indicators.setdefault('day_amplitude', amp)
-                        _kline_indicators.setdefault('vol_ratio', vr)
-                        _kline_indicators.setdefault('flow_ratio', cf_data.get('net_inflow_ratio', 0) if cf_data else 0)
+                # Fallback: 从批量预查询的 K线缓存计算
+                _rows = _kline_cache.get(stock_code, [])
+                if len(_rows) >= 5:
+                    _klines = _rows  # 已经是时间升序
+                    # 5日涨幅
+                    if len(_klines) >= 6:
+                        c_now, c_5d = _klines[-1][4], _klines[-6][4]
+                        _kline_indicators['change_5d'] = round((c_now - c_5d) / c_5d * 100, 2) if c_5d else 0
+                    # K线20日位置
+                    recent = _klines[-min(20, len(_klines)):]
+                    highs = [r[2] for r in recent]
+                    lows = [r[3] for r in recent]
+                    h, l = max(highs), min(lows)
+                    _kline_indicators['kline_pos_20d'] = round((cur_price - l) / (h - l), 4) if h != l else 0.5
+                    # 前日涨幅
+                    if len(_klines) >= 3:
+                        c_prev, c_prev2 = _klines[-2][4], _klines[-3][4]
+                        _kline_indicators['prev_day_change'] = round((c_prev - c_prev2) / c_prev2 * 100, 2) if c_prev2 else 0
+                    # 日振幅
+                    amp = quote.get('amplitude', 0)
+                    if not amp and cur_price > 0:
+                        day_high = quote.get('high_price', 0) or _klines[-1][2]
+                        day_low = quote.get('low_price', 0) or _klines[-1][3]
+                        amp = round((day_high - day_low) / cur_price * 100, 2) if cur_price else 0
+                    _kline_indicators.setdefault('day_amplitude', amp)
+                    _kline_indicators.setdefault('vol_ratio', vr)
+                    _kline_indicators.setdefault('flow_ratio', cf_data.get('net_inflow_ratio', 0) if cf_data else 0)
 
             # 调用 StockScorer 6维评分
             scoring_result = _scorer.score_stock(stock_code, stock.get('name', ''), _kline_indicators)
