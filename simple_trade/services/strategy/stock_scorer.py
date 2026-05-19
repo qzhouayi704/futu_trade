@@ -82,22 +82,24 @@ class ScoringResult:
         return result
 
 
-# -- TREND mode: volume + capital flow driven (not position-dependent) --
+# -- TREND mode: volume + ticker power driven (not position-dependent) --
 # 振幅参数基于1763万条逐笔数据回测：
 #   振幅<8% 日内胜率12-34%, 振幅≥12% 日内胜率50-78%, ≥15% 日期望1.37%
 # 5D Change放宽: 活跃股62%在此维度得零分, 放宽至(-5, 20)覆盖强趋势股
+# ticker_power: 基于逐笔成交主动买卖力量比(buy_sell_ratio - 1.0)
+#   BSR>=1.5(power>=0.5)=强势做多, BSR>=1.2(power>=0.2)=偏多, BSR>=1.0(power>=0.0)=中性
 TREND_CONFIG = {
     'change_5d': {'max_score': 20, 'optimal_range': (-2.0, 15.0), 'marginal_range': (-5.0, 25.0), 'default': 0},
     'amplitude': {'max_score': 20, 'optimal_range': (5.0, 20.0), 'marginal_range': (3.0, 30.0), 'default': 0},
     'vol_ratio': {'max_score': 25, 'tiers': [(5.0, 20), (3.0, 25), (2.0, 18), (1.5, 12), (1.0, 5)], 'default': 0},
-    'flow':      {'max_score': 25, 'tiers': [(0.3, 25), (0.15, 18), (0.0, 8)], 'default': 0},
+    'ticker_power': {'max_score': 25, 'tiers': [(0.5, 25), (0.2, 18), (0.0, 8)], 'default': 0},
     'kline_pos': {'max_score': 5, 'optimal_range': (0.0, 1.0), 'marginal_range': (0.0, 1.0), 'default': 5},
     'prev_change': {'max_score': 5, 'reverse_tiers': [(3.0, 5), (7.0, 3), (12.0, 1)], 'default': 0},
 }
 
 TREND_B_EXEMPTION = {
     'vol_ratio_min': 2.5,
-    'flow_ratio_min': 0.2,
+    'ticker_power_min': 0.2,
     'change_5d_relaxed': {'max_score': 25, 'optimal_range': (2.0, 20.0), 'marginal_range': (-5.0, 30.0), 'default': 0},
 }
 
@@ -113,7 +115,7 @@ REVERSAL_CONFIG = {
     # 反转信号(60%): 条件③④⑤⑥对应
     'rise_from_low': {'max_score': 15, 'tiers': [(5.0, 15), (3.0, 12), (2.0, 10), (1.0, 5)], 'default': 0},
     'today_change':  {'max_score': 10, 'tiers': [(3.0, 10), (1.0, 8), (0.0, 5)], 'default': 0},
-    'flow':          {'max_score': 15, 'tiers': [(0.3, 15), (0.15, 12), (0.0, 6)], 'default': 0},
+    'ticker_power':  {'max_score': 15, 'tiers': [(0.5, 15), (0.2, 12), (0.0, 6)], 'default': 0},
     'vol_ratio':     {'max_score': 15, 'tiers': [(3.0, 15), (2.0, 12), (1.5, 8), (1.2, 5)], 'default': 0},
     'amplitude':     {'max_score': 5, 'optimal_range': (3.0, 15.0), 'marginal_range': (2.0, 25.0), 'default': 0},
 }
@@ -168,12 +170,12 @@ class StockScorer:
         details = []
         total = 0
         vol_ratio = ind.get('vol_ratio')
-        flow_ratio = ind.get('flow_ratio')
+        ticker_power = ind.get('ticker_power')
         change_5d = ind.get('change_5d')
 
-        # 1. 5d change (25%) - B-type exemption for strong volume+flow
+        # 1. 5d change (25%) - B-type exemption for strong volume+ticker power
         is_b = (vol_ratio is not None and vol_ratio >= TREND_B_EXEMPTION['vol_ratio_min']
-                and flow_ratio is not None and flow_ratio >= TREND_B_EXEMPTION['flow_ratio_min'])
+                and ticker_power is not None and ticker_power >= TREND_B_EXEMPTION['ticker_power_min'])
         cfg = TREND_B_EXEMPTION['change_5d_relaxed'] if is_b else TREND_CONFIG['change_5d']
         label = '5d_change(B-relax)' if is_b else '5d_change'
         s, d = self._score_range(cfg, change_5d, label)
@@ -187,8 +189,8 @@ class StockScorer:
         s, d = self._score_tiered(TREND_CONFIG['vol_ratio'], ind.get('vol_ratio'), 'vol_ratio')
         details.append(d); total += s
 
-        # 4. Capital flow positive (15%)
-        s, d = self._score_tiered(TREND_CONFIG['flow'], ind.get('flow_ratio'), 'flow')
+        # 4. Ticker power — 逐笔主动买卖力量 (25%)
+        s, d = self._score_tiered(TREND_CONFIG['ticker_power'], ticker_power, 'ticker_power')
         details.append(d); total += s
 
         # 5. Kline position (10%)
@@ -227,8 +229,8 @@ class StockScorer:
         s, d = self._score_tiered(REVERSAL_CONFIG['today_change'], ind.get('today_change'), 'today_up[R]')
         details.append(d); total += s
 
-        # 对应条件⑤: 反弹伴随资金流入
-        s, d = self._score_tiered(REVERSAL_CONFIG['flow'], ind.get('flow_ratio'), 'flow_in[R]')
+        # 对应条件⑤: 反弹伴随主动买入力量
+        s, d = self._score_tiered(REVERSAL_CONFIG['ticker_power'], ind.get('ticker_power'), 'ticker_power[R]')
         details.append(d); total += s
 
         # 对应条件⑤⑥: 放量确认
@@ -243,13 +245,21 @@ class StockScorer:
 
     def score_snapshot(self, snapshot) -> ScoringResult:
         """Score from StockSnapshot (recommended interface)."""
+        # ticker_power: 从逐笔买卖力量比转换 (BSR - 1.0)
+        # 优先使用 ticker 数据，若无则回退到旧 flow_ratio
+        bsr = getattr(snapshot, 'ticker_buy_sell_ratio', None)
+        if bsr is not None and bsr > 0:
+            ticker_power = bsr - 1.0
+        else:
+            # 回退：旧资金流数据作为兜底
+            ticker_power = getattr(snapshot, 'net_inflow_ratio', None)
         indicators = {
             'change_5d': snapshot.change_5d,
             'kline_pos_20d': snapshot.kline_position_20d,
             'day_amplitude': snapshot.amplitude,
             'vol_ratio': snapshot.volume_ratio,
             'prev_day_change': snapshot.prev_day_change,
-            'flow_ratio': snapshot.net_inflow_ratio,
+            'ticker_power': ticker_power,
         }
         return self.score_stock(snapshot.code, snapshot.name, indicators)
 

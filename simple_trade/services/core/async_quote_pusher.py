@@ -362,14 +362,25 @@ class AsyncQuotePusher:
                                 if closes[5] > 0 else 0
                             )
 
-                    # 从资金流缓存补充
-                    cap_rows = db.execute_query(
-                        "SELECT net_inflow_ratio FROM capital_flow_cache "
-                        "WHERE stock_code = ? ORDER BY timestamp DESC LIMIT 1",
-                        (code,)
-                    )
-                    if cap_rows and cap_rows[0][0] is not None:
-                        indicators['flow_ratio'] = cap_rows[0][0]
+                    # 从逐笔成交数据计算买卖力量比 (ticker_power)
+                    ticker_svc = getattr(self.container, 'ticker_service', None)
+                    if ticker_svc:
+                        try:
+                            ticker_data = ticker_svc.get_ticker_data(code)
+                            if ticker_data and hasattr(ticker_data, 'buy_turnover') and ticker_data.sell_turnover > 0:
+                                bsr = ticker_data.buy_turnover / ticker_data.sell_turnover
+                                indicators['ticker_power'] = bsr - 1.0
+                        except Exception:
+                            pass
+                    # 若无逐笔数据，回退到资金流缓存
+                    if 'ticker_power' not in indicators:
+                        cap_rows = db.execute_query(
+                            "SELECT net_inflow_ratio FROM capital_flow_cache "
+                            "WHERE stock_code = ? ORDER BY timestamp DESC LIMIT 1",
+                            (code,)
+                        )
+                        if cap_rows and cap_rows[0][0] is not None:
+                            indicators['ticker_power'] = cap_rows[0][0]
 
                     # 评分
                     result = scorer.score_stock(code, anomaly.name, indicators)
