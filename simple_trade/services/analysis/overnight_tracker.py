@@ -119,6 +119,15 @@ class OvernightTracker:
 
             next_open, next_close, next_high, next_low = kline[0]
 
+            # 合理性校验：screen_price 和 next_open 差距超过50%则跳过（数据质量问题）
+            if screen_price > 0 and next_open > 0:
+                price_diff = abs(next_open - screen_price) / screen_price
+                if price_diff > 0.5:
+                    logger.warning(
+                        f"[优选追踪] {code} 价格异常: screen={screen_price} next_open={next_open}, 跳过"
+                    )
+                    continue
+
             # 计算表现指标
             if screen_price > 0:
                 next_change = (next_close - screen_price) / screen_price * 100
@@ -261,16 +270,19 @@ class OvernightTracker:
         """查找指定日期之后最近的有K线数据的交易日
 
         处理格式差异：screen_date='2026-05-18', time_key='2026-05-18 00:00:00'
-        需要找 screen_date 严格之后的下一个交易日
+        需要找 screen_date 严格之后的下一个交易日。
+        排除今天（可能是预下载的不完整数据）。
         """
+        from datetime import date as date_type
         # 统一用 'YYYY-MM-DD 23:59:59' 确保跳过当天
         search_date = date_str[:10] + " 23:59:59"
+        today_prefix = date_type.today().isoformat()
         rows = self.db.execute_query(
             "SELECT DISTINCT time_key FROM kline_data "
-            "WHERE time_key > ? ORDER BY time_key ASC LIMIT 1",
-            (search_date,)
+            "WHERE time_key > ? AND time_key < ? "
+            "ORDER BY time_key ASC LIMIT 1",
+            (search_date, today_prefix)
         )
         if not rows:
             return None
-        # 返回原始 time_key（含时间部分），用于后续K线查询
         return rows[0][0]
