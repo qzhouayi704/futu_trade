@@ -193,63 +193,137 @@ async def get_intraday_timeline(stock_code: str, container=Depends(get_container
 
 @router.get("/capital-flow-timeline/{stock_code}", response_model=APIResponse)
 async def get_capital_flow_timeline(stock_code: str, container=Depends(get_container)):
-    """获取日内主力/散户资金净流入时间序列（每分钟一个点）"""
+    """获取日内逐笔买卖力量时间线（每分钟一个点）
+
+    优先使用 ticker_data 表（Lee-Ready 方向）聚合真实主动买卖，
+    无逐笔数据时降级到旧版富途资金流 API。
+    """
     try:
+        from datetime import datetime, date as _date
+        db = getattr(container, 'db_manager', None)
+        today_str = _date.today().isoformat()
+
+        # ====== 1. 尝试从 ticker_data 构建逐笔时间线 ======
+        ticker_rows = None
+        if db:
+            try:
+                ticker_rows = db.execute_query("""
+                    SELECT
+                        substr(datetime(timestamp/1000, 'unixepoch', '+8 hours'), 12, 5) as minute,
+                        direction,
+                        SUM(turnover) as total_turnover,
+                        SUM(volume) as total_volume,
+                        AVG(price) as avg_price,
+                        COUNT(*) as tick_count
+                    FROM ticker_data
+                    WHERE stock_code = ? AND trade_date = ?
+                    GROUP BY minute, direction
+                    ORDER BY minute
+                """, (stock_code, today_str))
+            except Exception as e:
+                logging.debug(f"[逐笔时间线] 查询 ticker_data 失败: {e}")
+
+        if ticker_rows and len(ticker_rows) > 5:
+            # 按分钟聚合买/卖
+            minute_data: dict = {}  # {minute: {buy_turnover, sell_turnover, avg_price, volume}}
+            for row in ticker_rows:
+                minute, direction, turnover, volume, avg_price, _ = row
+                if minute not in minute_data:
+                    minute_data[minute] = {
+                        'buy_turnover': 0, 'sell_turnover': 0,
+                        'total_volume': 0, 'price_sum': 0, 'price_count': 0
+                    }
+                entry = minute_data[minute]
+                turnover_val = float(turnover or 0)
+                if direction == 'BUY':
+                    entry['buy_turnover'] += turnover_val
+                elif direction == 'SELL':
+                    entry['sell_turnover'] += turnover_val
+                entry['total_volume'] += int(volume or 0)
+                if avg_price and float(avg_price) > 0:
+                    entry['price_sum'] += float(avg_price)
+                    entry['price_count'] += 1
+
+            # 补充 RT_DATA 股价（更精确）
+            price_map = {}
+            try:
+                rt_rows = db.execute_query("""
+                    SELECT substr(time, 12, 5) as t, cur_price
+                    FROM rt_data
+                    WHERE stock_code = ? AND trade_date = ?
+                    ORDER BY time
+                """, (stock_code, today_str))
+                if rt_rows:
+                    for r in rt_rows:
+                        if r[1] and float(r[1]) > 0:
+                            price_map[r[0]] = float(r[1])
+            except Exception:
+                pass
+
+            # 构建时间线
+            timeline = []
+            cum_buy = 0.0
+            cum_sell = 0.0
+            for minute in sorted(minute_data.keys()):
+                entry = minute_data[minute]
+                buy_t = entry['buy_turnover']
+                sell_t = entry['sell_turnover']
+                cum_buy += buy_t
+                cum_sell += sell_t
+                net_buy = buy_t - sell_t  # 本分钟净主动买入
+                cum_net = cum_buy - cum_sell  # 累计净主动买入
+
+                point: dict = {
+                    'time': minute,
+                    'buy_in': round(buy_t / 10000, 1),     # 本分钟主动买入（万）
+                    'sell_in': round(-sell_t / 10000, 1),   # 本分钟主动卖出（万，负值）
+                    'net_buy': round(net_buy / 10000, 1),   # 本分钟净主动买入（万）
+                    'cum_net': round(cum_net / 10000, 1),   # 累计净主动买入（万）
+                    'main_in': round(cum_net / 10000, 1),   # 兼容旧字段
+                    'retail_in': 0,                          # 逐笔模式无散户分类
+                    'volume': entry['total_volume'],
+                }
+                # 价格：优先 RT_DATA，其次逐笔均价
+                if minute in price_map:
+                    point['price'] = round(price_map[minute], 3)
+                elif entry['price_count'] > 0:
+                    point['price'] = round(entry['price_sum'] / entry['price_count'], 3)
+
+                timeline.append(point)
+
+            return APIResponse(
+                success=True,
+                data=timeline,
+                message=f"逐笔买卖力量时间线 ({len(timeline)} 点)"
+            )
+
+        # ====== 2. 降级：旧版富途资金流 API ======
         futu_client = getattr(container, 'futu_client', None)
         if not futu_client or not futu_client.is_available():
-            return APIResponse(success=False, data=None, message="富途API不可用")
+            return APIResponse(success=True, data=[], message="无逐笔数据且富途API不可用")
 
         from futu import RET_OK, PeriodType
         ret, df = futu_client.client.get_capital_flow(stock_code, period_type=PeriodType.INTRADAY)
         if ret != RET_OK:
-            return APIResponse(success=False, data=None, message=f"获取资金流数据失败: {df}")
+            return APIResponse(success=True, data=[], message=f"获取资金流数据失败: {df}")
 
-        # 同时获取分时价格数据（用历史1分钟K线，不需要订阅）
-        # 从资金流数据中提取实际交易日期（避免午夜后日期不匹配）
+        # 获取分时价格
         price_map = {}
         try:
-            from futu import KLType
-            flow_date = None
-            for _, row in df.iterrows():
-                ts = str(row.get('capital_flow_item_time', ''))
-                if len(ts) >= 10:
-                    flow_date = ts[:10]
-                    break
-            if flow_date:
-                p_ret, p_df, _ = futu_client.client.request_history_kline(
-                    stock_code, start=flow_date, end=flow_date,
-                    ktype=KLType.K_1M, max_count=500
-                )
-                if p_ret == RET_OK and p_df is not None and not p_df.empty:
-                    for _, pr in p_df.iterrows():
-                        tk = str(pr.get('time_key', ''))
-                        if len(tk) >= 16:
-                            price_map[tk[11:16]] = float(pr.get('close', 0))
+            rt_ret, rt_df = futu_client.get_rt_data(stock_code)
+            if rt_ret == 0 and rt_df is not None and not rt_df.empty:
+                for _, rt_row in rt_df.iterrows():
+                    rt_time = str(rt_row.get('time', ''))
+                    rt_price = float(rt_row.get('cur_price', 0))
+                    if len(rt_time) >= 16 and rt_price > 0:
+                        price_map[rt_time[11:16]] = rt_price
         except Exception:
             pass
-
-        # 兜底：1分钟K线无数���时，使用 RT_DATA 分时数据填充股价
-        if not price_map:
-            try:
-                rt_ret, rt_df = futu_client.get_rt_data(stock_code)
-                if rt_ret == 0 and rt_df is not None and not rt_df.empty:
-                    for _, rt_row in rt_df.iterrows():
-                        rt_time = str(rt_row.get('time', ''))
-                        rt_price = float(rt_row.get('cur_price', 0))
-                        if len(rt_time) >= 16 and rt_price > 0:
-                            price_map[rt_time[11:16]] = rt_price
-                    if price_map:
-                        logging.debug(f"[资金流] {stock_code} 使用RT_DATA兜底股价 ({len(price_map)}点)")
-            except Exception:
-                pass
 
         timeline = []
         for _, row in df.iterrows():
             time_str = str(row.get('capital_flow_item_time', ''))
-            if len(time_str) >= 16:
-                time_short = time_str[11:16]
-            else:
-                time_short = time_str
+            time_short = time_str[11:16] if len(time_str) >= 16 else time_str
 
             super_in = float(row.get('super_in_flow', 0) or 0)
             big_in = float(row.get('big_in_flow', 0) or 0)
@@ -258,54 +332,22 @@ async def get_capital_flow_timeline(stock_code: str, container=Depends(get_conta
 
             main_in = super_in + big_in
             retail_in = mid_in + sml_in
-            total_in = main_in + retail_in
 
             point = {
                 'time': time_short,
                 'main_in': round(main_in / 10000, 1),
                 'retail_in': round(retail_in / 10000, 1),
-                'total_in': round(total_in / 10000, 1),
-                'super_in': round(super_in / 10000, 1),
+                'net_buy': round(main_in / 10000, 1),  # 兼容新字段
+                'cum_net': round(main_in / 10000, 1),
             }
-            # 附加价格（如果有）
             if time_short in price_map:
                 point['price'] = round(price_map[time_short], 3)
             timeline.append(point)
 
-        # 附加大单强度时间线（从 big_order_tracking 表）
-        try:
-            db = getattr(container, 'db_manager', None)
-            if db:
-                strength_rows = db.execute_query("""
-                    SELECT substr(datetime(created_at, '+8 hours'), 12, 5) as t,
-                           order_strength, buy_sell_ratio
-                    FROM big_order_tracking
-                    WHERE stock_code = ? AND date(created_at) = date('now')
-                    ORDER BY created_at
-                """, (stock_code,))
-                if strength_rows:
-                    str_map = {}
-                    for r in strength_rows:
-                        str_map[r[0]] = {
-                            'strength': round(float(r[1] or 0), 2),
-                            'bs_ratio': round(float(r[2] or 0), 2),
-                        }
-                    # 将 strength 插入最近的 timeline point
-                    last_str = None
-                    for point in timeline:
-                        t = point['time']
-                        if t in str_map:
-                            last_str = str_map[t]
-                        if last_str:
-                            point['strength'] = last_str['strength']
-                            point['bs_ratio'] = last_str['bs_ratio']
-        except Exception as e:
-            logging.debug(f"附加 strength 数据失败: {e}")
-
         return APIResponse(
             success=True,
             data=timeline,
-            message=f"获取 {stock_code} 资金流时间线成功 ({len(timeline)} 点)"
+            message=f"资金流时间线 (旧版, {len(timeline)} 点)"
         )
     except Exception as e:
         logging.error(f"获取资金流时间线失败: {stock_code}, {e}")

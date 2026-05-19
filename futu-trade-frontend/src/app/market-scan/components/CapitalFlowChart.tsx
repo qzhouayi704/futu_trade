@@ -1,5 +1,5 @@
-// 主力 vs 散户资金流走势图
-// 用 lightweight-charts 绘制双线面积图
+// 逐笔买卖力量走势图
+// 股价折线（右轴） + 分钟净主动买入柱状图（左轴）
 
 "use client";
 
@@ -20,10 +20,9 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
 
     let disposed = false;
 
-    import("lightweight-charts").then(({ createChart, LineType, CrosshairMode }) => {
+    import("lightweight-charts").then(({ createChart, CrosshairMode }) => {
       if (disposed || !containerRef.current) return;
 
-      // 清理旧图表
       if (chartRef.current) {
         chartRef.current.remove();
         chartRef.current = null;
@@ -41,12 +40,8 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
           vertLines: { color: "#f3f4f6" },
           horzLines: { color: "#f3f4f6" },
         },
-        crosshair: {
-          mode: CrosshairMode.Magnet,
-        },
-        rightPriceScale: {
-          borderColor: "#e5e7eb",
-        },
+        crosshair: { mode: CrosshairMode.Magnet },
+        rightPriceScale: { borderColor: "#e5e7eb" },
         timeScale: {
           borderColor: "#e5e7eb",
           timeVisible: true,
@@ -56,161 +51,112 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
 
       chartRef.current = chart;
 
-      // === 资金流系列：全部放到 left 轴 ===
-
-      // 主力净流入（红色区域线）
-      const mainSeries = chart.addAreaSeries({
-        topColor: "rgba(239, 68, 68, 0.3)",
-        bottomColor: "rgba(239, 68, 68, 0.02)",
-        lineColor: "#ef4444",
-        lineWidth: 2,
-        title: "主力",
-        priceScaleId: "left",
-      });
-
-      // 散户净流入（绿色区域线）
-      const retailSeries = chart.addAreaSeries({
-        topColor: "rgba(34, 197, 94, 0.25)",
-        bottomColor: "rgba(34, 197, 94, 0.02)",
-        lineColor: "#22c55e",
-        lineWidth: 2,
-        title: "散户",
-        priceScaleId: "left",
-      });
-
-      // 零轴基线
-      const zeroSeries = chart.addLineSeries({
-        color: "#9ca3af",
-        lineWidth: 1,
-        lineStyle: 2, // Dashed
-        title: "",
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-        priceScaleId: "left",
-      });
-
-      // 将 HH:MM 转为 Unix 时间戳，补偿时区（lightweight-charts 按 UTC 显示）
+      // HH:MM -> Unix timestamp (补偿时区)
       const today = new Date();
-      const tzOffsetSec = today.getTimezoneOffset() * 60; // 本地 vs UTC 偏移（秒）
+      const tzOffsetSec = today.getTimezoneOffset() * 60;
       const toTimestamp = (hhmm: string) => {
         const [h, m] = hhmm.split(':').map(Number);
         const d = new Date(today.getFullYear(), today.getMonth(), today.getDate(), h || 0, m || 0);
         return Math.floor(d.getTime() / 1000 - tzOffsetSec) as unknown as import("lightweight-charts").Time;
       };
 
-      const mainData = data.map((p) => ({
-        time: toTimestamp(p.time),
-        value: p.main_in,
-      }));
+      // === 1. 净主动买入柱状图（左轴）===
+      const netBuySeries = chart.addHistogramSeries({
+        priceScaleId: "left",
+        title: "净买入",
+        priceFormat: { type: "volume" },
+        lastValueVisible: true,
+      });
 
-      const retailData = data.map((p) => ({
-        time: toTimestamp(p.time),
-        value: p.retail_in,
-      }));
+      const netBuyData = data.map((p) => {
+        const val = (p as Record<string, unknown>).net_buy as number ?? p.main_in ?? 0;
+        return {
+          time: toTimestamp(p.time),
+          value: val,
+          color: val >= 0 ? "rgba(239, 68, 68, 0.7)" : "rgba(34, 197, 94, 0.7)",
+        };
+      });
+      netBuySeries.setData(netBuyData);
 
-      const zeroData = data.map((p) => ({
-        time: toTimestamp(p.time),
-        value: 0,
-      }));
-
-      mainSeries.setData(mainData);
-      retailSeries.setData(retailData);
-      zeroSeries.setData(zeroData);
-
-      // 大单强度线（橙色，独立 strength 轴，范围 -1 ~ +1）
-      const strengthPoints = data.filter(p => p.strength != null);
-      if (strengthPoints.length > 3) {
-        const strengthSeries = chart.addLineSeries({
-          color: "#f97316",
-          lineWidth: 2,
-          lineStyle: 0,
-          title: "强度",
-          priceScaleId: "strength",
+      // === 2. 累计净主动买入线（左轴，更淡）===
+      const cumPoints = data.filter(p => (p as Record<string, unknown>).cum_net != null);
+      if (cumPoints.length > 3) {
+        const cumSeries = chart.addAreaSeries({
+          topColor: "rgba(99, 102, 241, 0.15)",
+          bottomColor: "rgba(99, 102, 241, 0.02)",
+          lineColor: "#6366f1",
+          lineWidth: 1,
+          title: "累计净买",
+          priceScaleId: "left",
           lastValueVisible: true,
-          priceLineVisible: false,
-          crosshairMarkerRadius: 4,
         });
 
-        // 强度零轴
-        const strZeroSeries = chart.addLineSeries({
-          color: "#f9731640",
+        // 零轴虚线
+        const zeroSeries = chart.addLineSeries({
+          color: "#9ca3af",
           lineWidth: 1,
           lineStyle: 2,
           title: "",
-          priceScaleId: "strength",
           priceLineVisible: false,
           lastValueVisible: false,
           crosshairMarkerVisible: false,
+          priceScaleId: "left",
         });
 
-        strengthSeries.setData(strengthPoints.map(p => ({
+        cumSeries.setData(cumPoints.map(p => ({
           time: toTimestamp(p.time),
-          value: p.strength!,
+          value: (p as Record<string, unknown>).cum_net as number ?? 0,
         })));
-        strZeroSeries.setData(strengthPoints.map(p => ({
+        zeroSeries.setData(cumPoints.map(p => ({
           time: toTimestamp(p.time),
           value: 0,
         })));
-
-        // 配置 strength 轴（不可见，但独立缩放）
-        chart.priceScale("strength").applyOptions({
-          scaleMargins: { top: 0.05, bottom: 0.05 },
-          visible: false,
-        });
       }
 
-      // === 股价走势线：使用默认 right 轴（独立缩放） ===
+      // === 3. 股价走势线（右轴）===
       const pricePoints = data.filter(p => p.price != null && p.price > 0);
-      if (pricePoints.length > 10) {
+      if (pricePoints.length > 5) {
         const priceSeries = chart.addLineSeries({
           color: "#7c3aed",
           lineWidth: 2,
-          lineStyle: 0,
           title: "股价",
-          priceScaleId: "right",  // 默认右轴
+          priceScaleId: "right",
           lastValueVisible: true,
           priceLineVisible: true,
           priceLineColor: "#7c3aed",
           priceLineStyle: 2,
         });
 
-        // 配置左轴（资金流）
-        chart.priceScale("left").applyOptions({
-          scaleMargins: { top: 0.08, bottom: 0.08 },
-          visible: true,
-          borderColor: "#d1d5db",
-        });
+        priceSeries.setData(pricePoints.map(p => ({
+          time: toTimestamp(p.time),
+          value: p.price!,
+        })));
 
-        // 配置右轴（股价��
         chart.priceScale("right").applyOptions({
           scaleMargins: { top: 0.08, bottom: 0.08 },
           visible: true,
           borderColor: "#7c3aed",
         });
-
-        const priceData = pricePoints.map((p) => ({
-          time: toTimestamp(p.time),
-          value: p.price!,
-        }));
-        priceSeries.setData(priceData);
       }
+
+      // 左轴配置
+      chart.priceScale("left").applyOptions({
+        scaleMargins: { top: 0.08, bottom: 0.08 },
+        visible: true,
+        borderColor: "#d1d5db",
+      });
 
       chart.timeScale().fitContent();
 
       // 响应式
       const resizeObserver = new ResizeObserver((entries) => {
         if (entries[0] && chartRef.current) {
-          chartRef.current.applyOptions({
-            width: entries[0].contentRect.width,
-          });
+          chartRef.current.applyOptions({ width: entries[0].contentRect.width });
         }
       });
       resizeObserver.observe(containerRef.current!);
 
-      return () => {
-        resizeObserver.disconnect();
-      };
+      return () => { resizeObserver.disconnect(); };
     });
 
     return () => {
@@ -224,22 +170,25 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
 
   // 汇总指标
   const latest = data.length > 0 ? data[data.length - 1] : null;
+  const latestAny = latest as Record<string, unknown> | null;
+  const cumNet = latestAny?.cum_net as number | undefined;
+  const netBuy = latestAny?.net_buy as number | undefined;
 
   return (
     <div className="relative">
       {/* 图例 */}
       <div className="absolute top-2 left-3 z-10 flex items-center gap-4 text-[10px]">
         <span className="flex items-center gap-1">
-          <span className="w-3 h-0.5 bg-red-500 inline-block rounded" />
-          <span className="text-gray-600">主力 (超大单+大单)</span>
+          <span className="w-3 h-3 bg-red-400/70 inline-block rounded-sm" />
+          <span className="text-gray-600">主动买入</span>
         </span>
         <span className="flex items-center gap-1">
-          <span className="w-3 h-0.5 bg-green-500 inline-block rounded" />
-          <span className="text-gray-600">散户 (中单+小单)</span>
+          <span className="w-3 h-3 bg-green-400/70 inline-block rounded-sm" />
+          <span className="text-gray-600">主动卖出</span>
         </span>
         <span className="flex items-center gap-1">
-          <span className="w-3 h-0.5 bg-orange-500 inline-block rounded" />
-          <span className="text-gray-600">大单强度</span>
+          <span className="w-3 h-0.5 bg-indigo-500 inline-block rounded" />
+          <span className="text-gray-600">累计净买</span>
         </span>
         <span className="flex items-center gap-1">
           <span className="w-4 h-[2px] bg-violet-600 inline-block rounded" />
@@ -251,17 +200,21 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
       {/* 实时数值 */}
       {latest && (
         <div className="absolute top-2 right-3 z-10 flex items-center gap-3 text-[10px]">
-          <span className={`font-bold ${latest.main_in >= 0 ? "text-red-600" : "text-green-600"}`}>
-            主力 {latest.main_in >= 0 ? "+" : ""}{latest.main_in.toFixed(0)}万
-          </span>
-          {latest.strength != null && (
-            <span className={`font-bold ${latest.strength >= 0.2 ? "text-orange-500" : latest.strength <= -0.2 ? "text-orange-300" : "text-gray-500"}`}>
-              强度 {latest.strength >= 0 ? "+" : ""}{latest.strength.toFixed(2)}
+          {netBuy != null && (
+            <span className={`font-bold ${netBuy >= 0 ? "text-red-600" : "text-green-600"}`}>
+              本分钟 {netBuy >= 0 ? "+" : ""}{netBuy.toFixed(0)}万
             </span>
           )}
-          <span className={`font-bold ${latest.retail_in >= 0 ? "text-red-600" : "text-green-600"}`}>
-            散户 {latest.retail_in >= 0 ? "+" : ""}{latest.retail_in.toFixed(0)}万
-          </span>
+          {cumNet != null && (
+            <span className={`font-bold ${cumNet >= 0 ? "text-red-600" : "text-green-600"}`}>
+              累计 {cumNet >= 0 ? "+" : ""}{cumNet.toFixed(0)}万
+            </span>
+          )}
+          {latest.price != null && latest.price > 0 && (
+            <span className="font-bold text-violet-600">
+              ${latest.price.toFixed(3)}
+            </span>
+          )}
         </div>
       )}
 
