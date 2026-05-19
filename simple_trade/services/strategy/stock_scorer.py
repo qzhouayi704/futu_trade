@@ -173,32 +173,32 @@ class StockScorer:
         ticker_power = ind.get('ticker_power')
         change_5d = ind.get('change_5d')
 
-        # 1. 5d change (25%) - B-type exemption for strong volume+ticker power
+        # 1. 5日涨跌 (25%) - B类豁免：量比+逐笔力量足够强时放宽
         is_b = (vol_ratio is not None and vol_ratio >= TREND_B_EXEMPTION['vol_ratio_min']
                 and ticker_power is not None and ticker_power >= TREND_B_EXEMPTION['ticker_power_min'])
         cfg = TREND_B_EXEMPTION['change_5d_relaxed'] if is_b else TREND_CONFIG['change_5d']
-        label = '5d_change(B-relax)' if is_b else '5d_change'
+        label = '5日涨跌(放宽)' if is_b else '5日涨跌'
         s, d = self._score_range(cfg, change_5d, label)
         details.append(d); total += s
 
-        # 2. Amplitude (25%)
-        s, d = self._score_range(TREND_CONFIG['amplitude'], ind.get('day_amplitude'), 'amplitude')
+        # 2. 日内振幅 (25%)
+        s, d = self._score_range(TREND_CONFIG['amplitude'], ind.get('day_amplitude'), '日内振幅')
         details.append(d); total += s
 
-        # 3. Volume ratio (20%)
-        s, d = self._score_tiered(TREND_CONFIG['vol_ratio'], ind.get('vol_ratio'), 'vol_ratio')
+        # 3. 量比 (20%)
+        s, d = self._score_tiered(TREND_CONFIG['vol_ratio'], ind.get('vol_ratio'), '量比')
         details.append(d); total += s
 
-        # 4. Ticker power — 逐笔主动买卖力量 (25%)
-        s, d = self._score_tiered(TREND_CONFIG['ticker_power'], ticker_power, 'ticker_power')
+        # 4. 逐笔买卖力量 (25%)
+        s, d = self._score_tiered(TREND_CONFIG['ticker_power'], ticker_power, '逐笔买卖力量')
         details.append(d); total += s
 
-        # 5. Kline position (10%)
-        s, d = self._score_range(TREND_CONFIG['kline_pos'], ind.get('kline_pos_20d'), 'kline_pos')
+        # 5. K线位置 (10%)
+        s, d = self._score_range(TREND_CONFIG['kline_pos'], ind.get('kline_pos_20d'), 'K线位置')
         details.append(d); total += s
 
-        # 6. Prev day change reverse (5%)
-        s, d = self._score_reverse(TREND_CONFIG['prev_change'], ind.get('prev_day_change'), 'prev_change')
+        # 6. 前日涨跌（反向） (5%)
+        s, d = self._score_reverse(TREND_CONFIG['prev_change'], ind.get('prev_day_change'), '前日涨跌')
         details.append(d); total += s
 
         return total, details
@@ -210,35 +210,35 @@ class StockScorer:
 
         # === 背景条件(40%): "跌够了" ===
         # 对应条件②: 距最高点跌幅够深
-        s, d = self._score_range(REVERSAL_CONFIG['kline_pos'], ind.get('kline_pos_20d'), 'kline_pos[R]')
+        s, d = self._score_range(REVERSAL_CONFIG['kline_pos'], ind.get('kline_pos_20d'), 'K线低位')
         details.append(d); total += s
 
         # 对应条件①: 近期持续下跌
-        s, d = self._score_range(REVERSAL_CONFIG['change_5d'], ind.get('change_5d'), '5d_drop[R]')
+        s, d = self._score_range(REVERSAL_CONFIG['change_5d'], ind.get('change_5d'), '5日跌幅')
         details.append(d); total += s
 
-        s, d = self._score_range(REVERSAL_CONFIG['prev_change'], ind.get('prev_day_change'), 'prev_drop[R]')
+        s, d = self._score_range(REVERSAL_CONFIG['prev_change'], ind.get('prev_day_change'), '前日跌幅')
         details.append(d); total += s
 
         # === 反转信号(60%): "开始反转了" ===
         # 对应条件③: 距最低点反弹≥2%
-        s, d = self._score_tiered(REVERSAL_CONFIG['rise_from_low'], ind.get('rise_from_low'), 'rise_low[R]')
+        s, d = self._score_tiered(REVERSAL_CONFIG['rise_from_low'], ind.get('rise_from_low'), '低位反弹')
         details.append(d); total += s
 
         # 对应条件④: 今日收涨（阳线反转）
-        s, d = self._score_tiered(REVERSAL_CONFIG['today_change'], ind.get('today_change'), 'today_up[R]')
+        s, d = self._score_tiered(REVERSAL_CONFIG['today_change'], ind.get('today_change'), '今日涨幅')
         details.append(d); total += s
 
         # 对应条件⑤: 反弹伴随主动买入力量
-        s, d = self._score_tiered(REVERSAL_CONFIG['ticker_power'], ind.get('ticker_power'), 'ticker_power[R]')
+        s, d = self._score_tiered(REVERSAL_CONFIG['ticker_power'], ind.get('ticker_power'), '逐笔买卖力量')
         details.append(d); total += s
 
         # 对应条件⑤⑥: 放量确认
-        s, d = self._score_tiered(REVERSAL_CONFIG['vol_ratio'], ind.get('vol_ratio'), 'vol_ratio[R]')
+        s, d = self._score_tiered(REVERSAL_CONFIG['vol_ratio'], ind.get('vol_ratio'), '量比')
         details.append(d); total += s
 
         # 振幅(交易可行性)
-        s, d = self._score_range(REVERSAL_CONFIG['amplitude'], ind.get('day_amplitude'), 'amplitude[R]')
+        s, d = self._score_range(REVERSAL_CONFIG['amplitude'], ind.get('day_amplitude'), '日内振幅')
         details.append(d); total += s
 
         return total, details
