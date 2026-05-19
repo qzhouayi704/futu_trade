@@ -92,7 +92,7 @@ TREND_CONFIG = {
     'change_5d': {'max_score': 20, 'optimal_range': (-2.0, 15.0), 'marginal_range': (-5.0, 25.0), 'default': 0},
     'amplitude': {'max_score': 20, 'optimal_range': (5.0, 20.0), 'marginal_range': (3.0, 30.0), 'default': 0},
     'vol_ratio': {'max_score': 25, 'tiers': [(5.0, 20), (3.0, 25), (2.0, 18), (1.5, 12), (1.0, 5)], 'default': 0},
-    'ticker_power': {'max_score': 25, 'tiers': [(0.5, 25), (0.2, 18), (0.0, 8)], 'default': 0},
+    'ticker_power': {'max_score': 25, 'tiers': [(0.5, 25), (0.2, 18), (0.0, 8)], 'default': 8},
     'kline_pos': {'max_score': 5, 'optimal_range': (0.0, 1.0), 'marginal_range': (0.0, 1.0), 'default': 5},
     'prev_change': {'max_score': 5, 'reverse_tiers': [(3.0, 5), (7.0, 3), (12.0, 1)], 'default': 0},
 }
@@ -115,7 +115,7 @@ REVERSAL_CONFIG = {
     # 反转信号(60%): 条件③④⑤⑥对应
     'rise_from_low': {'max_score': 15, 'tiers': [(5.0, 15), (3.0, 12), (2.0, 10), (1.0, 5)], 'default': 0},
     'today_change':  {'max_score': 10, 'tiers': [(3.0, 10), (1.0, 8), (0.0, 5)], 'default': 0},
-    'ticker_power':  {'max_score': 15, 'tiers': [(0.5, 15), (0.2, 12), (0.0, 6)], 'default': 0},
+    'ticker_power':  {'max_score': 15, 'tiers': [(0.5, 15), (0.2, 12), (0.0, 6)], 'default': 6},
     'vol_ratio':     {'max_score': 15, 'tiers': [(3.0, 15), (2.0, 12), (1.5, 8), (1.2, 5)], 'default': 0},
     'amplitude':     {'max_score': 5, 'optimal_range': (3.0, 15.0), 'marginal_range': (2.0, 25.0), 'default': 0},
 }

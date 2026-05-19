@@ -15,6 +15,7 @@ from ...dependencies import get_container
 from ...core import get_state_manager
 from ...schemas.common import APIResponse
 from ...services.analysis.overnight_screener import OvernightScreener
+from ...services.analysis.overnight_tracker import OvernightTracker
 
 logger = logging.getLogger("overnight_screen")
 router = APIRouter(prefix="/api/overnight-screen", tags=["盘后优选"])
@@ -224,6 +225,18 @@ async def _run_screen(container, use_history: bool = False):
             logger.warning(f"[盘后优选] 持久化失败: {e}")
 
         logger.info(f"[盘后优选] 完成，返回 {len(candidates)} 只推荐")
+
+        # === 自动追踪前一次推荐的次日表现 ===
+        try:
+            tracker = OvernightTracker(container.db_manager)
+            track_result = tracker.track_previous_screen()
+            if track_result.get('success'):
+                logger.info(
+                    f"[优选追踪] 自动追踪完成: {track_result['screen_date']} → "
+                    f"胜率{track_result['win_rate']}% 均盈{track_result['avg_pnl']:+.2f}%"
+                )
+        except Exception as e:
+            logger.debug(f"[优选追踪] 自动追踪失败: {e}")
 
         # === 自动创建交易任务（如果开启了自动交易） ===
         if container.config.auto_trade and candidates:
@@ -472,3 +485,54 @@ def _auto_create_trade_tasks(container, candidates):
 
 logging.info("盘后优选路由已注册")
 
+
+# ==================== 表现追踪 API ====================
+
+
+@router.post("/track", response_model=APIResponse)
+async def trigger_track(
+    screen_date: Optional[str] = None,
+    container=Depends(get_container),
+):
+    """手动触发表现追踪（追踪指定日期的优选推荐在次日的表现）"""
+    try:
+        tracker = OvernightTracker(container.db_manager)
+        result = tracker.track_previous_screen(screen_date)
+        return APIResponse(
+            success=result.get('success', False),
+            message=result.get('message', ''),
+            data=result,
+        )
+    except Exception as e:
+        logger.error(f"[优选追踪] 触发失败: {e}")
+        return APIResponse(success=False, message=str(e))
+
+
+@router.get("/performance", response_model=APIResponse)
+async def get_performance(
+    days: int = 30,
+    container=Depends(get_container),
+):
+    """获取评分表现统计（各分数段胜率、各模式胜率）"""
+    try:
+        tracker = OvernightTracker(container.db_manager)
+        stats = tracker.get_performance_stats(days)
+        return APIResponse(success=True, message="获取统计成功", data=stats)
+    except Exception as e:
+        logger.error(f"[优选追踪] 获取统计失败: {e}")
+        return APIResponse(success=False, message=str(e))
+
+
+@router.get("/performance/recent", response_model=APIResponse)
+async def get_recent_performance(
+    limit: int = 10,
+    container=Depends(get_container),
+):
+    """获取最近N个交易日的追踪汇总"""
+    try:
+        tracker = OvernightTracker(container.db_manager)
+        recent = tracker.get_recent_performance(limit)
+        return APIResponse(success=True, message=f"最近{len(recent)}个交易日", data={"daily": recent})
+    except Exception as e:
+        logger.error(f"[优选追踪] 获取近期表现失败: {e}")
+        return APIResponse(success=False, message=str(e))
