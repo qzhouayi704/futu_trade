@@ -35,7 +35,7 @@ async def _get_capital_flow_map(container, stock_codes: list) -> dict:
         import asyncio
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, capital_analyzer.batch_read_cache_only, stock_codes
+            None, capital_analyzer.batch_read_cache_only, stock_codes, 43200  # 12小时TTL，收盘后仍可用
         )
         return result
     except Exception as e:
