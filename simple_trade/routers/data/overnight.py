@@ -155,6 +155,11 @@ async def _run_screen(container, use_history: bool = False):
         else:
             _task_status["progress"] = "获取市场扫描池股票..."
             stock_list = await asyncio.to_thread(_get_stock_list, container)
+            # 收盘后重启场景：内存快照为空，回退到历史K线
+            if not stock_list:
+                logger.info("[盘后优选] 实时快照为空（可能是重启后），回退到历史K线数据")
+                stock_list = await asyncio.to_thread(_get_stock_list_from_history, container)
+                use_history = True
 
         if not stock_list:
             _task_status["error"] = (
@@ -315,7 +320,7 @@ def _get_stock_list_from_history(container) -> list:
 
             # 计算涨跌幅（用前一日收盘价）
             prev_row = db.execute_query(
-                "SELECT close_price FROM kline_data "
+                "SELECT close_price, volume FROM kline_data "
                 "WHERE stock_code = ? AND time_key < ? "
                 "ORDER BY time_key DESC LIMIT 1",
                 (code, last_date)
@@ -326,15 +331,29 @@ def _get_stock_list_from_history(container) -> list:
             # 计算振幅
             amplitude = ((high_p - low_p) / prev_close * 100) if prev_close > 0 else 0
 
+            # 计算量比：当日成交量 / 5日均量
+            volume_ratio = 0
+            if volume and volume > 0:
+                vol_rows = db.execute_query(
+                    "SELECT volume FROM kline_data "
+                    "WHERE stock_code = ? AND time_key < ? "
+                    "ORDER BY time_key DESC LIMIT 5",
+                    (code, last_date)
+                )
+                if vol_rows:
+                    avg_vol = sum(r[0] for r in vol_rows if r[0]) / len(vol_rows)
+                    if avg_vol > 0:
+                        volume_ratio = round(volume / avg_vol, 2)
+
             stocks.append({
                 'code': code,
                 'name': name or '',
                 'market': 'HK' if code.startswith('HK.') else ('US' if code.startswith('US.') else ''),
                 'last_price': close_p,
                 'change_rate': round(change_rate, 2),
-                'turnover_rate': 0,  # 历史K线无换手率，评分引擎会用DB补充
+                'turnover_rate': 0,  # K线无换手率，排除条件已兼容
                 'turnover': 0,
-                'volume_ratio': 0,
+                'volume_ratio': volume_ratio,
                 'amplitude': round(amplitude, 2),
                 'high_price': high_p or 0,
                 'low_price': low_p or 0,

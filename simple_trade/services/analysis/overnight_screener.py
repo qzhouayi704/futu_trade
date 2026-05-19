@@ -300,12 +300,12 @@ class OvernightScreener:
 
         # === 通用排除 (TREND + REVERSAL 都适用) ===
 
-        # 流动性不足
-        if turnover_rate < 0.3:
+        # 流动性不足（仅当换手率有效值时才排除，历史K线模式无换手率时跳过）
+        if turnover_rate > 0 and turnover_rate < 0.3:
             return True, f"流动性不足：换手率{turnover_rate:.2f}%<0.3%"
 
-        # 缩量暴涨
-        if change > 10 and turnover_rate < 1 and volume_ratio < 0.8:
+        # 缩量暴涨（仅当换手率和量比都有有效值时才判断）
+        if change > 10 and turnover_rate > 0 and turnover_rate < 1 and volume_ratio > 0 and volume_ratio < 0.8:
             return True, f"缩量暴涨：涨{change:.1f}%但换手{turnover_rate:.1f}%量比{volume_ratio:.1f}"
 
         # 量价背离(收盘价≈日高但缩量)
@@ -417,16 +417,30 @@ class OvernightScreener:
         low = stock.get('low_price', 0) or 0
         last = stock.get('last_price', 0) or 0
         if high > 0 and low > 0 and last > 0:
-            # 用 last 做近似 prev_close
             indicators['day_amplitude'] = stock.get('amplitude', 0) or ((high - low) / last * 100)
 
         # 量比
-        indicators['vol_ratio'] = stock.get('volume_ratio', None)
+        indicators['vol_ratio'] = stock.get('volume_ratio', None) or None
 
-        # 资金流
-        cap = self._get_cached_capital(code)
-        if cap:
-            indicators['flow_ratio'] = cap.get('net_inflow_ratio', None)
+        # ticker_power: 优先用逐笔数据，回退到资金流
+        ticker_power = None
+        ticker_svc = getattr(self.container, 'ticker_service', None) if self.container else None
+        if ticker_svc:
+            try:
+                import asyncio
+                ticker_data = asyncio.get_event_loop().run_until_complete(
+                    ticker_svc.get_ticker_data(code)
+                )
+                if ticker_data and hasattr(ticker_data, 'buy_turnover') and getattr(ticker_data, 'sell_turnover', 0) > 0:
+                    bsr = ticker_data.buy_turnover / ticker_data.sell_turnover
+                    ticker_power = bsr - 1.0
+            except Exception:
+                pass
+        if ticker_power is None:
+            cap = self._get_cached_capital(code)
+            if cap:
+                ticker_power = cap.get('net_inflow_ratio', None)
+        indicators['ticker_power'] = ticker_power
 
         # 今日涨跌幅
         indicators['today_change'] = stock.get('change_rate', None)
