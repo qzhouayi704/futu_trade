@@ -74,6 +74,8 @@ async def get_top_hot_stocks(
     container=Depends(get_container)
 ):
     """获取热门前N只股票（基于实时数据排序）"""
+    import time as _time
+    _t0 = _time.monotonic()
     from ...utils.market_helper import MarketTimeHelper
 
     state = get_state_manager()
@@ -205,6 +207,9 @@ async def get_top_hot_stocks(
         position_codes=position_codes,
     )
 
+    logging.info(f"【TopHot性能】filter_and_sort: {_time.monotonic()-_t0:.2f}s")
+    _t1 = _time.monotonic()
+
     # 后台补充缺失K线（波动率过滤依赖K线数据）
     all_codes = {s['code'] for s in stocks_data}
     query_service.trigger_kline_download_for_missing(
@@ -215,6 +220,9 @@ async def get_top_hot_stocks(
     capital_flow_map = await _get_capital_flow_map(
         container, [s['code'] for s in top_stocks]
     )
+
+    logging.info(f"【TopHot性能】capital_flow_map: {_time.monotonic()-_t1:.2f}s")
+    _t2 = _time.monotonic()
 
     # 批量获取20日价格区间（用于价格位置分析）
     from ...services.analysis.price_position import (
@@ -230,6 +238,9 @@ async def get_top_hot_stocks(
 
     # 从 HighTurnoverCache 读取预计算的量比
     ht_cache = state.high_turnover_cache.get_all()
+
+    logging.info(f"【TopHot性能】price_range+plates+ht_cache: {_time.monotonic()-_t2:.2f}s")
+    _t3 = _time.monotonic()
 
     # 构建响应数据
     from ...services.analysis.signal import SignalArbiter, StrategyVote
@@ -266,6 +277,9 @@ async def get_top_hot_stocks(
                 _kline_cache[code].reverse()
         except Exception as e:
             logging.warning(f"【TopHot】批量K线预查询失败: {e}")
+
+    logging.info(f"【TopHot性能】kline_batch_prequery: {_time.monotonic()-_t3:.2f}s")
+    _t4 = _time.monotonic()
 
     result_stocks = []
     for stock in top_stocks:
@@ -488,6 +502,8 @@ async def get_top_hot_stocks(
             stock_tag=stock_tag,
             consensus_data=consensus_data,
         ))
+
+    logging.info(f"【TopHot性能】for_loop({len(top_stocks)}只): {_time.monotonic()-_t4:.2f}s | 总计: {_time.monotonic()-_t0:.2f}s")
 
     # 计算数据就绪状态
     # 用订阅数量作为基准，而非全局股票池
