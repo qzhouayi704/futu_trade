@@ -36,6 +36,8 @@ class TickerSummary:
     bias: str             # 判定结果: strong_bullish/bullish/bearish/neutral
     bias_label: str       # 判定中文标签: 强买/偏多/偏空/中性
     big_order_pct: float = 0.0  # 大单成交占比（%）
+    big_buy_turnover: float = 0.0  # 大单主动买入金额
+    big_sell_turnover: float = 0.0  # 大单主动卖出金额
 
     def to_dict(self) -> dict:
         """转为字典，方便 JSON 序列化"""
@@ -74,6 +76,8 @@ def build_ticker_summary(
             net_turnover = dim.details.get("net_turnover", 0.0)
         elif dim.name == "大单占比":
             big_order_pct = dim.details.get("big_order_pct", 0.0)
+            big_buy_turnover = dim.details.get("big_buy_turnover", 0.0)
+            big_sell_turnover = dim.details.get("big_sell_turnover", 0.0)
 
     # 偏多/偏空判定
     score = analysis.total_score
@@ -95,5 +99,7 @@ def build_ticker_summary(
         bias=bias,
         bias_label=bias_label,
         big_order_pct=round(big_order_pct, 2),
+        big_buy_turnover=round(big_buy_turnover, 2),
+        big_sell_turnover=round(big_sell_turnover, 2),
     )
 

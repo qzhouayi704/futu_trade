@@ -936,10 +936,29 @@ export default function MarketScanPanel() {
                                   </div>
                                   <div className="h-10 w-px bg-gray-200"></div>
                                   <div>
-                                    <div className="text-xs text-gray-500 mb-1">大单成交占比</div>
-                                    <div className="text-xl font-bold text-gray-900">
-                                      {ts.big_order_pct.toFixed(1)}%
-                                    </div>
+                                    <div className="text-xs text-gray-500 mb-1">大单动能</div>
+                                    {(() => {
+                                      const bigBuy = (ts as Record<string, unknown>).big_buy_turnover as number || 0;
+                                      const bigSell = (ts as Record<string, unknown>).big_sell_turnover as number || 0;
+                                      const bigNet = bigBuy - bigSell;
+                                      const bigTotal = bigBuy + bigSell;
+                                      const buyPct = bigTotal > 0 ? (bigBuy / bigTotal * 100) : 50;
+                                      const netColor = bigNet > 0 ? "text-red-600" : bigNet < 0 ? "text-green-600" : "text-gray-600";
+                                      return (
+                                        <div>
+                                          <div className={`text-lg font-bold ${netColor}`}>
+                                            {bigNet > 0 ? "+" : ""}{formatInflowZh(bigNet)}
+                                          </div>
+                                          <div className="flex items-center gap-1 mt-1">
+                                            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden flex">
+                                              <div className="bg-red-400 h-full" style={{width: `${buyPct}%`}}></div>
+                                              <div className="bg-green-400 h-full" style={{width: `${100 - buyPct}%`}}></div>
+                                            </div>
+                                            <span className="text-[9px] text-gray-400">{ts.big_order_pct.toFixed(0)}%</span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
                                   </div>
                                   <div className="h-10 w-px bg-gray-200"></div>
                                   <div>
