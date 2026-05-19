@@ -495,7 +495,7 @@ async def get_top_hot_stocks(
         except Exception:
             pass
 
-        result_stocks.append(build_stock_response(
+        stock_resp = build_stock_response(
             stock=stock,
             quote=quote,
             condition=condition,
@@ -506,7 +506,23 @@ async def get_top_hot_stocks(
             volume_ratio=vr,
             stock_tag=stock_tag,
             consensus_data=consensus_data,
-        ))
+        )
+
+        # 附加逐笔成交资金数据（来自 daily_order_accumulator → enricher → ht_cache）
+        if cached:
+            big_buy = cached.get('verified_big_buy_amount', 0)
+            big_sell = cached.get('verified_big_sell_amount', 0)
+            bsr = cached.get('verified_buy_sell_ratio', 0)
+            stock_resp['tick_capital'] = {
+                'buy_sell_ratio': bsr,
+                'big_buy_amount': big_buy,
+                'big_sell_amount': big_sell,
+                'net_amount': big_buy - big_sell,
+                'momentum': cached.get('big_order_momentum', 'unknown'),
+                'divergence': cached.get('capital_divergence'),
+            }
+
+        result_stocks.append(stock_resp)
 
     logging.info(f"【TopHot性能】for_loop({len(top_stocks)}只): {_time.monotonic()-_t4:.2f}s | 总计: {_time.monotonic()-_t0:.2f}s")
 

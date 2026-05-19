@@ -1,5 +1,5 @@
 // 逐笔买卖力量走势图
-// 股价折线（右轴） + 分钟净主动买入柱状图（左轴）
+// 股价折线（右轴） + 分钟净主动买入柱状图（左轴） + 累计净买面积图（左轴）
 
 "use client";
 
@@ -65,7 +65,7 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         priceScaleId: "left",
         title: "净买入",
         priceFormat: { type: "volume" },
-        lastValueVisible: true,
+        lastValueVisible: false,
       });
 
       const netBuyData = data.map((p) => {
@@ -73,19 +73,19 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         return {
           time: toTimestamp(p.time),
           value: val,
-          color: val >= 0 ? "rgba(239, 68, 68, 0.7)" : "rgba(34, 197, 94, 0.7)",
+          color: val >= 0 ? "rgba(239, 68, 68, 0.55)" : "rgba(34, 197, 94, 0.55)",
         };
       });
       netBuySeries.setData(netBuyData);
 
-      // === 2. 累计净主动买入线（左轴，更淡）===
+      // === 2. 累计净主动买入线（左轴）===
       const cumPoints = data.filter(p => (p as any).cum_net != null);
       if (cumPoints.length > 3) {
         const cumSeries = chart.addAreaSeries({
-          topColor: "rgba(99, 102, 241, 0.15)",
-          bottomColor: "rgba(99, 102, 241, 0.02)",
+          topColor: "rgba(99, 102, 241, 0.12)",
+          bottomColor: "rgba(99, 102, 241, 0.01)",
           lineColor: "#6366f1",
-          lineWidth: 1,
+          lineWidth: 2,
           title: "累计净买",
           priceScaleId: "left",
           lastValueVisible: true,
@@ -93,7 +93,7 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
 
         // 零轴虚线
         const zeroSeries = chart.addLineSeries({
-          color: "#9ca3af",
+          color: "#d1d5db",
           lineWidth: 1,
           lineStyle: 2,
           title: "",
@@ -113,7 +113,7 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         })));
       }
 
-      // === 3. 股价走势线（右轴）===
+      // === 3. 股价走势线（右轴，独立刻度）===
       const pricePoints = data.filter(p => p.price != null && p.price > 0);
       if (pricePoints.length > 5) {
         const priceSeries = chart.addLineSeries({
@@ -125,6 +125,11 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
           priceLineVisible: true,
           priceLineColor: "#7c3aed",
           priceLineStyle: 2,
+          priceFormat: {
+            type: "price",
+            precision: pricePoints[0].price! >= 100 ? 2 : 3,
+            minMove: pricePoints[0].price! >= 100 ? 0.01 : 0.001,
+          },
         });
 
         priceSeries.setData(pricePoints.map(p => ({
@@ -133,15 +138,15 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         })));
 
         chart.priceScale("right").applyOptions({
-          scaleMargins: { top: 0.08, bottom: 0.08 },
+          scaleMargins: { top: 0.05, bottom: 0.05 },
           visible: true,
           borderColor: "#7c3aed",
         });
       }
 
-      // 左轴配置
+      // 左轴配置 — 给柱状图和累计线留足空间
       chart.priceScale("left").applyOptions({
-        scaleMargins: { top: 0.08, bottom: 0.08 },
+        scaleMargins: { top: 0.05, bottom: 0.05 },
         visible: true,
         borderColor: "#d1d5db",
       });
@@ -174,6 +179,12 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
   const cumNet = latestAny?.cum_net as number | undefined;
   const netBuy = latestAny?.net_buy as number | undefined;
 
+  // 格式化金额
+  const fmtAmt = (v: number) => {
+    if (Math.abs(v) >= 1e4) return `${(v / 1e4).toFixed(0)}万`;
+    return v.toFixed(0);
+  };
+
   return (
     <div className="relative">
       {/* 图例 */}
@@ -202,17 +213,17 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         <div className="absolute top-2 right-3 z-10 flex items-center gap-3 text-[10px]">
           {netBuy != null && (
             <span className={`font-bold ${netBuy >= 0 ? "text-red-600" : "text-green-600"}`}>
-              本分钟 {netBuy >= 0 ? "+" : ""}{netBuy.toFixed(0)}万
+              本分钟 {netBuy >= 0 ? "+" : ""}{fmtAmt(netBuy)}
             </span>
           )}
           {cumNet != null && (
             <span className={`font-bold ${cumNet >= 0 ? "text-red-600" : "text-green-600"}`}>
-              累计 {cumNet >= 0 ? "+" : ""}{cumNet.toFixed(0)}万
+              累计 {cumNet >= 0 ? "+" : ""}{fmtAmt(cumNet)}
             </span>
           )}
           {latest.price != null && latest.price > 0 && (
             <span className="font-bold text-violet-600">
-              ${latest.price.toFixed(3)}
+              {latest.price.toFixed(latest.price >= 100 ? 2 : 3)}
             </span>
           )}
         </div>

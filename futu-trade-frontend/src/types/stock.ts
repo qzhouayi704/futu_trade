@@ -199,6 +199,16 @@ export interface CapitalFlowSummary {
   capital_score: number;
 }
 
+/** 逐笔成交资金数据（来自 daily_order_accumulator） */
+export interface TickCapital {
+  buy_sell_ratio: number;     // 逐笔大单买卖比
+  big_buy_amount: number;     // 大单买入总额
+  big_sell_amount: number;    // 大单卖出总额
+  net_amount: number;         // 净额 = buy - sell
+  momentum: string;           // accelerating/decelerating/stable/reversing/unknown
+  divergence?: { type: string; label: string; desc: string } | null;
+}
+
 // Top Hot API 响应数据
 export interface TopHotResponse {
   stocks: TopHotStock[];
@@ -235,6 +245,7 @@ export interface TopHotStock {
   plates?: { plate_code: string; plate_name: string }[];
   volume_ratio?: number;
   stock_tag?: { label: string; phase: string; risk_note: string } | null;
+  tick_capital?: TickCapital | null;
   consensus?: {
     verdict: string;
     verdict_label: string;
