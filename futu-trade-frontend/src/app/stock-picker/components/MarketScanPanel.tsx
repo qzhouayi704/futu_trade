@@ -701,6 +701,7 @@ export default function MarketScanPanel() {
                   <span className="inline-flex items-center">成交额<SortIcon field="turnover" /></span>
                 </th>
 
+                <th className="px-2 py-3 text-xs font-medium text-gray-500 text-center" title="主力资金评分(0-100)及净流入">主力资金</th>
                 <th className="px-2 py-3 text-xs font-medium text-gray-500 text-center" title="根据逐笔成交分析，判断主动买卖力量">方向</th>
                 <th className="px-2 py-3 text-xs font-medium text-gray-500 text-right cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("ticker_buy_sell_ratio")} title="主动买入金额 / 主动卖出金额">
                   <span className="inline-flex items-center">力量比<SortIcon field="ticker_buy_sell_ratio" /></span>
@@ -715,7 +716,7 @@ export default function MarketScanPanel() {
             <tbody className="bg-white divide-y divide-gray-200">
               {displayStocks.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="text-center py-12 text-gray-500">
+                  <td colSpan={14} className="text-center py-12 text-gray-500">
                     <i className="fas fa-inbox text-4xl mb-4 block" />
                     暂无数据
                   </td>
@@ -815,6 +816,26 @@ export default function MarketScanPanel() {
                       {/* 成交额 */}
                       <td className="px-3 py-3 text-sm text-right text-gray-700">
                         {formatTurnoverZh(turnover)}
+                      </td>
+
+                      {/* 主力资金 */}
+                      <td className="px-2 py-3 text-sm text-center">
+                        {(() => {
+                          const cf = stock.capital_flow_summary;
+                          if (!cf) return <span className="text-gray-300 text-xs">-</span>;
+                          const score = cf.capital_score ?? 50;
+                          const inflow = cf.main_net_inflow ?? 0;
+                          const scoreColor = score >= 70 ? 'text-red-600' : score >= 50 ? 'text-orange-500' : score >= 30 ? 'text-gray-600' : 'text-green-600';
+                          const inflowColor = inflow > 0 ? 'text-red-500' : inflow < 0 ? 'text-green-500' : 'text-gray-400';
+                          const inflowPrefix = inflow > 0 ? '+' : '';
+                          const inflowStr = Math.abs(inflow) >= 1e8 ? (inflow / 1e8).toFixed(1) + '亿' : Math.abs(inflow) >= 1e4 ? (inflow / 1e4).toFixed(0) + '万' : inflow.toFixed(0);
+                          return (
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className={`font-bold text-sm ${scoreColor}`} title={`资金评分: ${score.toFixed(0)}`}>{score.toFixed(0)}</span>
+                              <span className={`text-[10px] ${inflowColor}`}>{inflowPrefix}{inflowStr}</span>
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/* 成交方向 (from ticker analysis) */}
