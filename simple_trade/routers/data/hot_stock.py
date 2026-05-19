@@ -383,104 +383,97 @@ async def get_top_hot_stocks(
                     _kline_indicators.setdefault('flow_ratio', cf_data.get('net_inflow_ratio', 0) if cf_data else 0)
                     _kline_indicators.setdefault('ticker_power', _ticker_power)
 
-            # 调用 StockScorer 6维评分
-            scoring_result = _scorer.score_stock(stock_code, stock.get('name', ''), _kline_indicators)
+            # 补充突破策略所需指标（从K线缓存计算）
+            _rows = _kline_cache.get(stock_code, [])
+            if len(_rows) >= 6:
+                _prev_bars = _rows[:-1]
+                _today_close = _rows[-1][4] or 0
+                # 各级别前高
+                high_5d = max(r[2] or 0 for r in _prev_bars[-5:]) if len(_prev_bars) >= 5 else 0
+                high_10d = max(r[2] or 0 for r in _prev_bars[-10:]) if len(_prev_bars) >= 10 else 0
+                high_20d = max(r[2] or 0 for r in _prev_bars[-20:]) if len(_prev_bars) >= 20 else 0
+                # 判断突破（近3日内至少1日在阻力位下，今日站上）
+                recent_closes = [r[4] or 0 for r in _prev_bars[-3:]]
+                def _broken(res):
+                    return res > 0 and _today_close > res and any(c <= res for c in recent_closes)
+                bl = ''
+                bp = 0
+                if _broken(high_20d):
+                    bl, bp = '20日高', (_today_close - high_20d) / high_20d * 100
+                elif _broken(high_10d):
+                    bl, bp = '10日高', (_today_close - high_10d) / high_10d * 100
+                elif _broken(high_5d):
+                    bl, bp = '5日高', (_today_close - high_5d) / high_5d * 100
+                _kline_indicators['breakout_level'] = bl
+                _kline_indicators['breakout_pct'] = round(bp, 2) if bl else None
+                # 低位反弹
+                if len(_prev_bars) >= 5:
+                    low_20d = min(r[3] or 9999 for r in _prev_bars[-20:])
+                    if low_20d > 0:
+                        _kline_indicators.setdefault('rise_from_low', round((_today_close - low_20d) / low_20d * 100, 2))
+                # 今日涨跌（阳线反转）
+                _kline_indicators.setdefault('today_change', round(quote.get('change_rate', 0), 2))
 
-            # 把6维评分转为 votes（用于 SignalArbiter 共识计算）
+            # 资金流数据注入（蓄势突破策略需要）
+            if cf_data:
+                _kline_indicators.setdefault('net_inflow_ratio', cf_data.get('net_inflow_ratio', 0))
+                _kline_indicators.setdefault('big_order_buy_ratio', cf_data.get('big_order_buy_ratio', 0.5))
+                _kline_indicators.setdefault('capital_continuity_days', cf_data.get('continuity_days', 0))
+                _kline_indicators.setdefault('change_pct', round(quote.get('change_rate', 0), 2))
+
+            # 调用3策略独立评分
+            all_scores = _scorer.score_all_strategies(stock_code, stock.get('name', ''), _kline_indicators)
+            scoring_result = all_scores['best']
+
+            # 构建仲裁投票：每策略1票
             votes = []
-            for detail in scoring_result.details:
-                normalized = round(detail.score / detail.max_score * 100, 1) if detail.max_score > 0 else 50
-                signal = "bullish" if normalized >= 60 else ("bearish" if normalized < 40 else "neutral")
+            for mode_key in ('trend', 'reversal', 'breakout'):
+                sr = all_scores[mode_key]
+                if mode_key == 'breakout' and not all_scores['breakout_triggered']:
+                    continue
+                signal = 'bullish' if sr.passed else ('bearish' if sr.total_score < 40 else 'neutral')
                 votes.append(StrategyVote(
-                    strategy_name=detail.dimension,
-                    score=normalized,
-                    signal=signal,
+                    strategy_name=f'策略:{sr.mode}', score=sr.total_score,
+                    signal=signal, passed=sr.passed,
                 ))
 
-            # ── 追加其他引擎的投票 ──
-
-            # 价格位置引擎（Price Position）
-            pp_vote = None
+            # 追加价格位置、资金流向、风控标签投票（保留兼容）
             if pp_result:
                 pp_signal = "bullish" if pp_result.entry_signal in ("opportunity", "momentum") else (
-                    "bearish" if pp_result.entry_signal == "risky" else "neutral"
-                )
+                    "bearish" if pp_result.entry_signal == "risky" else "neutral")
                 pp_norm = 80 if pp_result.entry_signal == "opportunity" else (
                     70 if pp_result.entry_signal == "momentum" else (
-                    30 if pp_result.entry_signal == "risky" else 50
-                ))
+                    30 if pp_result.entry_signal == "risky" else 50))
                 votes.append(StrategyVote(strategy_name="价格位置", score=pp_norm, signal=pp_signal))
-                pp_vote = {
-                    'name': '价格位置',
-                    'score': pp_norm,
-                    'max_score': 100,
-                    'signal': pp_signal,
-                    'details': [
-                        {'label': '20日位置', 'value': f"{pp_result.position:.0f}%"},
-                        {'label': '入场信号', 'value': pp_result.entry_label or '-'},
-                        {'label': '日线信号', 'value': pp_result.daily_label or '-'},
-                    ],
-                }
-
-            # 资金流向引擎（Capital Flow）
-            cf_vote = None
             if cf_data:
-                net_inflow = cf_data.get('main_net_inflow', 0)
-                big_ratio = cf_data.get('big_order_buy_ratio', 0.5)
                 cf_norm = round(capital_score, 1)
                 cf_signal = "bullish" if capital_score >= 60 else ("bearish" if capital_score < 45 else "neutral")
                 votes.append(StrategyVote(strategy_name="资金流向", score=cf_norm, signal=cf_signal))
-                inflow_str = f"{net_inflow/1e8:.2f}亿" if abs(net_inflow) >= 1e8 else f"{net_inflow/1e4:.0f}万"
-                cf_vote = {
-                    'name': '资金流向',
-                    'score': cf_norm,
-                    'max_score': 100,
-                    'signal': cf_signal,
-                    'details': [
-                        {'label': '资金评分', 'value': f'{capital_score:.0f}'},
-                        {'label': '主力净流入', 'value': inflow_str},
-                        {'label': '大单买比', 'value': f"{big_ratio*100:.1f}%"},
-                    ],
-                }
-
-            # 风控标签引擎（Risk Control）
-            risk_vote = None
             if stock_tag and stock_tag.get('label', '正常') != '正常':
                 risk_labels = {'锁仓控盘': 25, '暴量拉升': 35, '仙股炒作': 15, '明星高波动': 55}
                 risk_score = risk_labels.get(stock_tag['label'], 40)
                 votes.append(StrategyVote(strategy_name="风控标签", score=risk_score, signal="bearish"))
-                risk_vote = {
-                    'name': '风控标签',
-                    'score': risk_score,
-                    'max_score': 100,
-                    'signal': 'bearish',
-                    'details': [
-                        {'label': '标签', 'value': stock_tag['label']},
-                        {'label': '风险', 'value': stock_tag.get('risk_note', '-')},
-                    ],
-                }
 
             consensus = arbiter.arbitrate(stock_code, stock.get('name', ''), votes)
 
-            # 构建 votes 列表：StockScorer 6维 + 其他引擎
-            vote_list = [
-                {
-                    'name': detail.dimension,
-                    'score': detail.score,
-                    'max_score': detail.max_score,
-                    'signal': 'bullish' if detail.score >= detail.max_score * 0.6 else (
-                        'bearish' if detail.score < detail.max_score * 0.4 else 'neutral'),
+            # 构建3策略评分详情（供前端分面板展示）
+            def _build_strategy_detail(sr, label):
+                return {
+                    'mode': sr.mode,
+                    'label': label,
+                    'total_score': sr.total_score,
+                    'passed': sr.passed,
                     'details': [
-                        {'label': '指标值', 'value': f'{detail.value:.2f}' if detail.value is not None else '无数据'},
-                        {'label': '得分', 'value': f'{detail.score}/{detail.max_score}'},
-                    ] + ([{'label': '备注', 'value': detail.note}] if detail.note else []),
+                        {
+                            'name': d.dimension,
+                            'score': d.score,
+                            'max_score': d.max_score,
+                            'value': f'{d.value:.2f}' if d.value is not None else None,
+                            'note': d.note or None,
+                        }
+                        for d in sr.details
+                    ],
                 }
-                for detail in scoring_result.details
-            ]
-            # 追加其他引擎
-            for extra in [pp_vote, cf_vote, risk_vote]:
-                if extra:
-                    vote_list.append(extra)
 
             consensus_data = {
                 'verdict': consensus.verdict.value,
@@ -488,10 +481,39 @@ async def get_top_hot_stocks(
                 'score': round(consensus.consensus_score, 1),
                 'confidence': round(consensus.confidence, 2),
                 'total_score': scoring_result.total_score,
+                'best_mode': scoring_result.mode,
                 'passed': scoring_result.passed,
                 'veto_reason': scoring_result.veto_reason or None,
-                'votes': vote_list,
+                'strategies': {
+                    'trend': _build_strategy_detail(all_scores['trend'], '📈 趋势策略'),
+                    'reversal': _build_strategy_detail(all_scores['reversal'], '📉 反转策略'),
+                    'breakout': _build_strategy_detail(all_scores['breakout'], '🔺 蓄势突破'),
+                },
+                'breakout_triggered': all_scores['breakout_triggered'],
+                # 附加引擎数据（非策略评分维度）
+                'engines': {},
             }
+            if pp_result:
+                consensus_data['engines']['price_position'] = {
+                    'label': '价格位置', 'score': pp_norm,
+                    'details': [
+                        {'label': '20日位置', 'value': f"{pp_result.position:.0f}%"},
+                        {'label': '入场信号', 'value': pp_result.entry_label or '-'},
+                        {'label': '日线信号', 'value': pp_result.daily_label or '-'},
+                    ],
+                }
+            if cf_data:
+                net_inflow = cf_data.get('main_net_inflow', 0)
+                big_ratio = cf_data.get('big_order_buy_ratio', 0.5)
+                inflow_str = f"{net_inflow/1e8:.2f}亿" if abs(net_inflow) >= 1e8 else f"{net_inflow/1e4:.0f}万"
+                consensus_data['engines']['capital_flow'] = {
+                    'label': '资金流向', 'score': cf_norm,
+                    'details': [
+                        {'label': '资金评分', 'value': f'{capital_score:.0f}'},
+                        {'label': '主力净流入', 'value': inflow_str},
+                        {'label': '大单买比', 'value': f"{big_ratio*100:.1f}%"},
+                    ],
+                }
         except Exception:
             pass
 

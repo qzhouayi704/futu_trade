@@ -252,8 +252,23 @@ export interface TopHotStock {
     score: number;
     confidence: number;
     total_score?: number;
+    best_mode?: string;
     passed?: boolean;
     veto_reason?: string | null;
+    breakout_triggered?: boolean;
+    strategies?: Record<string, {
+      mode: string;
+      label: string;
+      total_score: number;
+      passed: boolean;
+      details: { name: string; score: number; max_score: number; value?: string | null; note?: string | null }[];
+    }>;
+    engines?: Record<string, {
+      label: string;
+      score: number;
+      details: { label: string; value: string }[];
+    }>;
+    // Legacy: kept for backward compatibility
     votes?: { name: string; score: number; max_score: number; signal: string; details?: { label: string; value: string }[] }[];
   } | null;
 }

@@ -90,7 +90,7 @@ class ScoringResult:
 #   BSR>=1.5(power>=0.5)=强势做多, BSR>=1.2(power>=0.2)=偏多, BSR>=1.0(power>=0.0)=中性
 TREND_CONFIG = {
     'change_5d': {'max_score': 20, 'optimal_range': (-2.0, 15.0), 'marginal_range': (-5.0, 25.0), 'default': 0},
-    'amplitude': {'max_score': 20, 'optimal_range': (5.0, 20.0), 'marginal_range': (3.0, 30.0), 'default': 0},
+    'amplitude': {'max_score': 20, 'optimal_range': (5.0, 20.0), 'marginal_range': (3.0, 50.0), 'default': 0},
     'vol_ratio': {'max_score': 25, 'tiers': [(5.0, 20), (3.0, 25), (2.0, 18), (1.5, 12), (1.0, 5)], 'default': 0},
     'ticker_power': {'max_score': 25, 'tiers': [(0.5, 25), (0.2, 18), (0.0, 8)], 'default': 8},
     'kline_pos': {'max_score': 5, 'optimal_range': (0.0, 1.0), 'marginal_range': (0.0, 1.0), 'default': 5},
@@ -117,7 +117,7 @@ REVERSAL_CONFIG = {
     'today_change':  {'max_score': 10, 'tiers': [(3.0, 10), (1.0, 8), (0.0, 5)], 'default': 0},
     'ticker_power':  {'max_score': 15, 'tiers': [(0.5, 15), (0.2, 12), (0.0, 6)], 'default': 6},
     'vol_ratio':     {'max_score': 15, 'tiers': [(3.0, 15), (2.0, 12), (1.5, 8), (1.2, 5)], 'default': 0},
-    'amplitude':     {'max_score': 5, 'optimal_range': (3.0, 15.0), 'marginal_range': (2.0, 25.0), 'default': 0},
+    'amplitude':     {'max_score': 5, 'optimal_range': (3.0, 15.0), 'marginal_range': (2.0, 50.0), 'default': 0},
 }
 
 VETO_RULES = {
@@ -164,6 +164,44 @@ class StockScorer:
         )
         self._scored_cache[stock_code] = result
         return result
+
+    def score_all_strategies(self, stock_code: str, stock_name: str,
+                              indicators: Dict[str, Any]) -> Dict[str, Any]:
+        """返回3套策略的独立评分结果，供前端分面板展示。"""
+        trend_score, trend_details = self._score_trend(indicators)
+        reversal_score, reversal_details = self._score_reversal(indicators)
+        breakout_score, breakout_details, breakout_triggered = self._score_breakout(indicators)
+
+        veto = self._check_veto(stock_code, indicators)
+
+        def _build(mode, score, details):
+            passed = score >= PASSING_SCORE and not veto
+            return ScoringResult(
+                stock_code=stock_code, stock_name=stock_name,
+                total_score=score, passed=passed, mode=mode,
+                veto_reason=veto if not passed else '', details=details,
+            )
+
+        trend_result = _build('TREND', trend_score, trend_details)
+        reversal_result = _build('REVERSAL', reversal_score, reversal_details)
+        breakout_result = _build('BREAKOUT', breakout_score, breakout_details)
+
+        # 最佳策略
+        all_results = [trend_result, reversal_result]
+        if breakout_triggered:
+            all_results.append(breakout_result)
+        best = max(all_results, key=lambda r: r.total_score)
+
+        # 缓存最佳结果
+        self._scored_cache[stock_code] = best
+
+        return {
+            'best': best,
+            'trend': trend_result,
+            'reversal': reversal_result,
+            'breakout': breakout_result,
+            'breakout_triggered': breakout_triggered,
+        }
 
     def _score_trend(self, ind: Dict[str, Any]) -> tuple:
         """TREND mode: trend breakout scoring."""
@@ -243,6 +281,94 @@ class StockScorer:
 
         return total, details
 
+    def _score_breakout(self, ind: Dict[str, Any]) -> tuple:
+        """BREAKOUT mode: 蓄势突破评分。返回 (score, details, triggered)。"""
+        details = []
+        total = 0
+
+        # 前置条件：必须有突破级别
+        bl = ind.get('breakout_level', '')
+        triggered = bool(bl)
+
+        # 1. 突破级别 (15分)
+        if bl == '20日高':
+            s = 15
+        elif bl == '10日高':
+            s = 12
+        elif bl == '5日高':
+            s = 8
+        else:
+            s = 0
+        details.append(ScoreDetail('突破级别', None, s, 15, bl or '未突破'))
+        total += s
+
+        # 2. 突破幅度 (15分) — 0~3%最佳
+        bp = ind.get('breakout_pct')
+        if bp is not None:
+            if 0 <= bp <= 3:
+                s = 15
+            elif bp <= 5:
+                s = 10
+            elif bp <= 8:
+                s = 6
+            else:
+                s = 3
+            details.append(ScoreDetail('突破幅度', round(bp, 2), s, 15))
+        else:
+            details.append(ScoreDetail('突破幅度', None, 7, 15, '无数据(中性)'))
+            total += 7
+
+        total += s if bp is not None else 0
+
+        # 3. 资金净流入占比 (15分)
+        nir = ind.get('net_inflow_ratio')
+        cfg_nir = {'max_score': 15, 'tiers': [(0.1, 15), (0.05, 12), (0.02, 8), (0.0, 4)], 'default': 0}
+        s, d = self._score_tiered(cfg_nir, nir, '资金净流入')
+        details.append(d); total += s
+
+        # 4. 大单买比 (10分)
+        bor = ind.get('big_order_buy_ratio')
+        cfg_bor = {'max_score': 10, 'tiers': [(0.6, 10), (0.5, 7), (0.4, 4)], 'default': 0}
+        s, d = self._score_tiered(cfg_bor, bor, '大单买比')
+        details.append(d); total += s
+
+        # 5. 资金连续天数 (10分)
+        cd = ind.get('capital_continuity_days')
+        cfg_cd = {'max_score': 10, 'tiers': [(5, 10), (3, 8), (2, 6), (1, 3)], 'default': 0}
+        s, d = self._score_tiered(cfg_cd, cd, '资金连续流入')
+        details.append(d); total += s
+
+        # 6. 量比 (15分)
+        s, d = self._score_tiered(
+            {'max_score': 15, 'tiers': [(3.0, 15), (2.0, 12), (1.5, 8), (1.0, 4)], 'default': 0},
+            ind.get('vol_ratio'), '量比')
+        details.append(d); total += s
+
+        # 7. 逐笔买卖力量 (10分)
+        s, d = self._score_tiered(
+            {'max_score': 10, 'tiers': [(0.5, 10), (0.2, 7), (0.0, 4)], 'default': 4},
+            ind.get('ticker_power'), '逐笔买卖力量')
+        details.append(d); total += s
+
+        # 8. 涨幅适中 (10分)
+        chg = ind.get('today_change') or ind.get('change_pct')
+        if chg is not None:
+            if 1 <= chg <= 5:
+                s = 10
+            elif 0 < chg < 1:
+                s = 6
+            elif 5 < chg <= 10:
+                s = 7
+            else:
+                s = 3
+            details.append(ScoreDetail('涨幅适中', round(chg, 2), s, 10))
+            total += s
+        else:
+            details.append(ScoreDetail('涨幅适中', None, 5, 10, '无数据(中性)'))
+            total += 5
+
+        return total, details, triggered
+
     def score_snapshot(self, snapshot) -> ScoringResult:
         """Score from StockSnapshot (recommended interface)."""
         # ticker_power: 从逐笔买卖力量比转换 (BSR - 1.0)
@@ -299,7 +425,8 @@ class StockScorer:
     @staticmethod
     def _score_range(cfg: dict, value, label: str) -> tuple:
         if value is None:
-            return 0, ScoreDetail(label, None, 0, cfg['max_score'], 'no data')
+            mid = cfg['max_score'] // 2
+            return mid, ScoreDetail(label, None, mid, cfg['max_score'], '无数据(中性)')
         opt_lo, opt_hi = cfg['optimal_range']
         mar_lo, mar_hi = cfg['marginal_range']
         if opt_lo <= value <= opt_hi:
@@ -313,7 +440,8 @@ class StockScorer:
     @staticmethod
     def _score_tiered(cfg: dict, value, label: str) -> tuple:
         if value is None:
-            return 0, ScoreDetail(label, None, 0, cfg['max_score'], 'no data')
+            mid = cfg['max_score'] // 2
+            return mid, ScoreDetail(label, None, mid, cfg['max_score'], '无数据(中性)')
         score = cfg['default']
         for threshold, points in cfg['tiers']:
             if value >= threshold:
@@ -324,7 +452,8 @@ class StockScorer:
     @staticmethod
     def _score_tiered_reverse(cfg: dict, value, label: str) -> tuple:
         if value is None:
-            return 0, ScoreDetail(label, None, 0, cfg['max_score'], 'no data')
+            mid = cfg['max_score'] // 2
+            return mid, ScoreDetail(label, None, mid, cfg['max_score'], '无数据(中性)')
         score = cfg['default']
         for threshold, points in cfg['tiers']:
             if value <= threshold:
@@ -335,7 +464,8 @@ class StockScorer:
     @staticmethod
     def _score_reverse(cfg: dict, value, label: str) -> tuple:
         if value is None:
-            return 0, ScoreDetail(label, None, 0, cfg['max_score'], 'no data')
+            mid = cfg['max_score'] // 2
+            return mid, ScoreDetail(label, None, mid, cfg['max_score'], '无数据(中性)')
         score = cfg['default']
         for threshold, points in cfg['reverse_tiers']:
             if value <= threshold:

@@ -69,8 +69,22 @@ interface MergedStock {
     score: number;
     confidence: number;
     total_score?: number;
+    best_mode?: string;
     passed?: boolean;
     veto_reason?: string | null;
+    breakout_triggered?: boolean;
+    strategies?: Record<string, {
+      mode: string;
+      label: string;
+      total_score: number;
+      passed: boolean;
+      details: { name: string; score: number; max_score: number; value?: string | null; note?: string | null }[];
+    }>;
+    engines?: Record<string, {
+      label: string;
+      score: number;
+      details: { label: string; value: string }[];
+    }>;
     votes?: { name: string; score: number; max_score: number; signal: string; details?: { label: string; value: string }[] }[];
   } | null;
 }
@@ -1045,7 +1059,7 @@ export default function MarketScanPanel() {
                           )}
 
 
-                          {/* 多策略投票总览 — StockScorer 6维评分 */}
+                          {/* 多策略投票总览 — 3策略独立面板 */}
                           {stock.consensus && (
                             <div className="mb-4 bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
                               <div className="flex items-center justify-between mb-3">
@@ -1074,7 +1088,12 @@ export default function MarketScanPanel() {
                                     </span>
                                   )}
                                 </div>
-                                <div className="text-xs text-gray-400 flex items-center gap-3">
+                                <div className="text-xs text-gray-400 flex items-center gap-2">
+                                  {stock.consensus.best_mode && (
+                                    <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 text-[10px] font-bold">
+                                      最佳: {stock.consensus.best_mode}
+                                    </span>
+                                  )}
                                   <span>
                                     总分 <span className={`font-bold text-base ${
                                       (stock.consensus.total_score ?? 0) >= 60 ? 'text-red-600' :
@@ -1082,73 +1101,76 @@ export default function MarketScanPanel() {
                                     }`}>{stock.consensus.total_score ?? '-'}</span>
                                     <span className="text-gray-300">/100</span>
                                   </span>
-                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                    stock.consensus.passed ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'
-                                  }`}>
-                                    {stock.consensus.passed ? '✓ 通过' : '未通过'}
-                                  </span>
                                 </div>
                               </div>
-                              {/* 6维评分明细 (StockScorer) */}
-                              <div className="space-y-1.5">
-                                {(stock.consensus.votes || []).filter(v => v.max_score <= 30).map((vote) => {
-                                  const pct = vote.max_score > 0 ? Math.round(vote.score / vote.max_score * 100) : 0;
-                                  const barColor = vote.signal === 'bullish' ? 'bg-red-500' : vote.signal === 'bearish' ? 'bg-green-500' : 'bg-gray-400';
-                                  const signalIcon = vote.signal === 'bullish' ? '✓' : vote.signal === 'bearish' ? '✗' : '—';
-                                  const iconColor = vote.signal === 'bullish' ? 'text-red-500' : vote.signal === 'bearish' ? 'text-green-500' : 'text-gray-400';
+
+                              {/* 3策略分面板 */}
+                              {stock.consensus.strategies && Object.entries(stock.consensus.strategies).map(([key, strat]) => {
+                                const isBest = strat.mode === stock.consensus?.best_mode;
+                                const isBreakout = key === 'breakout';
+                                const triggered = stock.consensus?.breakout_triggered;
+                                if (isBreakout && !triggered) {
                                   return (
-                                    <div key={vote.name} className="flex items-center gap-2">
-                                      <span className={`text-xs w-4 text-center font-bold ${iconColor}`}>{signalIcon}</span>
-                                      <span className="text-xs text-gray-600 w-14 flex-shrink-0">{vote.name}</span>
-                                      <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                                        <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
-                                      </div>
-                                      <span className="text-xs font-mono text-gray-600 w-12 text-right">{vote.score}/{vote.max_score}</span>
-                                      {vote.details && vote.details.length > 0 && (
-                                        <span className="text-[10px] text-gray-400 w-20 text-right truncate" title={vote.details.map(d => `${d.label}: ${d.value}`).join(' | ')}>
-                                          {vote.details[0].value}
-                                        </span>
-                                      )}
+                                    <div key={key} className="mb-2 rounded border border-dashed border-gray-200 p-2 opacity-50">
+                                      <span className="text-xs text-gray-400">{strat.label} — 未触发（未突破阻力位）</span>
                                     </div>
                                   );
-                                })}
-                              </div>
-                              {/* 策略引擎评估 */}
-                              {(stock.consensus.votes || []).filter(v => v.max_score > 30).length > 0 && (
+                                }
+                                return (
+                                  <div key={key} className={`mb-2 rounded border p-3 ${isBest ? 'border-indigo-300 bg-indigo-50/30' : 'border-gray-200'}`}>
+                                    <div className="flex items-center justify-between mb-2">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold text-gray-700">{strat.label}</span>
+                                        {isBest && <span className="text-[9px] px-1 py-0.5 rounded bg-indigo-100 text-indigo-600 font-bold">最佳</span>}
+                                      </div>
+                                      <span className={`text-sm font-bold ${strat.total_score >= 60 ? 'text-red-600' : strat.total_score >= 40 ? 'text-yellow-600' : 'text-green-600'}`}>
+                                        {strat.total_score}<span className="text-gray-300 text-xs">/100</span>
+                                      </span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      {strat.details.map((d) => {
+                                        const pct = d.max_score > 0 ? Math.round(d.score / d.max_score * 100) : 0;
+                                        const barColor = pct >= 60 ? 'bg-red-500' : pct < 40 ? 'bg-green-500' : 'bg-gray-400';
+                                        const icon = pct >= 60 ? '✓' : pct < 40 ? '✗' : '—';
+                                        const iconColor = pct >= 60 ? 'text-red-500' : pct < 40 ? 'text-green-500' : 'text-gray-400';
+                                        return (
+                                          <div key={d.name} className="flex items-center gap-1.5">
+                                            <span className={`text-[10px] w-3 text-center font-bold ${iconColor}`}>{icon}</span>
+                                            <span className="text-[11px] text-gray-600 w-20 flex-shrink-0 truncate" title={d.note || undefined}>{d.name}</span>
+                                            <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                              <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
+                                            </div>
+                                            <span className="text-[10px] font-mono text-gray-500 w-10 text-right">{d.score}/{d.max_score}</span>
+                                            <span className="text-[10px] text-gray-400 w-14 text-right truncate">{d.value ?? (d.note || '')}</span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+
+                              {/* 引擎数据 */}
+                              {stock.consensus.engines && Object.keys(stock.consensus.engines).length > 0 && (
                                 <>
-                                  <div className="flex items-center gap-2 mt-3 mb-2">
+                                  <div className="flex items-center gap-2 mt-2 mb-2">
                                     <div className="flex-1 border-t border-gray-200" />
-                                    <span className="text-[10px] text-gray-400 font-medium">策略引擎</span>
+                                    <span className="text-[10px] text-gray-400 font-medium">辅助引擎</span>
                                     <div className="flex-1 border-t border-gray-200" />
                                   </div>
-                                  <div className="space-y-1.5">
-                                    {(stock.consensus.votes || []).filter(v => v.max_score > 30).map((vote) => {
-                                      const pct = Math.round(vote.score);
-                                      const barColor = vote.signal === 'bullish' ? 'bg-red-500' : vote.signal === 'bearish' ? 'bg-green-500' : 'bg-gray-400';
-                                      const signalIcon = vote.signal === 'bullish' ? '✓' : vote.signal === 'bearish' ? '✗' : '—';
-                                      const iconColor = vote.signal === 'bullish' ? 'text-red-500' : vote.signal === 'bearish' ? 'text-green-500' : 'text-gray-400';
-                                      return (
-                                        <div key={vote.name} className="space-y-0.5">
-                                          <div className="flex items-center gap-2">
-                                            <span className={`text-xs w-4 text-center font-bold ${iconColor}`}>{signalIcon}</span>
-                                            <span className="text-xs text-gray-600 w-14 flex-shrink-0">{vote.name}</span>
-                                            <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                                              <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
-                                            </div>
-                                            <span className="text-xs font-mono text-gray-600 w-10 text-right">{vote.score}</span>
-                                          </div>
-                                          {vote.details && vote.details.length > 0 && (
-                                            <div className="ml-[24px] flex flex-wrap gap-x-3">
-                                              {vote.details.map((d) => (
-                                                <span key={d.label} className="text-[10px] text-gray-400">
-                                                  {d.label}: <span className="text-gray-600 font-medium">{d.value}</span>
-                                                </span>
-                                              ))}
-                                            </div>
-                                          )}
+                                  <div className="space-y-1">
+                                    {Object.entries(stock.consensus.engines).map(([ek, eng]) => (
+                                      <div key={ek} className="flex items-center gap-2">
+                                        <span className="text-[11px] text-gray-600 w-14 flex-shrink-0">{eng.label}</span>
+                                        <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                          <div className={`h-full rounded-full ${eng.score >= 60 ? 'bg-red-400' : eng.score < 40 ? 'bg-green-400' : 'bg-gray-400'}`} style={{ width: `${eng.score}%` }} />
                                         </div>
-                                      );
-                                    })}
+                                        <span className="text-[10px] font-mono text-gray-500 w-8 text-right">{eng.score}</span>
+                                        <span className="text-[10px] text-gray-400 truncate max-w-[140px]">
+                                          {eng.details.map(d => `${d.label}:${d.value}`).join(' ')}
+                                        </span>
+                                      </div>
+                                    ))}
                                   </div>
                                 </>
                               )}
