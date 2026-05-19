@@ -339,6 +339,9 @@ async def get_top_hot_stocks(
         try:
             # 从 Enricher 缓存或 DB K线获取评分所需指标
             _kline_indicators = {}
+            # ticker_power: 从 ht_cache 的 verified_buy_sell_ratio 转换 (BSR - 1.0)
+            _bsr = cached.get('verified_buy_sell_ratio', 0) if cached else 0
+            _ticker_power = (_bsr - 1.0) if _bsr > 0 else None
             if cached:
                 # Enricher 缓存有预计算数据
                 _kline_indicators = {
@@ -348,6 +351,7 @@ async def get_top_hot_stocks(
                     'vol_ratio': vr if vr > 0 else cached.get('volume_ratio'),
                     'prev_day_change': cached.get('prev_day_change'),
                     'flow_ratio': cf_data.get('net_inflow_ratio', 0) if cf_data else 0,
+                    'ticker_power': _ticker_power,
                 }
             if not _kline_indicators.get('change_5d'):
                 # Fallback: 从批量预查询的 K线缓存计算
@@ -377,6 +381,7 @@ async def get_top_hot_stocks(
                     _kline_indicators.setdefault('day_amplitude', amp)
                     _kline_indicators.setdefault('vol_ratio', vr)
                     _kline_indicators.setdefault('flow_ratio', cf_data.get('net_inflow_ratio', 0) if cf_data else 0)
+                    _kline_indicators.setdefault('ticker_power', _ticker_power)
 
             # 调用 StockScorer 6维评分
             scoring_result = _scorer.score_stock(stock_code, stock.get('name', ''), _kline_indicators)
