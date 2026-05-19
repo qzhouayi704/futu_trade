@@ -74,7 +74,7 @@ interface MergedStock {
 }
 
 /** 排序字段 */
-type SortField = "turnover_rate" | "change_rate" | "turnover" | "main_inflow" | "big_order_ratio" | "capital_signal" | "volume_ratio" | "amplitude" | "score";
+type SortField = "turnover_rate" | "change_rate" | "turnover" | "ticker_buy_sell_ratio" | "capital_signal" | "volume_ratio" | "amplitude" | "score";
 type SortDirection = "asc" | "desc";
 
 // ==================== 工具函数 ====================
@@ -370,13 +370,9 @@ export default function MarketScanPanel() {
         case "turnover":
           aVal = getTurnover(a); bVal = getTurnover(b); break;
 
-        case "main_inflow":
-          aVal = a.capital_flow_summary?.main_net_inflow || 0;
-          bVal = b.capital_flow_summary?.main_net_inflow || 0;
-          break;
-        case "big_order_ratio":
-          aVal = a.capital_flow_summary?.big_order_buy_ratio || 0;
-          bVal = b.capital_flow_summary?.big_order_buy_ratio || 0;
+        case "ticker_buy_sell_ratio":
+          aVal = a.ticker_summary?.buy_sell_ratio || 0;
+          bVal = b.ticker_summary?.buy_sell_ratio || 0;
           break;
         case "capital_signal": {
           const order: Record<string, number> = { bullish: 2, neutral: 1, bearish: 0 };
@@ -706,9 +702,8 @@ export default function MarketScanPanel() {
                 </th>
 
                 <th className="px-2 py-3 text-xs font-medium text-gray-500 text-center" title="根据逐笔成交分析，判断主动买卖力量">方向</th>
-                <th className="px-2 py-3 text-xs font-medium text-gray-500 text-right" title="主动买入金额 / 主动卖出金额">力量比</th>
-                <th className="px-3 py-3 text-xs font-medium text-gray-500 text-right cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("main_inflow")} title="主力资金净流入金额（含实时增减趋势）">
-                  <span className="inline-flex items-center">主力净流入<SortIcon field="main_inflow" /></span>
+                <th className="px-2 py-3 text-xs font-medium text-gray-500 text-right cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("ticker_buy_sell_ratio")} title="主动买入金额 / 主动卖出金额">
+                  <span className="inline-flex items-center">力量比<SortIcon field="ticker_buy_sell_ratio" /></span>
                 </th>
                 <th className="px-3 py-3 text-xs font-medium text-gray-500 text-center cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("score")}>
                   <span className="inline-flex items-center">评分<SortIcon field="score" /></span>
@@ -830,28 +825,6 @@ export default function MarketScanPanel() {
                       {/* 力量比 */}
                       <td className="px-2 py-3 text-sm text-right">
                         <BuyRatioCell summary={stock.ticker_summary} />
-                      </td>
-
-                      {/* 主力净流入 + 实时趋势 */}
-                      <td className="px-3 py-3 text-sm text-right">
-                        {capitalFlow ? (() => {
-                          const val = capitalFlow.main_net_inflow;
-                          const delta = (capitalFlow as unknown as Record<string, unknown>).inflow_change as number || 0;
-                          const color = val > 0 ? "text-red-600" : val < 0 ? "text-green-600" : "text-gray-500";
-                          // 变化超过1万才显示趋势箭头
-                          const showTrend = Math.abs(delta) > 10000;
-                          return (
-                            <span className={`inline-flex items-center gap-1 font-medium ${color}`}>
-                              {val > 0 ? "+" : ""}{formatInflowZh(val)}
-                              {showTrend && delta > 0 && (
-                                <span className="text-[10px] text-red-500 animate-pulse" title={`较上次增加 ${formatInflowZh(Math.abs(delta))}`}>▲</span>
-                              )}
-                              {showTrend && delta < 0 && (
-                                <span className="text-[10px] text-green-500" title={`较上次减少 ${formatInflowZh(Math.abs(delta))}`}>▼</span>
-                              )}
-                            </span>
-                          );
-                        })() : <span className="text-gray-300">-</span>}
                       </td>
 
                       {/* 交易评分 */}
