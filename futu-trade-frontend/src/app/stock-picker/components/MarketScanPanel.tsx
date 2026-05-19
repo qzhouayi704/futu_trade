@@ -938,8 +938,9 @@ export default function MarketScanPanel() {
                                   <div>
                                     <div className="text-xs text-gray-500 mb-1">大单动能</div>
                                     {(() => {
-                                      const bigBuy = (ts as Record<string, unknown>).big_buy_turnover as number || 0;
-                                      const bigSell = (ts as Record<string, unknown>).big_sell_turnover as number || 0;
+                                      const tsAny = ts as unknown as Record<string, number>;
+                                      const bigBuy = tsAny.big_buy_turnover || 0;
+                                      const bigSell = tsAny.big_sell_turnover || 0;
                                       const bigNet = bigBuy - bigSell;
                                       const bigTotal = bigBuy + bigSell;
                                       const buyPct = bigTotal > 0 ? (bigBuy / bigTotal * 100) : 50;
