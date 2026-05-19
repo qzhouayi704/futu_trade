@@ -821,23 +821,36 @@ export default function MarketScanPanel() {
                         {formatTurnoverZh(turnover)}
                       </td>
 
-                      {/* 主力资金（逐笔成交汇总） */}
+                      {/* 主力资金（逐笔成交汇总，fallback 到资金分布API） */}
                       <td className="px-2 py-3 text-sm text-center">
                         {(() => {
                           const tc = stock.tick_capital;
-                          if (!tc || tc.buy_sell_ratio <= 0) return <span className="text-gray-300 text-xs">-</span>;
-                          const bsr = tc.buy_sell_ratio;
-                          const net = tc.net_amount;
-                          const bsrColor = bsr >= 1.5 ? 'text-red-600' : bsr >= 1.2 ? 'text-red-500' : bsr >= 0.8 ? 'text-gray-700' : bsr >= 0.5 ? 'text-green-500' : 'text-green-600';
-                          const netColor = net > 0 ? 'text-red-500' : net < 0 ? 'text-green-500' : 'text-gray-400';
-                          const netPrefix = net > 0 ? '+' : '';
-                          const netStr = Math.abs(net) >= 1e8 ? (net / 1e8).toFixed(1) + '亿' : Math.abs(net) >= 1e4 ? (net / 1e4).toFixed(0) + '万' : net.toFixed(0);
-                          const momIcon = tc.momentum === 'accelerating' ? '⬆' : tc.momentum === 'decelerating' ? '⬇' : tc.momentum === 'reversing' ? '↻' : '';
+                          if (tc && tc.buy_sell_ratio > 0) {
+                            const bsr = tc.buy_sell_ratio;
+                            const net = tc.net_amount;
+                            const bsrColor = bsr >= 1.5 ? 'text-red-600' : bsr >= 1.2 ? 'text-red-500' : bsr >= 0.8 ? 'text-gray-700' : bsr >= 0.5 ? 'text-green-500' : 'text-green-600';
+                            const netColor = net > 0 ? 'text-red-500' : net < 0 ? 'text-green-500' : 'text-gray-400';
+                            const netPrefix = net > 0 ? '+' : '';
+                            const netStr = Math.abs(net) >= 1e8 ? (net / 1e8).toFixed(1) + '亿' : Math.abs(net) >= 1e4 ? (net / 1e4).toFixed(0) + '万' : net.toFixed(0);
+                            const momIcon = tc.momentum === 'accelerating' ? '⬆' : tc.momentum === 'decelerating' ? '⬇' : tc.momentum === 'reversing' ? '↻' : '';
+                            return (
+                              <div className="flex flex-col items-center gap-0.5" title={`逐笔买卖比: ${bsr.toFixed(2)}\n净额: ${netStr}\n动量: ${tc.momentum}${tc.divergence ? '\n⚠ ' + tc.divergence.label : ''}`}>
+                                <span className={`font-bold text-sm ${bsrColor}`}>{bsr.toFixed(2)} {momIcon && <span className="text-[9px]">{momIcon}</span>}</span>
+                                <span className={`text-[10px] ${netColor}`}>{netPrefix}{netStr}</span>
+                                {tc.divergence && <span className="text-[9px] text-amber-600 font-medium">⚠{tc.divergence.label}</span>}
+                              </div>
+                            );
+                          }
+                          // Fallback: 资金分布API数据
+                          const cf = stock.capital_flow_summary;
+                          if (!cf) return <span className="text-gray-300 text-xs">-</span>;
+                          const inflow = cf.main_net_inflow ?? 0;
+                          const inflowColor = inflow > 0 ? 'text-red-500' : inflow < 0 ? 'text-green-500' : 'text-gray-400';
+                          const inflowStr = Math.abs(inflow) >= 1e8 ? (inflow / 1e8).toFixed(1) + '亿' : Math.abs(inflow) >= 1e4 ? (inflow / 1e4).toFixed(0) + '万' : inflow.toFixed(0);
                           return (
-                            <div className="flex flex-col items-center gap-0.5" title={`逐笔买卖比: ${bsr.toFixed(2)}\n净额: ${netStr}\n动量: ${tc.momentum}${tc.divergence ? '\n⚠ ' + tc.divergence.label : ''}`}>
-                              <span className={`font-bold text-sm ${bsrColor}`}>{bsr.toFixed(2)} {momIcon && <span className="text-[9px]">{momIcon}</span>}</span>
-                              <span className={`text-[10px] ${netColor}`}>{netPrefix}{netStr}</span>
-                              {tc.divergence && <span className="text-[9px] text-amber-600 font-medium">⚠{tc.divergence.label}</span>}
+                            <div className="flex flex-col items-center gap-0.5" title="数据来源: 资金分布API（逐笔数据加载中）">
+                              <span className={`font-bold text-sm ${inflowColor}`}>{inflow > 0 ? '+' : ''}{inflowStr}</span>
+                              <span className="text-[9px] text-gray-400">聚合</span>
                             </div>
                           );
                         })()}
