@@ -157,7 +157,7 @@ export default function MarketScanPanel() {
       // 并行请求两个 API
       const [hotRes, turnoverRes] = await Promise.all([
         stockApi.getTopHotStocks({ limit: 100 }),
-        stockApi.getHighTurnoverStocks({ limit: 100, include_ticker_analysis: true }),
+        stockApi.getHighTurnoverStocks({ limit: 100 }),
       ]);
 
       // 以 TopHot 为主（有日内高低价），合并 ticker_summary
