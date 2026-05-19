@@ -361,6 +361,33 @@ async def get_high_turnover_stocks(
                 stock["amplitude_score"] = cached.get("amplitude_score", 0)
                 stock["stability_score"] = cached.get("stability_score", 0)
 
+    # ===== 最终 fallback: 从 ht_cache 的 verified_buy_sell_ratio 构造 ticker_summary =====
+    for stock in result_stocks:
+        if stock.get("ticker_summary"):
+            continue
+        ratio = stock.get("verified_buy_sell_ratio", 0)
+        if ratio > 0:
+            score = min(100, max(-100, round((ratio - 1) * 50, 1)))
+            if score > 20 and ratio > 1.5:
+                bias, bias_label = "strong_bullish", "强买"
+            elif score > 20:
+                bias, bias_label = "bullish", "偏多"
+            elif score < -20:
+                bias, bias_label = "bearish", "偏空"
+            else:
+                bias, bias_label = "neutral", "中性"
+            signal = "bullish" if score > 20 else ("bearish" if score < -20 else "neutral")
+            label = "看涨" if score > 20 else ("看跌" if score < -20 else "中性")
+            buy_amt = stock.get("verified_big_buy_amount", 0)
+            sell_amt = stock.get("verified_big_sell_amount", 0)
+            net = round((buy_amt - sell_amt) / 10000, 2) if (buy_amt or sell_amt) else 0
+            stock["ticker_summary"] = {
+                "score": score, "signal": signal, "label": label,
+                "buy_sell_ratio": ratio, "net_turnover": net,
+                "bias": bias, "bias_label": bias_label,
+                "big_order_pct": 0, "big_buy_turnover": buy_amt, "big_sell_turnover": sell_amt,
+            }
+
     # ==================== 价格位置分析（日线 + 当日双时间框架） ====================
     from ...services.analysis.price_position import (
         batch_get_price_range, analyze_price_position,
