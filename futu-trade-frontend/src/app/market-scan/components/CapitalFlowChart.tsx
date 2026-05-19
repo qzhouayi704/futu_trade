@@ -69,7 +69,7 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
       });
 
       const netBuyData = data.map((p) => {
-        const val = (p as Record<string, unknown>).net_buy as number ?? p.main_in ?? 0;
+        const val = (p as any).net_buy as number ?? (p as any).main_in ?? 0;
         return {
           time: toTimestamp(p.time),
           value: val,
@@ -79,7 +79,7 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
       netBuySeries.setData(netBuyData);
 
       // === 2. 累计净主动买入线（左轴，更淡）===
-      const cumPoints = data.filter(p => (p as Record<string, unknown>).cum_net != null);
+      const cumPoints = data.filter(p => (p as any).cum_net != null);
       if (cumPoints.length > 3) {
         const cumSeries = chart.addAreaSeries({
           topColor: "rgba(99, 102, 241, 0.15)",
@@ -105,7 +105,7 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
 
         cumSeries.setData(cumPoints.map(p => ({
           time: toTimestamp(p.time),
-          value: (p as Record<string, unknown>).cum_net as number ?? 0,
+          value: (p as any).cum_net as number ?? 0,
         })));
         zeroSeries.setData(cumPoints.map(p => ({
           time: toTimestamp(p.time),
@@ -170,7 +170,7 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
 
   // 汇总指标
   const latest = data.length > 0 ? data[data.length - 1] : null;
-  const latestAny = latest as Record<string, unknown> | null;
+  const latestAny = latest as any;
   const cumNet = latestAny?.cum_net as number | undefined;
   const netBuy = latestAny?.net_buy as number | undefined;
 
