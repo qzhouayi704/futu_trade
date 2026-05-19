@@ -152,14 +152,15 @@ async def _run_screen(container, use_history: bool = False):
     try:
         if use_history:
             _task_status["progress"] = "读取历史收盘数据..."
-            stock_list = await asyncio.to_thread(_get_stock_list_from_history, container)
+            stock_list, data_date = await asyncio.to_thread(_get_stock_list_from_history, container)
         else:
+            data_date = None
             _task_status["progress"] = "获取市场扫描池股票..."
             stock_list = await asyncio.to_thread(_get_stock_list, container)
             # 收盘后重启场景：内存快照为空，回退到历史K线
             if not stock_list:
                 logger.info("[盘后优选] 实时快照为空（可能是重启后），回退到历史K线数据")
-                stock_list = await asyncio.to_thread(_get_stock_list_from_history, container)
+                stock_list, data_date = await asyncio.to_thread(_get_stock_list_from_history, container)
                 use_history = True
 
         if not stock_list:
@@ -213,7 +214,8 @@ async def _run_screen(container, use_history: bool = False):
 
         # 持久化到DB
         try:
-            screen_date = date.today().isoformat()
+            # screen_date 用数据日期（而非点击日期），确保同一份数据只存一条记录
+            screen_date = data_date if data_date else date.today().isoformat()
             candidates_json = json.dumps(_task_status["result"], ensure_ascii=False)
             container.db_manager.execute_update(
                 "INSERT OR REPLACE INTO overnight_screen_results "
@@ -291,27 +293,37 @@ def _get_stock_list(container) -> list:
     return stocks
 
 
-def _get_stock_list_from_history(container) -> list:
-    """从DB历史K线收盘数据构建股票列表（盘中使用）
+def _get_stock_list_from_history(container) -> tuple:
+    """从DK线历史收盘数据构建股票列表（盘中/重启后使用）
 
-    读取最近一个交易日的K线收盘数据，确保盘中评分使用完整的历史数据。
+    读取最近一个已完成交易日的K线收盘数据。
+    排除今天的K线（可能是预下载的不完整数据）。
+
+    Returns:
+        (stock_list, data_date) 元组，data_date 是数据对应的交易日(YYYY-MM-DD)
     """
     db = container.db_manager
     stocks = []
+    data_date = None
 
     try:
-        # 获取最近一个交易日的K线数据
-        # 取最新的 time_key 作为最近交易日
+        # 获取最近一个已完成交易日的K线数据
+        # 排除今天（可能是预下载的不完整数据）
+        today_prefix = date.today().isoformat()  # '2026-05-19'
         date_row = db.execute_query(
             "SELECT DISTINCT time_key FROM kline_data "
-            "ORDER BY time_key DESC LIMIT 1"
+            "WHERE time_key < ? "
+            "ORDER BY time_key DESC LIMIT 1",
+            (today_prefix,)
         )
         if not date_row:
             logger.warning("[盘后优选] K线数据库为空，无法获取历史数据")
-            return []
+            return [], None
 
         last_date = date_row[0][0]
-        logger.info(f"[盘后优选] 使用历史数据日期: {last_date}")
+        # 提取纯日期部分作为 data_date
+        data_date = last_date[:10]  # '2026-05-18 00:00:00' -> '2026-05-18'
+        logger.info(f"[盘后优选] 使用历史数据日期: {data_date}")
 
         # 读取该日所有股票的K线
         rows = db.execute_query(
@@ -324,7 +336,7 @@ def _get_stock_list_from_history(container) -> list:
         )
         if not rows:
             logger.warning(f"[盘后优选] {last_date} 无K线数据")
-            return []
+            return [], data_date
 
         for row in rows:
             code, name, close_p, open_p, high_p, low_p, volume = row
@@ -380,7 +392,7 @@ def _get_stock_list_from_history(container) -> list:
     except Exception as e:
         logger.error(f"[盘后优选] 读取历史数据失败: {e}", exc_info=True)
 
-    return stocks
+    return stocks, data_date
 
 
 def _download_today_klines(container, stock_list: list):

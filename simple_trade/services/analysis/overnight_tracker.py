@@ -258,10 +258,19 @@ class OvernightTracker:
         ]
 
     def _find_next_trading_date(self, date_str: str) -> Optional[str]:
-        """查找指定日期之后最近的有K线数据的交易日"""
+        """查找指定日期之后最近的有K线数据的交易日
+
+        处理格式差异：screen_date='2026-05-18', time_key='2026-05-18 00:00:00'
+        需要找 screen_date 严格之后的下一个交易日
+        """
+        # 统一用 'YYYY-MM-DD 23:59:59' 确保跳过当天
+        search_date = date_str[:10] + " 23:59:59"
         rows = self.db.execute_query(
             "SELECT DISTINCT time_key FROM kline_data "
             "WHERE time_key > ? ORDER BY time_key ASC LIMIT 1",
-            (date_str,)
+            (search_date,)
         )
-        return rows[0][0] if rows else None
+        if not rows:
+            return None
+        # 返回原始 time_key（含时间部分），用于后续K线查询
+        return rows[0][0]
