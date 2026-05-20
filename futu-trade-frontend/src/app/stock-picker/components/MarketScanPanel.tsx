@@ -1041,12 +1041,11 @@ export default function MarketScanPanel() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setInsightStock({ code: stock.code, name: stock.name });
-                                  setInsightDrawerOpen(true);
+                                  window.open(`/stock-detail?code=${stock.code}`, '_blank');
                                 }}
                                 className="px-3 py-1.5 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors flex items-center gap-1"
                               >
-                                <i className="fas fa-search"></i> 深度分析
+                                <i className="fas fa-search"></i> 个股分析
                               </button>
                             </div>
                           )}
