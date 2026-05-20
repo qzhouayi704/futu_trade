@@ -2,7 +2,7 @@
 
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import type { CapitalFlowData } from "@/types/enhanced-heat";
 import { getCapitalFlow } from "@/lib/api/enhanced-heat";
 
@@ -72,6 +72,31 @@ export function CapitalFlowChart({ stockCode, onStockCodeChange }: {
   const [data, setData] = useState<CapitalFlowData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // 当外部 stockCode 变化时（如从其他页面跳转），自动更新并查询
+  const autoFetchRef = useCallback(async (code: string) => {
+    if (!code.trim()) return;
+    setInputCode(code);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getCapitalFlow(code.trim());
+      if (res.success) {
+        setData(res.data);
+        if (!res.data) setError("暂无该股票资金流向数据");
+      }
+    } catch {
+      setError("获取资金流向失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (stockCode && stockCode !== inputCode) {
+      autoFetchRef(stockCode);
+    }
+  }, [stockCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchData = useCallback(async () => {
     if (!inputCode.trim()) return;
