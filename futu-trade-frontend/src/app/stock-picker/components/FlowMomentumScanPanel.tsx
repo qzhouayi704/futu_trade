@@ -139,7 +139,7 @@ export default function FlowMomentumScanPanel({ onSelectStock }: FlowMomentumSca
                     </span>
                     <span className="text-[10px] text-gray-400">{item.stock_code}</span>
                     {item.price > 0 && (
-                      <span className="text-xs text-gray-400">${item.price.toFixed(2)}</span>
+                      <span className="text-xs text-gray-400">{item.price.toFixed(2)}</span>
                     )}
                   </div>
                   <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.text} border ${cfg.border}`}>
