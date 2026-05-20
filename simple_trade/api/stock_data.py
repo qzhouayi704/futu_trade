@@ -99,6 +99,7 @@ class StockDataService:
                                     'turnover': float(row.get('turnover', 0)),
                                     'turnover_rate': float(row.get('turnover_rate', 0) or 0),  # 换手率
                                     'amplitude': float(row.get('amplitude', 0) or 0),  # 振幅
+                                    'volume_ratio': float(row.get('volume_ratio', 0) or 0),  # 量比
                                     'update_time': datetime.now().strftime('%H:%M:%S'),
                                     'last_update': datetime.now().isoformat(),
                                     'is_realtime': True  # 标识为实时数据
