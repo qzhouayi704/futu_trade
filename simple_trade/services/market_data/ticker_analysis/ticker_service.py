@@ -113,7 +113,14 @@ class TickerService:
             except Exception as e:
                 logger.debug(f"读取 ticker_df_cache 失败 {stock_code}: {e}")
 
-        # 3. 回退到原有 futu API 调用
+        # 3. 非交易时段跳过 API 调用，避免拉取过期数据
+        from ....utils.market_helper import MarketTimeHelper
+        now_time = datetime.now().time()
+        if not MarketTimeHelper._is_hk_trading_time(now_time):
+            logger.debug(f"非港股交易时段，跳过逐笔API: {stock_code}")
+            return await self._read_ticker_from_db(stock_code, num)
+
+        # 4. 回退到原有 futu API 调用
         try:
             loop = asyncio.get_event_loop()
 
