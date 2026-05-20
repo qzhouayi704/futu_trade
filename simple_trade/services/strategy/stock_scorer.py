@@ -105,8 +105,20 @@ TREND_B_EXEMPTION = {
 
 # REVERSAL strategy archived → strategy_archive/reversal_v1.py
 
+# MOMENTUM mode: 动量接力 — 前日暴涨股次日低吸
+# 适用条件: prev_day_change >= 15%
+MOMENTUM_CONFIG = {
+    'prev_surge': {'max_score': 15, 'tiers': [(30.0, 15), (20.0, 12), (15.0, 8)], 'default': 0},
+    'today_change': {'max_score': 20, 'optimal_range': (-3.0, 10.0), 'marginal_range': (-8.0, 20.0), 'default': 0},
+    'vol_ratio': {'max_score': 20, 'tiers': [(3.0, 20), (2.0, 16), (1.5, 12), (1.0, 6)], 'default': 0},
+    'ticker_power': {'max_score': 15, 'tiers': [(0.5, 15), (0.2, 10), (0.0, 5)], 'default': 5},
+    'amplitude': {'max_score': 15, 'optimal_range': (5.0, 25.0), 'marginal_range': (3.0, 40.0), 'default': 0},
+    'recovery': {'max_score': 15, 'tiers': [(0.8, 15), (0.6, 12), (0.4, 8), (0.2, 4)], 'default': 0},
+}
+MOMENTUM_TRIGGER_MIN = 15.0
+
 VETO_RULES = {
-    'prev_day_change_max': 20.0,
+    'prev_day_change_max': 50.0,
     'prev_day_vol_ratio_min': 1.5,
     'amplitude_max': 45.0,
     'kline_position_max': 1.0,
@@ -146,27 +158,33 @@ class StockScorer:
 
     def score_all_strategies(self, stock_code: str, stock_name: str,
                               indicators: Dict[str, Any]) -> Dict[str, Any]:
-        """返回 TREND + BREAKOUT 两套策略的独立评分结果。"""
+        """返回 TREND + BREAKOUT + MOMENTUM 三套策略的独立评分结果。"""
         trend_score, trend_details = self._score_trend(indicators)
         breakout_score, breakout_details, breakout_triggered = self._score_breakout(indicators)
+        momentum_score, momentum_details, momentum_triggered = self._score_momentum(indicators)
 
         veto = self._check_veto(stock_code, indicators)
 
-        def _build(mode, score, details):
-            passed = score >= PASSING_SCORE and not veto
+        def _build(mode, score, details, apply_veto=True):
+            v = veto if apply_veto else ''
+            passed = score >= PASSING_SCORE and not v
             return ScoringResult(
                 stock_code=stock_code, stock_name=stock_name,
                 total_score=score, passed=passed, mode=mode,
-                veto_reason=veto if not passed else '', details=details,
+                veto_reason=v if not passed else '', details=details,
             )
 
         trend_result = _build('TREND', trend_score, trend_details)
         breakout_result = _build('BREAKOUT', breakout_score, breakout_details)
+        # MOMENTUM 不受前日涨幅否决（它就是为暴涨股设计的）
+        momentum_result = _build('MOMENTUM', momentum_score, momentum_details, apply_veto=False)
 
         # 最佳策略
         all_results = [trend_result]
         if breakout_triggered:
             all_results.append(breakout_result)
+        if momentum_triggered:
+            all_results.append(momentum_result)
         best = max(all_results, key=lambda r: r.total_score)
 
         # 缓存最佳结果
@@ -176,7 +194,9 @@ class StockScorer:
             'best': best,
             'trend': trend_result,
             'breakout': breakout_result,
+            'momentum': momentum_result,
             'breakout_triggered': breakout_triggered,
+            'momentum_triggered': momentum_triggered,
         }
 
     def _score_trend(self, ind: Dict[str, Any]) -> tuple:
@@ -304,6 +324,40 @@ class StockScorer:
         else:
             details.append(ScoreDetail('涨幅适中', None, 5, 10, '无数据(中性)'))
             total += 5
+
+        return total, details, triggered
+
+    def _score_momentum(self, ind: Dict[str, Any]) -> tuple:
+        """MOMENTUM mode: 动量接力评分。返回 (score, details, triggered)。"""
+        details = []
+        total = 0
+        prev_change = ind.get('prev_day_change')
+        triggered = prev_change is not None and prev_change >= MOMENTUM_TRIGGER_MIN
+
+        # 1. 前日涨幅强度 (15分)
+        s, d = self._score_tiered(MOMENTUM_CONFIG['prev_surge'], prev_change, '前日涨幅强度')
+        details.append(d); total += s
+
+        # 2. 今日涨跌幅 (20分) — 低开/小涨是好买点
+        today_chg = ind.get('today_change') or ind.get('change_pct')
+        s, d = self._score_range(MOMENTUM_CONFIG['today_change'], today_chg, '今日涨跌')
+        details.append(d); total += s
+
+        # 3. 量比 (20分)
+        s, d = self._score_tiered(MOMENTUM_CONFIG['vol_ratio'], ind.get('vol_ratio'), '量比')
+        details.append(d); total += s
+
+        # 4. 逐笔买卖力量 (15分)
+        s, d = self._score_tiered(MOMENTUM_CONFIG['ticker_power'], ind.get('ticker_power'), '逐笔买卖力量')
+        details.append(d); total += s
+
+        # 5. 日内振幅 (15分)
+        s, d = self._score_range(MOMENTUM_CONFIG['amplitude'], ind.get('day_amplitude'), '日内振幅')
+        details.append(d); total += s
+
+        # 6. 反包力度 (15分) — (current - low) / (high - low)
+        s, d = self._score_tiered(MOMENTUM_CONFIG['recovery'], ind.get('recovery_ratio'), '反包力度')
+        details.append(d); total += s
 
         return total, details, triggered
 

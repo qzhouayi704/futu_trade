@@ -413,6 +413,11 @@ async def get_top_hot_stocks(
                         _kline_indicators.setdefault('rise_from_low', round((_today_close - low_20d) / low_20d * 100, 2))
                 # 今日涨跌（阳线反转）
                 _kline_indicators.setdefault('today_change', round(quote.get('change_rate', 0), 2))
+                # 反包比例（动量接力策略需要）
+                _high = quote.get('high_price', 0) or 0
+                _low = quote.get('low_price', 0) or 0
+                if _high > _low > 0:
+                    _kline_indicators.setdefault('recovery_ratio', round((cur_price - _low) / (_high - _low), 4))
 
             # 资金流数据注入（蓄势突破策略需要）
             if cf_data:
@@ -427,9 +432,11 @@ async def get_top_hot_stocks(
 
             # 构建仲裁投票：每策略1票
             votes = []
-            for mode_key in ('trend', 'breakout'):
+            for mode_key in ('trend', 'breakout', 'momentum'):
                 sr = all_scores[mode_key]
                 if mode_key == 'breakout' and not all_scores['breakout_triggered']:
+                    continue
+                if mode_key == 'momentum' and not all_scores['momentum_triggered']:
                     continue
                 signal = 'bullish' if sr.passed else ('bearish' if sr.total_score < 40 else 'neutral')
                 votes.append(StrategyVote(
@@ -487,8 +494,10 @@ async def get_top_hot_stocks(
                 'strategies': {
                     'trend': _build_strategy_detail(all_scores['trend'], '📈 趋势策略'),
                     'breakout': _build_strategy_detail(all_scores['breakout'], '🔺 蓄势突破'),
+                    'momentum': _build_strategy_detail(all_scores['momentum'], '🚀 动量接力'),
                 },
                 'breakout_triggered': all_scores['breakout_triggered'],
+                'momentum_triggered': all_scores['momentum_triggered'],
                 # 附加引擎数据（非策略评分维度）
                 'engines': {},
             }
