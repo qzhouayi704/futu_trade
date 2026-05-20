@@ -8,6 +8,7 @@ import apiClient from "@/lib/api/client";
 
 interface FlowScanItem {
   stock_code: string;
+  stock_name: string;
   price: number;
   data_points: number;
   momentum_label: string;
@@ -133,7 +134,10 @@ export default function FlowMomentumScanPanel({ onSelectStock }: FlowMomentumSca
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <div className={`w-2 h-2 rounded-full ${cfg.dot}`} />
-                    <span className="text-sm font-bold text-gray-800">{item.stock_code}</span>
+                    <span className="text-sm font-bold text-gray-800">
+                      {item.stock_name || item.stock_code}
+                    </span>
+                    <span className="text-[10px] text-gray-400">{item.stock_code}</span>
                     {item.price > 0 && (
                       <span className="text-xs text-gray-400">${item.price.toFixed(2)}</span>
                     )}

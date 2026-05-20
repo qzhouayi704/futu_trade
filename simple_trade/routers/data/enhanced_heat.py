@@ -200,6 +200,23 @@ async def flow_momentum_scan(container=Depends(get_container)):
                 **summary,
             })
 
+        # 批量获取股票名称
+        all_codes = [r['stock_code'] for r in results]
+        name_map = {}
+        if all_codes:
+            try:
+                placeholders = ','.join(['?' for _ in all_codes])
+                name_rows = db.execute_query(
+                    f"SELECT code, name FROM stocks WHERE code IN ({placeholders})",
+                    tuple(all_codes)
+                )
+                name_map = {r[0]: r[1] for r in name_rows} if name_rows else {}
+            except Exception:
+                pass
+
+        for r in results:
+            r['stock_name'] = name_map.get(r['stock_code'], '')
+
         # 按信号优先级 + 动能排序
         signal_order = {'bullish': 0, 'warning': 1, 'neutral': 2, 'bearish': 3}
         results.sort(key=lambda x: (
