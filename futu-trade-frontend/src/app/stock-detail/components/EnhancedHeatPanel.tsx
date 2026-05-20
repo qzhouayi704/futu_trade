@@ -31,7 +31,7 @@ export default function EnhancedHeatPanel({ initialCode }: { initialCode?: strin
     if (!code) { setFlowTimeline([]); return; }
     try {
       const res = await getCapitalFlowTimeline(code);
-      if (res.success && res.data) setFlowTimeline(res.data);
+      if (res.success && res.data) setFlowTimeline(res.data.timeline || []);
     } catch { /* ignore */ }
   }, []);
 
