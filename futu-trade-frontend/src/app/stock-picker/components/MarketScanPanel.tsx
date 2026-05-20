@@ -12,7 +12,7 @@ import { formatPrice, formatPercent, formatTime } from "@/lib/utils";
 import type { TopHotStock, TickerSummary, CapitalFlowSummary } from "@/types";
 import { analyzeStock, batchAnalyze, type QuickScanResult, type QuickScanRequest } from "@/lib/api/quick-scan";
 import { flowSignalApi, type FlowSignalMap, type TradeSignalMap } from "@/lib/api/flow-signal";
-import { StockInsightDrawer } from "@/app/market-scan/components/StockInsightDrawer";
+
 import { IntradayLevelsPanel } from "@/app/market-scan/components/IntradayLevelsPanel";
 import { AIAnalysisButton } from "@/app/components/AIAnalysisDialog";
 import PoolAnomalyBanner from "@/app/market-scan/components/PoolAnomalyBanner";
@@ -155,9 +155,7 @@ export default function MarketScanPanel() {
   // 日线策略信号（判定列优先级最高）
   const [tradeSignals, setTradeSignals] = useState<TradeSignalMap>({});
 
-  // 深度分析 Drawer
-  const [insightDrawerOpen, setInsightDrawerOpen] = useState(false);
-  const [insightStock, setInsightStock] = useState<{code: string; name: string} | null>(null);
+
 
   // 日内资金支撑/阻力位面板
   const [levelsStock, setLevelsStock] = useState<{code: string; name: string} | null>(null);
@@ -951,18 +949,7 @@ export default function MarketScanPanel() {
                           })()}
                           {/* AI 分析按钮 */}
                           <AIAnalysisButton stockCode={stock.code} stockName={stock.name} />
-                          {/* 深度分析按钮 */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setInsightStock({ code: stock.code, name: stock.name });
-                              setInsightDrawerOpen(true);
-                            }}
-                            className="inline-flex items-center justify-center w-7 h-7 rounded-md text-xs transition-all bg-gray-50 text-gray-500 hover:bg-blue-50 hover:text-blue-600"
-                            title="深度分析"
-                          >
-                            <i className="fas fa-chart-line text-xs" />
-                          </button>
+
                         </div>
                       </td>
                     </tr>
@@ -1206,17 +1193,7 @@ export default function MarketScanPanel() {
         </div>
       </Card>
 
-      {/* 个股深度分析 Drawer */}
-      {insightStock && (
-        <StockInsightDrawer
-          isOpen={insightDrawerOpen}
-          onClose={() => setInsightDrawerOpen(false)}
-          stockCode={insightStock.code}
-          stockName={insightStock.name}
-          quickScanResult={analysisResults.get(insightStock.code) as unknown as Record<string, unknown>}
-          flowSignals={flowSignals[insightStock.code]?.map(s => s as unknown as Record<string, unknown>)}
-        />
-      )}
+
     </div>
   );
 }

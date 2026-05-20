@@ -57,15 +57,19 @@ async def analyze_stock(
         # 5. 获取持仓信息（如果是持仓股票）
         position_info = _get_position_info(container, stock_code)
 
+        # 6. 异步获取消息面（不阻塞，失败不影响分析）
+        news_data = await _get_stock_news(container, stock_code, stock_name)
+
         logger.info(
             f"[AI分析API] {stock_code} 数据聚合完成 | "
             f"行情: {'\u2713' if quote else '\u2717'} | "
             f"K线: {len(klines) if klines else 0}条 | "
             f"板块: {'\u2713' if plate_info else '\u2717'} | "
-            f"持仓: {'\u2713' if position_info else '\u2717'}"
+            f"持仓: {'\u2713' if position_info else '\u2717'} | "
+            f"消息面: {len(news_data.get('news', [])) if news_data else 0}条"
         )
 
-        # 6. 执行 AI 分析
+        # 7. 执行 AI 分析
         result = await analyzer.analyze_stock(
             stock_code=stock_code,
             stock_name=stock_name,
@@ -74,6 +78,7 @@ async def analyze_stock(
             score_result=score_result,
             plate_info=plate_info,
             position_info=position_info,
+            news_data=news_data,
         )
 
         if result.get('success'):
@@ -269,3 +274,38 @@ def _get_position_info(container, stock_code: str) -> dict:
     except Exception as e:
         logger.debug(f"获取 {stock_code} 持仓信息失败: {e}")
     return {}
+
+
+async def _get_stock_news(container, stock_code: str, stock_name: str) -> dict:
+    """获取消息面数据（Gemini + Google Search grounding）"""
+    try:
+        import os
+        from ...services.analysis.stock_news_search import StockNewsSearchService
+
+        config = getattr(container, 'config', None)
+        gemini_cfg = getattr(config, 'gemini', None) if config else None
+
+        # 优先 Vertex AI
+        project = os.environ.get('VERTEX_AI_PROJECT', '')
+        if project:
+            service = StockNewsSearchService(
+                api_key=os.environ.get('GEMINI_API_KEY', ''),
+                model='gemini-2.5-flash',
+                vertexai=True,
+                project=project,
+                location=os.environ.get('VERTEX_AI_LOCATION', 'global'),
+            )
+        else:
+            api_key = getattr(gemini_cfg, 'api_key', '') if gemini_cfg else os.environ.get('GEMINI_API_KEY', '')
+            if not api_key:
+                return {}
+            service = StockNewsSearchService(api_key=api_key, model='gemini-2.5-flash')
+
+        if not service.is_available():
+            return {}
+
+        result = await service.search(stock_code, stock_name)
+        return result if not result.get('error') else {}
+    except Exception as e:
+        logger.debug(f"获取 {stock_code} 消息面失败: {e}")
+        return {}

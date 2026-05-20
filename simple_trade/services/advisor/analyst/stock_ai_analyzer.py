@@ -101,6 +101,7 @@ class StockAIAnalyzer:
         score_result: Optional[Dict] = None,
         plate_info: Optional[str] = None,
         position_info: Optional[Dict] = None,
+        news_data: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """对单只股票执行 AI 分析
 
@@ -133,7 +134,7 @@ class StockAIAnalyzer:
             # 构建分析 Prompt
             prompt = self._build_analysis_prompt(
                 stock_code, stock_name, quote, klines,
-                score_result, plate_info, position_info,
+                score_result, plate_info, position_info, news_data,
             )
             logger.info(f"[AI分析] {stock_code} Prompt 构建完成，长度: {len(prompt)} 字符，K线: {len(klines) if klines else 0} 条")
 
@@ -177,6 +178,7 @@ class StockAIAnalyzer:
         score_result: Optional[Dict],
         plate_info: Optional[str],
         position_info: Optional[Dict],
+        news_data: Optional[Dict] = None,
     ) -> str:
         """构建完整的分析 Prompt"""
 
@@ -314,7 +316,23 @@ class StockAIAnalyzer:
 - 净流入占比: {net_inflow_ratio:+.2f}%
 """
 
-        # 8. 输出格式要求
+        # 8. 消息面数据
+        if news_data and news_data.get('news'):
+            prompt += "\n## 消息面（近期新闻）\n"
+            for item in news_data['news'][:5]:
+                sentiment_icon = {'positive': '🟢', 'negative': '🔴'}.get(item.get('sentiment', ''), '⚪')
+                prompt += f"- {sentiment_icon} [{item.get('date', '')}] {item.get('title', '')}\n"
+                if item.get('summary'):
+                    prompt += f"  摘要: {item['summary']}\n"
+            catalysts = news_data.get('key_catalysts', [])
+            risks = news_data.get('risk_factors', [])
+            if catalysts:
+                prompt += f"- **催化剂**: {', '.join(catalysts)}\n"
+            if risks:
+                prompt += f"- **风险因素**: {', '.join(risks)}\n"
+            prompt += f"- **总体情绪**: {news_data.get('overall_sentiment', 'neutral')}\n"
+
+        # 9. 输出格式要求
         prompt += """
 ## 输出格式（严格JSON）
 请输出以下 JSON 格式，不要包含其他文字���
