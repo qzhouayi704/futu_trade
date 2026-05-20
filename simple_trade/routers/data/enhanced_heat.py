@@ -94,6 +94,129 @@ def _compute_flow_summary(timeline: list) -> dict:
         'second_half_net': round(second_half_net, 1),
     }
 
+# ==================== 日内资金动能扫描 ====================
+
+@router.get("/flow-momentum-scan", response_model=APIResponse)
+async def flow_momentum_scan(container=Depends(get_container)):
+    """扫描所有已有逐笔数据的股票，按资金动能排序返回
+
+    用于快速发现"加速流入"等强势资金形态的标的。
+    """
+    try:
+        from datetime import date as _date
+        db = getattr(container, 'db_manager', None)
+        if not db:
+            return APIResponse(success=True, data=[], message="数据库不可用")
+
+        today_str = _date.today().isoformat()
+
+        # 一次性查询所有股票的分钟级聚合数据
+        rows = db.execute_query("""
+            SELECT
+                stock_code,
+                substr(datetime(timestamp/1000, 'unixepoch', '+8 hours'), 12, 5) as minute,
+                direction,
+                SUM(turnover) as total_turnover,
+                SUM(volume) as total_volume,
+                AVG(price) as avg_price
+            FROM ticker_data
+            WHERE trade_date = ?
+            GROUP BY stock_code, minute, direction
+            ORDER BY stock_code, minute
+        """, (today_str,))
+
+        if not rows:
+            return APIResponse(success=True, data=[], message="今日暂无逐笔数据")
+
+        # 交易时段过滤
+        def _in_trading(hhmm: str) -> bool:
+            try:
+                return '09:15' <= hhmm <= '16:10'
+            except (TypeError, ValueError):
+                return False
+
+        # 按股票分组，构建每只股票的时间线
+        from collections import defaultdict
+        stock_minutes = defaultdict(lambda: defaultdict(lambda: {'buy': 0.0, 'sell': 0.0, 'vol': 0, 'price_sum': 0.0, 'price_n': 0}))
+
+        for row in rows:
+            code, minute, direction, turnover, volume, avg_price = row
+            if not _in_trading(minute):
+                continue
+            entry = stock_minutes[code][minute]
+            tv = float(turnover or 0)
+            if direction == 'BUY':
+                entry['buy'] += tv
+            elif direction == 'SELL':
+                entry['sell'] += tv
+            entry['vol'] += int(volume or 0)
+            if avg_price and float(avg_price) > 0:
+                entry['price_sum'] += float(avg_price)
+                entry['price_n'] += 1
+
+        # 为每只股票计算时间线和摘要
+        results = []
+        for code, minutes_data in stock_minutes.items():
+            if len(minutes_data) < 5:
+                continue  # 数据太少跳过
+
+            timeline = []
+            cum_buy = 0.0
+            cum_sell = 0.0
+            for minute in sorted(minutes_data.keys()):
+                e = minutes_data[minute]
+                buy_t = e['buy']
+                sell_t = e['sell']
+                cum_buy += buy_t
+                cum_sell += sell_t
+                net = buy_t - sell_t
+                cum_net = cum_buy - cum_sell
+                point = {
+                    'time': minute,
+                    'buy_in': round(buy_t / 10000, 1),
+                    'sell_in': round(-sell_t / 10000, 1),
+                    'net_buy': round(net / 10000, 1),
+                    'cum_net': round(cum_net / 10000, 1),
+                }
+                if e['price_n'] > 0:
+                    point['price'] = round(e['price_sum'] / e['price_n'], 3)
+                timeline.append(point)
+
+            summary = _compute_flow_summary(timeline)
+            if not summary:
+                continue
+
+            # 取最新价格
+            last_price = 0
+            for p in reversed(timeline):
+                if p.get('price', 0) > 0:
+                    last_price = p['price']
+                    break
+
+            results.append({
+                'stock_code': code,
+                'price': last_price,
+                'data_points': len(timeline),
+                **summary,
+            })
+
+        # 按信号优先级 + 动能排序
+        signal_order = {'bullish': 0, 'warning': 1, 'neutral': 2, 'bearish': 3}
+        results.sort(key=lambda x: (
+            signal_order.get(x.get('signal', 'neutral'), 2),
+            -abs(x.get('momentum_change', 0)),
+            -abs(x.get('cum_net', 0)),
+        ))
+
+        return APIResponse(
+            success=True,
+            data=results,
+            message=f"扫描 {len(stock_minutes)} 只股票，{len(results)} 只有效"
+        )
+    except Exception as e:
+        logging.error(f"资金动能扫描失败: {e}")
+        raise BusinessError(f"资金动能扫描失败: {str(e)}")
+
 
 # ==================== 市场热度接口 ====================
 

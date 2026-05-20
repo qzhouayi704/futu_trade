@@ -3,14 +3,16 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 
 const MarketScanPanel = dynamic(() => import("./components/MarketScanPanel"), { ssr: false });
 const OvernightPanel = dynamic(() => import("./components/OvernightPanel"), { ssr: false });
+const FlowMomentumScanPanel = dynamic(() => import("./components/FlowMomentumScanPanel"), { ssr: false });
 
 const TABS = [
   { id: "scan", label: "目标股票", emoji: "🎯" },
+  { id: "flow", label: "资金异动", emoji: "💥" },
   { id: "overnight", label: "盘后优选", emoji: "🌙" },
 ];
 
@@ -18,10 +20,16 @@ export default function StockPickerPage() {
   const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState("scan");
 
+  const router = useRouter();
+
   useEffect(() => {
     const tab = searchParams.get("tab");
     if (tab && TABS.some((t) => t.id === tab)) setActiveTab(tab);
   }, [searchParams]);
+
+  const handleSelectStock = (code: string) => {
+    router.push(`/stock-detail?code=${code}`);
+  };
 
   return (
     <div className="min-h-screen">
@@ -48,6 +56,7 @@ export default function StockPickerPage() {
       </div>
       <div>
         <div className={activeTab === "scan" ? "" : "hidden"}><MarketScanPanel /></div>
+        <div className={activeTab === "flow" ? "" : "hidden"}><FlowMomentumScanPanel onSelectStock={handleSelectStock} /></div>
         <div className={activeTab === "overnight" ? "" : "hidden"}><OvernightPanel /></div>
       </div>
     </div>
