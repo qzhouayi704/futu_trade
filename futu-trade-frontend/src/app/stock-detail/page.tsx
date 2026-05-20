@@ -1,79 +1,215 @@
-// 个股深度 — 统一3大分析功能为Tab页面
+// 个股深度分析 — 单页 Dashboard（去掉Tab，滚动式布局）
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
+import { stockApi } from "@/lib/api/stock";
+import { getCapitalFlowTimeline, type CapitalFlowTimelinePoint } from "@/lib/api/enhanced-heat";
+import type { TopHotStock } from "@/types";
 
-const EnhancedHeatPanel = dynamic(() => import("./components/EnhancedHeatPanel"), { ssr: false });
-const PriceAnalysisPanel = dynamic(() => import("./components/PriceAnalysisPanel"), { ssr: false });
-const KlinePanel = dynamic(() => import("./components/KlinePanel"), { ssr: false });
+import StockHeader from "./components/StockHeader";
+import StrategyScoringCards from "./components/StrategyScoringCards";
+import KeyMetricsPanel from "./components/KeyMetricsPanel";
 
-interface Tab {
-  id: string;
-  label: string;
-  emoji: string;
-}
-
-const TABS: Tab[] = [
-  { id: "analysis", label: "综合分析", emoji: "📊" },
-  { id: "price", label: "价格位置", emoji: "📉" },
-  { id: "kline", label: "K线图表", emoji: "📈" },
-];
+// 动态加载重量级组件
+const CapitalFlowChart = dynamic(
+  () => import("@/app/enhanced-heat/components/CapitalFlowChart").then(m => m.CapitalFlowChart),
+  { ssr: false }
+);
+const BigOrderTracker = dynamic(
+  () => import("@/app/enhanced-heat/components/BigOrderTracker").then(m => m.BigOrderTracker),
+  { ssr: false }
+);
+const IntradayFlowChart = dynamic(
+  () => import("@/app/market-scan/components/CapitalFlowChart").then(m => m.CapitalFlowChart),
+  { ssr: false }
+);
+const OrderBookPanel = dynamic(
+  () => import("@/app/enhanced-heat/components/OrderBookPanel").then(m => m.OrderBookPanel),
+  { ssr: false }
+);
+const TickerAnalysisPanel = dynamic(
+  () => import("@/app/enhanced-heat/components/TickerAnalysisPanel").then(m => m.TickerAnalysisPanel),
+  { ssr: false }
+);
+const KlinePanel = dynamic(
+  () => import("./components/KlinePanel"),
+  { ssr: false }
+);
+const PriceAnalysisPanel = dynamic(
+  () => import("./components/PriceAnalysisPanel"),
+  { ssr: false }
+);
 
 export default function StockDetailPage() {
   const searchParams = useSearchParams();
-  const [activeTab, setActiveTab] = useState("analysis");
-  const [initialCode, setInitialCode] = useState<string | null>(null);
+  const [stockCode, setStockCode] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [stock, setStock] = useState<TopHotStock | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [flowTimeline, setFlowTimeline] = useState<CapitalFlowTimelinePoint[]>([]);
+  const [showKline, setShowKline] = useState(false);
+  const [showPriceAnalysis, setShowPriceAnalysis] = useState(false);
 
+  // URL参数初始化
   useEffect(() => {
-    const tab = searchParams.get("tab");
-    if (tab && TABS.some((t) => t.id === tab)) {
-      setActiveTab(tab);
-    }
     const code = searchParams.get("code");
-    if (code) {
-      setInitialCode(code);
+    if (code && !stockCode) {
+      setStockCode(code);
+      setSearchInput(code);
     }
-  }, [searchParams]);
+  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 获取股票评分数据
+  const fetchStockData = useCallback(async (code: string) => {
+    if (!code) { setStock(null); return; }
+    setLoading(true);
+    try {
+      const res = await stockApi.getTopHotStocks({ search: code.replace("HK.", ""), limit: 1 });
+      if (res.success && res.data?.stocks && res.data.stocks.length > 0) {
+        setStock(res.data.stocks[0]);
+      } else {
+        setStock(null);
+      }
+    } catch { setStock(null); }
+    setLoading(false);
+  }, []);
+
+  // 获取资金流时间线
+  const fetchFlowTimeline = useCallback(async (code: string) => {
+    if (!code) { setFlowTimeline([]); return; }
+    try {
+      const res = await getCapitalFlowTimeline(code);
+      if (res.success && res.data) setFlowTimeline(res.data.timeline || []);
+    } catch { /* ignore */ }
+  }, []);
+
+  // 自动刷新
+  useEffect(() => {
+    if (!stockCode) return;
+    fetchStockData(stockCode);
+    fetchFlowTimeline(stockCode);
+    const timer = setInterval(() => {
+      fetchStockData(stockCode);
+      fetchFlowTimeline(stockCode);
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [stockCode, fetchStockData, fetchFlowTimeline]);
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = searchInput.trim();
+    if (code) {
+      const fullCode = code.startsWith("HK.") ? code : `HK.${code}`;
+      setStockCode(fullCode);
+    }
+  };
 
   return (
     <div className="min-h-screen">
-      {/* Tab 栏 */}
-      <div className="sticky top-0 z-10 bg-card/80 glass border-b border-border">
-        <div className="flex items-center px-5">
-          <h1 className="text-base font-semibold text-foreground mr-6 py-3 tracking-tight">个股深度</h1>
-          <div className="flex space-x-1">
-            {TABS.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-all border-b-2 ${
-                  activeTab === tab.id
-                    ? "border-primary text-primary bg-primary/10"
-                    : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/50"
-                }`}
-              >
-                <span>{tab.emoji}</span>
-                <span>{tab.label}</span>
-              </button>
-            ))}
-          </div>
+      {/* 顶部搜索栏 */}
+      <div className="sticky top-0 z-20 bg-card/80 glass border-b border-border">
+        <div className="flex items-center gap-4 px-5 py-2.5">
+          <h1 className="text-base font-semibold text-foreground tracking-tight whitespace-nowrap">
+            📊 个股深度
+          </h1>
+          <form onSubmit={handleSearch} className="flex-1 max-w-md">
+            <div className="relative">
+              <input
+                type="text"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="输入股票代码，如 06651 或 HK.00981"
+                className="w-full h-9 pl-9 pr-3 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
+              />
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </div>
+          </form>
+          {stock && (
+            <span className="text-xs text-muted-foreground">
+              自动刷新 · 30s
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Tab 内容 */}
-      <div>
-        <div className={activeTab === "analysis" ? "" : "hidden"}>
-          <EnhancedHeatPanel initialCode={initialCode} />
-        </div>
-        <div className={activeTab === "price" ? "" : "hidden"}>
-          <PriceAnalysisPanel />
-        </div>
-        <div className={activeTab === "kline" ? "" : "hidden"}>
-          <KlinePanel />
-        </div>
+      {/* Dashboard 内容 */}
+      <div className="p-5 space-y-5 max-w-[1600px] mx-auto">
+        {!stockCode && !loading && (
+          <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+            <span className="text-5xl mb-4">🔍</span>
+            <p className="text-lg">输入股票代码开始深度分析</p>
+            <p className="text-sm mt-1">支持港股代码，如 06651、00981</p>
+          </div>
+        )}
+
+        {/* ① 股票头部 */}
+        <StockHeader stock={stock} loading={loading} />
+
+        {/* ② 三策略评分卡 */}
+        <StrategyScoringCards stock={stock} />
+
+        {/* ③ 关键指标面板 */}
+        <KeyMetricsPanel stock={stock} />
+
+        {/* ④ 资金流向 + 大单追踪 */}
+        {stockCode && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <CapitalFlowChart stockCode={stockCode} onStockCodeChange={(c: string) => { setStockCode(c); setSearchInput(c); }} />
+            <BigOrderTracker stockCode={stockCode} />
+          </div>
+        )}
+
+        {/* ⑤ 主力 vs 散户 日内资金走势 */}
+        {stockCode && flowTimeline.length > 0 && (
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
+            <div className="px-4 py-2.5 bg-gradient-to-r from-blue-500/5 to-indigo-500/5 border-b border-border flex items-center justify-between">
+              <span className="text-sm font-semibold text-foreground">📈 主力 vs 散户 日内资金走势</span>
+              <span className="text-[10px] text-muted-foreground">30秒自动刷新</span>
+            </div>
+            <IntradayFlowChart data={flowTimeline} height={320} />
+          </div>
+        )}
+
+        {/* ⑥ 盘口深度 + 逐笔成交 */}
+        {stockCode && (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+            <OrderBookPanel stockCode={stockCode} />
+            <TickerAnalysisPanel stockCode={stockCode} />
+          </div>
+        )}
+
+        {/* ⑦ 价格位置分析（可折叠） */}
+        {stockCode && (
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
+            <button
+              onClick={() => setShowPriceAnalysis(!showPriceAnalysis)}
+              className="w-full px-4 py-3 flex items-center justify-between hover:bg-accent/30 transition-colors"
+            >
+              <span className="text-sm font-semibold text-foreground">📉 价格位置分析</span>
+              <span className="text-muted-foreground text-sm">{showPriceAnalysis ? "▲ 收起" : "▼ 展开"}</span>
+            </button>
+            {showPriceAnalysis && <PriceAnalysisPanel />}
+          </div>
+        )}
+
+        {/* ⑧ K线图表（可折叠） */}
+        {stockCode && (
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
+            <button
+              onClick={() => setShowKline(!showKline)}
+              className="w-full px-4 py-3 flex items-center justify-between hover:bg-accent/30 transition-colors"
+            >
+              <span className="text-sm font-semibold text-foreground">📈 K线图表</span>
+              <span className="text-muted-foreground text-sm">{showKline ? "▲ 收起" : "▼ 展开"}</span>
+            </button>
+            {showKline && <KlinePanel />}
+          </div>
+        )}
       </div>
     </div>
   );

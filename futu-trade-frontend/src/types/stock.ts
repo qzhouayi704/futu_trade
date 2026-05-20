@@ -256,6 +256,7 @@ export interface TopHotStock {
     passed?: boolean;
     veto_reason?: string | null;
     breakout_triggered?: boolean;
+    momentum_triggered?: boolean;
     strategies?: Record<string, {
       mode: string;
       label: string;
