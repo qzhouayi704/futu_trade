@@ -3,7 +3,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 
 const MarketScanPanel = dynamic(() => import("./components/MarketScanPanel"), { ssr: false });
@@ -20,15 +20,13 @@ export default function StockPickerPage() {
   const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState("scan");
 
-  const router = useRouter();
-
   useEffect(() => {
     const tab = searchParams.get("tab");
     if (tab && TABS.some((t) => t.id === tab)) setActiveTab(tab);
   }, [searchParams]);
 
   const handleSelectStock = (code: string) => {
-    router.push(`/stock-detail?code=${code}`);
+    window.open(`/stock-detail?code=${code}`, '_blank');
   };
 
   return (
