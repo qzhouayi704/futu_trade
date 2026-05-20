@@ -503,24 +503,24 @@ class StockScorer:
         chg5d = indicators.get('change_5d', 0) or 0
 
         if mode == 'REVERSAL':
-            # REVERSAL = 日线交易, 委托TrendReversalStrategy执行
-            # 回测优化: 追踪止盈(涨15%后回撤8%卖)+20%止损+30天 胜率53% 笔均+2.15%
-            # 入场: 次日开盘买入(比收盘便宜~1%)
+            # REVERSAL = 超跌反弹, 快进快出
+            # v2优化: 止损12%+追踪止盈(涨8%后回撤5%卖)+最多5天
+            # 入场: 次日开盘买入
             if chg5d <= -15:
                 confidence = 'HIGH'
                 reason = f'深度超卖(5日跌{chg5d:.1f}%)，反弹确定性高'
             elif chg5d <= -8:
                 confidence = 'HIGH'
-                reason = f'超卖反弹(5日跌{chg5d:.1f}%)，PF=2.07'
+                reason = f'超卖反弹(5日跌{chg5d:.1f}%)'
             else:
                 confidence = 'MEDIUM'
                 reason = f'低位反转(5日跌{chg5d:.1f}%)，需等待反弹确认'
             return TradeParams(
                 trade_type='DAILY',
-                buy_dip_pct=0.0,              # 次日开盘买入, 不需要回撤
-                take_profit_pct=15.0,         # 追踪止盈激活点
-                stop_loss_pct=20.0,           # 宽止损，给反弹空间
-                max_hold_days=30,             # 长持仓等反弹
+                buy_dip_pct=0.0,              # 次日开盘买入
+                take_profit_pct=8.0,          # 追踪止盈激活点(降低门槛)
+                stop_loss_pct=12.0,           # 止损12%(收紧)
+                max_hold_days=5,              # 最多持仓5天(快进快出)
                 confidence=confidence,
                 reason=reason
             )
