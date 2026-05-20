@@ -90,7 +90,7 @@ interface MergedStock {
 }
 
 /** 排序字段 */
-type SortField = "turnover_rate" | "change_rate" | "turnover" | "ticker_buy_sell_ratio" | "capital_signal" | "volume_ratio" | "amplitude" | "score";
+type SortField = "turnover_rate" | "change_rate" | "turnover" | "ticker_buy_sell_ratio" | "capital_signal" | "volume_ratio" | "amplitude" | "score" | "capital_inflow";
 type SortDirection = "asc" | "desc";
 
 // ==================== 工具函数 ====================
@@ -405,6 +405,10 @@ export default function MarketScanPanel() {
           aVal = a.consensus?.total_score ?? 0;
           bVal = b.consensus?.total_score ?? 0;
           break;
+        case "capital_inflow":
+          aVal = a.capital_flow_summary?.main_net_inflow ?? 0;
+          bVal = b.capital_flow_summary?.main_net_inflow ?? 0;
+          break;
         default:
           aVal = 0; bVal = 0;
       }
@@ -718,7 +722,9 @@ export default function MarketScanPanel() {
                   <span className="inline-flex items-center">成交额<SortIcon field="turnover" /></span>
                 </th>
 
-                <th className="px-2 py-3 text-xs font-medium text-gray-500 text-center" title="主力资金评分(0-100)及净流入">主力资金</th>
+                <th className="px-2 py-3 text-xs font-medium text-gray-500 text-center cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("capital_inflow")} title="主力资金评分(0-100)及净流入">
+                  <span className="inline-flex items-center">主力资金<SortIcon field="capital_inflow" /></span>
+                </th>
                 <th className="px-2 py-3 text-xs font-medium text-gray-500 text-center" title="根据逐笔成交分析，判断主动买卖力量">方向</th>
                 <th className="px-2 py-3 text-xs font-medium text-gray-500 text-right cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("ticker_buy_sell_ratio")} title="主动买入金额 / 主动卖出金额">
                   <span className="inline-flex items-center">力量比<SortIcon field="ticker_buy_sell_ratio" /></span>
