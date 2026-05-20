@@ -71,8 +71,16 @@ async def lifespan(app: FastAPI):
         return task
 
     try:
-        # 版本标识 - 修改此值可确认代码是否正确加载
-        BUILD_VERSION = "2026.04.14-v3"
+        # 版本标识 - 自动从 git 获取
+        import subprocess as _sp
+        try:
+            BUILD_VERSION = _sp.check_output(
+                ['git', 'describe', '--tags', '--always', '--dirty'],
+                cwd=os.path.dirname(os.path.dirname(__file__)),
+                stderr=_sp.DEVNULL, text=True
+            ).strip()
+        except Exception:
+            BUILD_VERSION = "unknown"
         print_status(f"代码版本: {BUILD_VERSION}", "ok")
         logging.info(f"===== 系统启动 BUILD={BUILD_VERSION} =====")
 
@@ -275,17 +283,16 @@ async def lifespan(app: FastAPI):
                     # 这样重启后 was_running_before_shutdown() 仍返回 true，可以自动恢复
                     state._is_running = False
                     print_status("【系统协调器】进程关闭，保留持久化状态以便重启恢复", "info")
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"状态清理异常（不影响关闭）: {e}")
 
             try:
-                pass  # container 已在局部作用域
                 # 关闭企业微信告警服务会话
                 if hasattr(container, 'wechat_alert_service') and container.wechat_alert_service:
                     await container.wechat_alert_service.close()
                 container.cleanup()
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"容器清理异常（不影响关闭）: {e}")
 
         except Exception as e:
             logging.error(f"资源清理失败: {e}", exc_info=True)
@@ -306,10 +313,12 @@ def create_app() -> FastAPI:
     # 注册全局异常处理器
     register_exception_handlers(app)
 
-    # 配置 CORS
+    # 配置 CORS（从环境变量读取允许的来源，默认仅允许本地开发地址）
+    cors_origins_str = os.environ.get('CORS_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000')
+    cors_origins = [o.strip() for o in cors_origins_str.split(',') if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

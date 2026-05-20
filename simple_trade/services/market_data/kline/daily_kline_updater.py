@@ -14,6 +14,7 @@ from datetime import datetime
 
 from ....utils.market_helper import MarketTimeHelper
 from ....utils.logger import print_status
+from . import akshare_kline_fetcher
 
 logger = logging.getLogger("daily_kline_updater")
 
@@ -121,8 +122,17 @@ class DailyKlineUpdater:
             skipped = 0
             failed = 0
             skipped_by_quota = 0
+            akshare_count = 0
+            futu_count = 0
             quota_exhausted = False
             loop = asyncio.get_running_loop()
+
+            # 检查 AkShare 是否可用
+            use_akshare = akshare_kline_fetcher.is_available()
+            if use_akshare:
+                print_status("【每日K线】AkShare 数据源可用，优先使用免费数据源", "info")
+            else:
+                print_status("【每日K线】AkShare 不可用，使用富途API（建议安装: pip install akshare）", "warn")
 
             for i, code in enumerate(stock_codes):
                 try:
@@ -139,12 +149,36 @@ class DailyKlineUpdater:
                         skipped += 1
                         continue
 
-                    # 下载K线数据
-                    kline_data = await loop.run_in_executor(
-                        None,
-                        kline_service.fetcher.fetch_kline_data_with_limit,
-                        code, self.DOWNLOAD_DAYS, self.DOWNLOAD_DAYS
-                    )
+                    # 策略：优先 AkShare，失败则 fallback 到富途
+                    kline_data = None
+                    source = "unknown"
+
+                    if use_akshare:
+                        try:
+                            kline_data = await loop.run_in_executor(
+                                None,
+                                akshare_kline_fetcher.fetch_daily_kline,
+                                code, self.DOWNLOAD_DAYS, "qfq"
+                            )
+                            if kline_data:
+                                source = "akshare"
+                                akshare_count += 1
+                        except Exception as e:
+                            logger.debug(f"[每日K线] AkShare {code} 失败: {e}")
+
+                    # AkShare 失败，fallback 到富途 API
+                    if not kline_data:
+                        if quota_exhausted and code not in subscribed_stocks:
+                            skipped_by_quota += 1
+                            continue
+                        kline_data = await loop.run_in_executor(
+                            None,
+                            kline_service.fetcher.fetch_kline_data_with_limit,
+                            code, self.DOWNLOAD_DAYS, self.DOWNLOAD_DAYS
+                        )
+                        if kline_data:
+                            source = "futu"
+                            futu_count += 1
 
                     if kline_data:
                         # 收盘后执行，当天K线已完整，无需过滤
@@ -160,12 +194,13 @@ class DailyKlineUpdater:
                     if (i + 1) % 10 == 0:
                         msg = (f"【每日K线】进度 {i+1}/{len(stock_codes)}: "
                                f"更新={updated} 跳过={skipped} 失败={failed}"
+                               f" AkShare={akshare_count} 富途={futu_count}"
                                f"{f' 额度跳过={skipped_by_quota}' if skipped_by_quota else ''}")
                         print_status(msg, "info")
                         logger.info(f"[每日K线] {msg}")
 
-                    # 请求间隔
-                    await asyncio.sleep(self.REQUEST_DELAY)
+                    # 请求间隔（AkShare 需要更短延迟）
+                    await asyncio.sleep(0.5 if source == "akshare" else self.REQUEST_DELAY)
 
                 except Exception as e:
                     failed += 1
@@ -186,7 +221,8 @@ class DailyKlineUpdater:
 
             elapsed = round(time.time() - start_time, 1)
             msg = (f"总计={len(stock_codes)}, 更新={updated}, 跳过={skipped}, "
-                   f"失败={failed}, 额度跳过={skipped_by_quota}, 耗时={elapsed}s")
+                   f"失败={failed}, AkShare={akshare_count}, 富途={futu_count}, "
+                   f"额度跳过={skipped_by_quota}, 耗时={elapsed}s")
             print_status(f"【每日K线】完成 — {msg}", "ok")
             logger.info(f"[每日K线] 更新完成 — {msg}")
             return True

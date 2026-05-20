@@ -1157,8 +1157,8 @@ export default function MarketScanPanel() {
                                         <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
                                           <div className={`h-full rounded-full ${eng.score >= 60 ? 'bg-red-400' : eng.score < 40 ? 'bg-green-400' : 'bg-gray-400'}`} style={{ width: `${eng.score}%` }} />
                                         </div>
-                                        <span className="text-[10px] font-mono text-gray-500 w-8 text-right">{eng.score}</span>
-                                        <span className="text-[10px] text-gray-400 truncate max-w-[140px]">
+                                        <span className="text-[10px] font-mono text-gray-500 w-8 text-right flex-shrink-0">{eng.score}</span>
+                                        <span className="text-[10px] text-gray-400 flex-1 min-w-0">
                                           {eng.details.map(d => `${d.label}:${d.value}`).join(' ')}
                                         </span>
                                       </div>

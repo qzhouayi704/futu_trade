@@ -153,7 +153,11 @@ def _get_kline_data(container, stock_code: str) -> list:
 
 
 def _get_score_result(container, stock_code: str, quote: dict, klines: list) -> dict:
-    """使用 StockScorer 计算评分结果"""
+    """使用 StockScorer 计算多策略评分结果
+
+    调用 score_all_strategies 获取 TREND + BREAKOUT + MOMENTUM 三套策略的独立评分，
+    与前端 consensus 展示对齐，避免 AI 看到的分数与页面不一致。
+    """
     scorer = getattr(container, 'stock_scorer', None)
     if not scorer or not quote:
         return {}
@@ -162,8 +166,35 @@ def _get_score_result(container, stock_code: str, quote: dict, klines: list) -> 
         if not indicators:
             return {}
         stock_name = quote.get('name', quote.get('stock_name', stock_code))
-        result = scorer.score_stock(stock_code, stock_name, indicators)
-        return result.to_dict()
+        all_scores = scorer.score_all_strategies(stock_code, stock_name, indicators)
+        best = all_scores['best']
+
+        # 构建包含所有策略的评分结果
+        result = best.to_dict()
+
+        # 附加各策略独立评分，让 AI 了解完整信息
+        strategies_summary = []
+        for mode_key in ('trend', 'breakout', 'momentum'):
+            sr = all_scores[mode_key]
+            triggered = True
+            if mode_key == 'breakout':
+                triggered = all_scores.get('breakout_triggered', False)
+            elif mode_key == 'momentum':
+                triggered = all_scores.get('momentum_triggered', False)
+            strategies_summary.append({
+                'mode': sr.mode,
+                'total_score': sr.total_score,
+                'passed': sr.passed,
+                'triggered': triggered,
+                'details': [
+                    {'dimension': d.dimension, 'value': d.value,
+                     'score': d.score, 'max': d.max_score, 'note': d.note}
+                    for d in sr.details
+                ],
+            })
+        result['strategies'] = strategies_summary
+        result['best_mode'] = best.mode
+        return result
     except Exception as e:
         logger.debug(f"计算 {stock_code} 评分失败: {e}")
         return {}

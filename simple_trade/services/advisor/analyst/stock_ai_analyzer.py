@@ -273,17 +273,33 @@ class StockAIAnalyzer:
 
         # 4. 标的评分（如果有）
         if score_result:
+            best_mode = score_result.get('best_mode', score_result.get('mode', ''))
             prompt += f"""
 ## 系统评分结果
-- **总分**: {score_result.get('total_score', 'N/A')}/100
+- **最佳策略**: {best_mode}
+- **最佳策略总分**: {score_result.get('total_score', 'N/A')}/100
 - **是否通过**: {'✅ 通过' if score_result.get('passed') else '❌ 未通过'}
 - **一票否决**: {score_result.get('veto_reason', '无')}
 """
-            details = score_result.get('details', [])
-            if details:
-                prompt += "- **分项评分**:\n"
-                for d in details:
-                    prompt += f"  - {d.get('dimension', '')}: {d.get('score', 0)}/{d.get('max', 0)} (值={d.get('value', 'N/A')}) {d.get('note', '')}\n"
+            # 展示各策略独立评分
+            strategies = score_result.get('strategies', [])
+            if strategies:
+                prompt += "\n### 各策略独立评分\n"
+                for strat in strategies:
+                    triggered = strat.get('triggered', True)
+                    status = '✅通过' if strat.get('passed') else '❌未通过'
+                    if not triggered:
+                        status = '⏸️未触发'
+                    prompt += f"\n**{strat['mode']}** — {strat['total_score']}/100 ({status})\n"
+                    for d in strat.get('details', []):
+                        prompt += f"  - {d.get('dimension', '')}: {d.get('score', 0)}/{d.get('max', 0)} (值={d.get('value', 'N/A')}) {d.get('note', '')}\n"
+            else:
+                # 旧格式兼容
+                details = score_result.get('details', [])
+                if details:
+                    prompt += "- **分项评分**:\n"
+                    for d in details:
+                        prompt += f"  - {d.get('dimension', '')}: {d.get('score', 0)}/{d.get('max', 0)} (值={d.get('value', 'N/A')}) {d.get('note', '')}\n"
 
         # 5. 板块信息
         if plate_info:

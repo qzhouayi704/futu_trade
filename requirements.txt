@@ -11,3 +11,4 @@ google-genai
 futu-api
 psutil
 aiosqlite
+akshare  # 可选：盘后免费K线数据源（东方财富）
