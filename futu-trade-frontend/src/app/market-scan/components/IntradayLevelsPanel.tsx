@@ -12,6 +12,7 @@ import {
   type IntradayPriceLevel,
   type BrokerAnalysis,
   type CapitalFlowTimelinePoint,
+  type FlowSummary,
   type CCASHoldingsData,
 } from "@/lib/api/enhanced-heat";
 import dynamic from "next/dynamic";
@@ -263,6 +264,57 @@ function CCASSection({ stockCode }: { stockCode: string }) {
   );
 }
 
+// ==================== 资金动能信号条 ====================
+
+const SIGNAL_STYLES: Record<string, { bg: string; text: string; icon: string; border: string }> = {
+  bullish:  { bg: 'bg-red-50',    text: 'text-red-700',     icon: '🔴', border: 'border-red-200' },
+  warning:  { bg: 'bg-amber-50',  text: 'text-amber-700',   icon: '🟡', border: 'border-amber-200' },
+  bearish:  { bg: 'bg-emerald-50', text: 'text-emerald-700', icon: '🟢', border: 'border-emerald-200' },
+  neutral:  { bg: 'bg-gray-50',   text: 'text-gray-600',    icon: '⚪', border: 'border-gray-200' },
+};
+
+function FlowMomentumBadge({ summary }: { summary: FlowSummary | null }) {
+  if (!summary) return null;
+
+  const s = SIGNAL_STYLES[summary.signal] || SIGNAL_STYLES.neutral;
+  const fmtAmt = (v: number) => {
+    const abs = Math.abs(v);
+    if (abs >= 10000) return `${(v / 10000).toFixed(1)}亿`;
+    return `${v.toFixed(0)}万`;
+  };
+  const mcSign = summary.momentum_change >= 0 ? '+' : '';
+
+  return (
+    <div className={`flex items-center justify-between px-3 py-2 rounded-lg border ${s.bg} ${s.border} transition-all`}>
+      {/* 左侧：动能标签 */}
+      <div className="flex items-center gap-2">
+        <span className="text-sm">{s.icon}</span>
+        <span className={`text-sm font-bold ${s.text}`}>
+          {summary.momentum_label}
+        </span>
+        <span className="text-[10px] text-gray-400">
+          后半段{mcSign}{summary.momentum_change}%
+        </span>
+      </div>
+
+      {/* 右侧：关键指标 */}
+      <div className="flex items-center gap-3 text-[11px]">
+        <span className={summary.cum_net >= 0 ? 'text-red-600' : 'text-emerald-600'}>
+          累计 {summary.cum_net >= 0 ? '+' : ''}{fmtAmt(summary.cum_net)}
+        </span>
+        <span className="text-gray-400">|</span>
+        <span className={summary.buy_sell_ratio >= 1 ? 'text-red-500' : 'text-emerald-500'}>
+          买卖比 {summary.buy_sell_ratio.toFixed(2)}
+        </span>
+        <span className="text-gray-400">|</span>
+        <span className={summary.recent_net >= 0 ? 'text-red-500' : 'text-emerald-500'}>
+          近5分 {summary.recent_net >= 0 ? '+' : ''}{fmtAmt(summary.recent_net)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // ==================== 主组件 ====================
 
 interface IntradayLevelsPanelProps {
@@ -282,6 +334,7 @@ export function IntradayLevelsPanel({
 }: IntradayLevelsPanelProps) {
   const [data, setData] = useState<IntradayLevelsData | null>(null);
   const [flowData, setFlowData] = useState<CapitalFlowTimelinePoint[]>([]);
+  const [flowSummary, setFlowSummary] = useState<FlowSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -302,7 +355,8 @@ export function IntradayLevelsPanel({
       }
 
       if (flowRes.success && flowRes.data) {
-        setFlowData(flowRes.data);
+        setFlowData(flowRes.data.timeline || []);
+        setFlowSummary(flowRes.data.summary || null);
       }
     } catch (err) {
       console.error("获取日内支撑/阻力位失败:", err);
@@ -380,6 +434,9 @@ export function IntradayLevelsPanel({
           </div>
         ) : (
           <div className="space-y-3">
+            {/* 动能信号条 */}
+            <FlowMomentumBadge summary={flowSummary} />
+
             {/* 上部：主力 vs 散户资金流走势图（全宽） */}
             <div className="bg-gray-50/50 rounded-lg border border-gray-100">
               <CapitalFlowChartDyn data={flowData} height={340} />

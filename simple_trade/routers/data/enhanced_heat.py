@@ -24,6 +24,77 @@ from .helpers.enhanced_heat_helpers import (
 router = APIRouter(prefix="/api/enhanced-heat", tags=["增强热度分析"])
 
 
+def _compute_flow_summary(timeline: list) -> dict:
+    """从时间线数据计算资金流动能摘要"""
+    if not timeline or len(timeline) < 3:
+        return {}
+
+    # 基础指标
+    total_buy = sum(p.get('buy_in', 0) for p in timeline)
+    total_sell = sum(abs(p.get('sell_in', 0)) for p in timeline)
+    cum_net = timeline[-1].get('cum_net', 0)
+    buy_sell_ratio = round(total_buy / total_sell, 2) if total_sell > 0 else 99.0
+
+    # 前后半段动能对比
+    mid = len(timeline) // 2
+    first_half_net = sum(p.get('net_buy', 0) for p in timeline[:mid])
+    second_half_net = sum(p.get('net_buy', 0) for p in timeline[mid:])
+    if abs(first_half_net) > 0:
+        momentum_change = round((second_half_net - first_half_net) / abs(first_half_net) * 100)
+    else:
+        momentum_change = 100 if second_half_net > 0 else -100 if second_half_net < 0 else 0
+
+    # 最近 5 分钟趋势
+    recent = timeline[-min(5, len(timeline)):]
+    recent_net = sum(p.get('net_buy', 0) for p in recent)
+
+    # 动能标签
+    if cum_net > 0:
+        if momentum_change > 30:
+            momentum_label = '加速流入'
+            signal = 'bullish'
+        elif momentum_change > -20:
+            momentum_label = '稳定流入'
+            signal = 'bullish'
+        else:
+            momentum_label = '减速流入'
+            signal = 'warning'
+    elif cum_net < 0:
+        if momentum_change < -30:
+            momentum_label = '加速流出'
+            signal = 'bearish'
+        elif momentum_change < 20:
+            momentum_label = '稳定流出'
+            signal = 'bearish'
+        else:
+            momentum_label = '减速流出'
+            signal = 'warning'
+    else:
+        momentum_label = '震荡'
+        signal = 'neutral'
+
+    # 最近趋势微调
+    if signal in ('bullish', 'warning') and recent_net < -abs(cum_net) * 0.05:
+        signal = 'warning'
+        if momentum_label == '加速流入':
+            momentum_label = '冲高回落'
+    elif signal in ('bearish', 'warning') and recent_net > abs(cum_net) * 0.05:
+        signal = 'warning'
+        if momentum_label == '加速流出':
+            momentum_label = '跌后回升'
+
+    return {
+        'momentum_label': momentum_label,
+        'momentum_change': momentum_change,
+        'signal': signal,
+        'buy_sell_ratio': buy_sell_ratio,
+        'cum_net': round(cum_net, 1),
+        'recent_net': round(recent_net, 1),
+        'first_half_net': round(first_half_net, 1),
+        'second_half_net': round(second_half_net, 1),
+    }
+
+
 # ==================== 市场热度接口 ====================
 
 @router.get("/market-heat", response_model=APIResponse)
@@ -301,9 +372,10 @@ async def get_capital_flow_timeline(stock_code: str, container=Depends(get_conta
 
                 timeline.append(point)
 
+            summary = _compute_flow_summary(timeline)
             return APIResponse(
                 success=True,
-                data=timeline,
+                data={'timeline': timeline, 'summary': summary},
                 message=f"逐笔买卖力量时间线 ({len(timeline)} 点)"
             )
 
@@ -356,9 +428,10 @@ async def get_capital_flow_timeline(stock_code: str, container=Depends(get_conta
                 point['price'] = round(price_map[time_short], 3)
             timeline.append(point)
 
+        summary = _compute_flow_summary(timeline)
         return APIResponse(
             success=True,
-            data=timeline,
+            data={'timeline': timeline, 'summary': summary},
             message=f"资金流时间线 (旧版, {len(timeline)} 点)"
         )
     except Exception as e:

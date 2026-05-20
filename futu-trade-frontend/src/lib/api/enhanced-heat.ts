@@ -175,11 +175,32 @@ export interface CapitalFlowTimelinePoint {
   bs_ratio?: number;  // 大单买卖比
 }
 
-/** 获取日内主力/散户资金流时间线 */
+export interface FlowSummary {
+  momentum_label: string;    // 加速流入/稳定流入/减速流入/冲高回落/加速流出/...
+  momentum_change: number;   // 后半段相对前半段变化百分比
+  signal: 'bullish' | 'bearish' | 'warning' | 'neutral';
+  buy_sell_ratio: number;    // 总买入/总卖出
+  cum_net: number;           // 累计净买入(万)
+  recent_net: number;        // 最近5分钟净买入(万)
+  first_half_net: number;
+  second_half_net: number;
+}
+
+export interface CapitalFlowTimelineData {
+  timeline: CapitalFlowTimelinePoint[];
+  summary: FlowSummary | null;
+}
+
+/** 获取日内主力/散户资金流时间线（含动能摘要） */
 export async function getCapitalFlowTimeline(
   stockCode: string
-): Promise<ApiResponse<CapitalFlowTimelinePoint[]>> {
-  return apiClient.get(`/enhanced-heat/capital-flow-timeline/${stockCode}`);
+): Promise<ApiResponse<CapitalFlowTimelineData>> {
+  const res = await apiClient.get(`/enhanced-heat/capital-flow-timeline/${stockCode}`);
+  // 兼容旧格式（data 直接是数组）和新格式（data 是 {timeline, summary}）
+  if (res.success && Array.isArray(res.data)) {
+    return { ...res, data: { timeline: res.data, summary: null } };
+  }
+  return res;
 }
 
 /** CCASS 持仓变化数据 */
