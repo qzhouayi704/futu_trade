@@ -427,7 +427,7 @@ async def get_top_hot_stocks(
 
             # 构建仲裁投票：每策略1票
             votes = []
-            for mode_key in ('trend', 'reversal', 'breakout'):
+            for mode_key in ('trend', 'breakout'):
                 sr = all_scores[mode_key]
                 if mode_key == 'breakout' and not all_scores['breakout_triggered']:
                     continue
@@ -486,7 +486,6 @@ async def get_top_hot_stocks(
                 'veto_reason': scoring_result.veto_reason or None,
                 'strategies': {
                     'trend': _build_strategy_detail(all_scores['trend'], '📈 趋势策略'),
-                    'reversal': _build_strategy_detail(all_scores['reversal'], '📉 反转策略'),
                     'breakout': _build_strategy_detail(all_scores['breakout'], '🔺 蓄势突破'),
                 },
                 'breakout_triggered': all_scores['breakout_triggered'],

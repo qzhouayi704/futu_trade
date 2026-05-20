@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Stock Scoring Engine - Dual Mode (TREND + REVERSAL)
+Stock Scoring Engine - TREND + BREAKOUT
 
-Based on 4899-sample broad-spectrum backtest.
-System auto-selects higher-scoring mode.
+Based on 2561-trade backtest (2026-04~05).
+REVERSAL strategy archived to strategy_archive/reversal_v1.py
 """
 
 import logging
@@ -103,22 +103,7 @@ TREND_B_EXEMPTION = {
     'change_5d_relaxed': {'max_score': 25, 'optimal_range': (2.0, 20.0), 'marginal_range': (-5.0, 30.0), 'default': 0},
 }
 
-# -- REVERSAL mode: oversold bounce at LOW position --
-# 对齐 TrendReversalStrategy 的6个买入条件:
-#   背景(40%): 低位+近期下跌 = "跌够了"
-#   反转(60%): 距低点反弹+今日收涨+资金流入+放量 = "开始反转了"
-REVERSAL_CONFIG = {
-    # 背景条件(40%): 条件①②对应
-    'kline_pos':     {'max_score': 15, 'optimal_range': (0.0, 0.2), 'marginal_range': (0.0, 0.4), 'default': 0},
-    'change_5d':     {'max_score': 15, 'optimal_range': (-15.0, -3.0), 'marginal_range': (-25.0, -1.0), 'default': 0},
-    'prev_change':   {'max_score': 10, 'optimal_range': (-8.0, -2.0), 'marginal_range': (-15.0, -1.0), 'default': 0},
-    # 反转信号(60%): 条件③④⑤⑥对应
-    'rise_from_low': {'max_score': 15, 'tiers': [(5.0, 15), (3.0, 12), (2.0, 10), (1.0, 5)], 'default': 0},
-    'today_change':  {'max_score': 10, 'tiers': [(3.0, 10), (1.0, 8), (0.0, 5)], 'default': 0},
-    'ticker_power':  {'max_score': 15, 'tiers': [(0.5, 15), (0.2, 12), (0.0, 6)], 'default': 6},
-    'vol_ratio':     {'max_score': 15, 'tiers': [(3.0, 15), (2.0, 12), (1.5, 8), (1.2, 5)], 'default': 0},
-    'amplitude':     {'max_score': 5, 'optimal_range': (3.0, 15.0), 'marginal_range': (2.0, 50.0), 'default': 0},
-}
+# REVERSAL strategy archived → strategy_archive/reversal_v1.py
 
 VETO_RULES = {
     'prev_day_change_max': 20.0,
@@ -132,7 +117,7 @@ PASSING_SCORE = 60
 
 
 class StockScorer:
-    """Dual-mode stock scoring engine (TREND / REVERSAL)."""
+    """Stock scoring engine (TREND + BREAKOUT)."""
 
     def __init__(self):
         self._scored_cache: Dict[str, ScoringResult] = {}
@@ -141,19 +126,13 @@ class StockScorer:
 
     def score_stock(self, stock_code: str, stock_name: str,
                     indicators: Dict[str, Any]) -> ScoringResult:
-        """Score a stock using both modes, return higher score."""
+        """Score a stock using TREND mode."""
         trend_score, trend_details = self._score_trend(indicators)
-        reversal_score, reversal_details = self._score_reversal(indicators)
-
-        if trend_score >= reversal_score:
-            mode, total, details = 'TREND', trend_score, trend_details
-        else:
-            mode, total, details = 'REVERSAL', reversal_score, reversal_details
+        mode, total, details = 'TREND', trend_score, trend_details
 
         veto = self._check_veto(stock_code, indicators)
         passed = total >= PASSING_SCORE and not veto
 
-        # 根据模式和振幅生成交易参数建议
         trade_params = self._recommend_trade_params(mode, indicators) if passed else None
 
         result = ScoringResult(
@@ -167,9 +146,8 @@ class StockScorer:
 
     def score_all_strategies(self, stock_code: str, stock_name: str,
                               indicators: Dict[str, Any]) -> Dict[str, Any]:
-        """返回3套策略的独立评分结果，供前端分面板展示。"""
+        """返回 TREND + BREAKOUT 两套策略的独立评分结果。"""
         trend_score, trend_details = self._score_trend(indicators)
-        reversal_score, reversal_details = self._score_reversal(indicators)
         breakout_score, breakout_details, breakout_triggered = self._score_breakout(indicators)
 
         veto = self._check_veto(stock_code, indicators)
@@ -183,11 +161,10 @@ class StockScorer:
             )
 
         trend_result = _build('TREND', trend_score, trend_details)
-        reversal_result = _build('REVERSAL', reversal_score, reversal_details)
         breakout_result = _build('BREAKOUT', breakout_score, breakout_details)
 
         # 最佳策略
-        all_results = [trend_result, reversal_result]
+        all_results = [trend_result]
         if breakout_triggered:
             all_results.append(breakout_result)
         best = max(all_results, key=lambda r: r.total_score)
@@ -198,7 +175,6 @@ class StockScorer:
         return {
             'best': best,
             'trend': trend_result,
-            'reversal': reversal_result,
             'breakout': breakout_result,
             'breakout_triggered': breakout_triggered,
         }
@@ -241,45 +217,7 @@ class StockScorer:
 
         return total, details
 
-    def _score_reversal(self, ind: Dict[str, Any]) -> tuple:
-        """REVERSAL mode: 对齐TrendReversalStrategy的6个买入条件."""
-        details = []
-        total = 0
-
-        # === 背景条件(40%): "跌够了" ===
-        # 对应条件②: 距最高点跌幅够深
-        s, d = self._score_range(REVERSAL_CONFIG['kline_pos'], ind.get('kline_pos_20d'), 'K线低位')
-        details.append(d); total += s
-
-        # 对应条件①: 近期持续下跌
-        s, d = self._score_range(REVERSAL_CONFIG['change_5d'], ind.get('change_5d'), '5日跌幅')
-        details.append(d); total += s
-
-        s, d = self._score_range(REVERSAL_CONFIG['prev_change'], ind.get('prev_day_change'), '前日跌幅')
-        details.append(d); total += s
-
-        # === 反转信号(60%): "开始反转了" ===
-        # 对应条件③: 距最低点反弹≥2%
-        s, d = self._score_tiered(REVERSAL_CONFIG['rise_from_low'], ind.get('rise_from_low'), '低位反弹')
-        details.append(d); total += s
-
-        # 对应条件④: 今日收涨（阳线反转）
-        s, d = self._score_tiered(REVERSAL_CONFIG['today_change'], ind.get('today_change'), '今日涨幅')
-        details.append(d); total += s
-
-        # 对应条件⑤: 反弹伴随主动买入力量
-        s, d = self._score_tiered(REVERSAL_CONFIG['ticker_power'], ind.get('ticker_power'), '逐笔买卖力量')
-        details.append(d); total += s
-
-        # 对应条件⑤⑥: 放量确认
-        s, d = self._score_tiered(REVERSAL_CONFIG['vol_ratio'], ind.get('vol_ratio'), '量比')
-        details.append(d); total += s
-
-        # 振幅(交易可行性)
-        s, d = self._score_range(REVERSAL_CONFIG['amplitude'], ind.get('day_amplitude'), '日内振幅')
-        details.append(d); total += s
-
-        return total, details
+    # _score_reversal archived → strategy_archive/reversal_v1.py
 
     def _score_breakout(self, ind: Dict[str, Any]) -> tuple:
         """BREAKOUT mode: 蓄势突破评分。返回 (score, details, triggered)。"""
@@ -502,28 +440,7 @@ class StockScorer:
         amp = indicators.get('day_amplitude', 0) or 0
         chg5d = indicators.get('change_5d', 0) or 0
 
-        if mode == 'REVERSAL':
-            # REVERSAL = 超跌反弹, 快进快出
-            # v2优化: 止损12%+追踪止盈(涨8%后回撤5%卖)+最多5天
-            # 入场: 次日开盘买入
-            if chg5d <= -15:
-                confidence = 'HIGH'
-                reason = f'深度超卖(5日跌{chg5d:.1f}%)，反弹确定性高'
-            elif chg5d <= -8:
-                confidence = 'HIGH'
-                reason = f'超卖反弹(5日跌{chg5d:.1f}%)'
-            else:
-                confidence = 'MEDIUM'
-                reason = f'低位反转(5日跌{chg5d:.1f}%)，需等待反弹确认'
-            return TradeParams(
-                trade_type='DAILY',
-                buy_dip_pct=0.0,              # 次日开盘买入
-                take_profit_pct=8.0,          # 追踪止盈激活点(降低门槛)
-                stop_loss_pct=12.0,           # 止损12%(收紧)
-                max_hold_days=5,              # 最多持仓5天(快进快出)
-                confidence=confidence,
-                reason=reason
-            )
+        # REVERSAL trade params archived → strategy_archive/reversal_v1.py
 
         # TREND mode — 统一参数, 阶梯低吸入场
         # 回测优化: SL=8%+Trail10/3+3D, 阶梯低吸(前收-1%优先/前收兜底)

@@ -249,23 +249,40 @@ class TickerService:
             return
         try:
             from ....database.queries.ticker_queries import TickerQueries
-            trade_date = datetime.now().strftime("%Y-%m-%d")
-            rows = [
-                (
+            rows = []
+            for r in records:
+                # 从逐笔记录的真实成交时间解析 trade_date 和 timestamp
+                parsed = self._parse_ticker_time(r.time)
+                if parsed is None:
+                    continue
+                real_ts_ms, real_date = parsed
+                rows.append((
                     stock_code,
                     r.price,
                     r.volume,
                     r.turnover if r.turnover else r.price * r.volume,
                     r.direction,
-                    int(datetime.now().timestamp() * 1000),
-                    trade_date,
-                )
-                for r in records
-            ]
-            queries = TickerQueries(self._db_manager.conn_manager)
-            queries.insert_ticker_batch(rows)
+                    real_ts_ms,
+                    real_date,
+                ))
+            if rows:
+                queries = TickerQueries(self._db_manager.conn_manager)
+                queries.insert_ticker_batch(rows)
         except Exception as e:
             logger.warning(f"逐笔数据落库失败 {stock_code}: {e}")
+
+    @staticmethod
+    def _parse_ticker_time(time_str: str):
+        """解析逐笔成交时间字符串，返回 (timestamp_ms, trade_date_str) 或 None"""
+        if not time_str:
+            return None
+        try:
+            dt = datetime.strptime(time_str[:19], '%Y-%m-%d %H:%M:%S')
+            ts_ms = int(dt.timestamp() * 1000)
+            trade_date = dt.strftime('%Y-%m-%d')
+            return ts_ms, trade_date
+        except (ValueError, TypeError):
+            return None
 
     def _normalize_direction(self, direction_raw) -> str:
         """标准化成交方向值为 BUY/SELL/NEUTRAL"""
