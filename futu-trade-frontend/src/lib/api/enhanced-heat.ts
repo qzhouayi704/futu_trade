@@ -195,7 +195,8 @@ export interface CapitalFlowTimelineData {
 export async function getCapitalFlowTimeline(
   stockCode: string
 ): Promise<ApiResponse<CapitalFlowTimelineData>> {
-  const res = await apiClient.get(`/enhanced-heat/capital-flow-timeline/${stockCode}`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const res: any = await apiClient.get(`/enhanced-heat/capital-flow-timeline/${stockCode}`);
   // 兼容旧格式（data 直接是数组）和新格式（data 是 {timeline, summary}）
   if (res.success && Array.isArray(res.data)) {
     return { ...res, data: { timeline: res.data, summary: null } };
