@@ -392,6 +392,19 @@ class SubscriptionHelper:
             result['errors'].extend(subscribe_result.get('errors', []))
         logging.info(f"按优先级和市场筛选{msg}")
 
+        # QUOTE 订阅成功后，自动为所有活跃股补充 TICKER 订阅
+        # 使资金异动扫描可以覆盖全部活跃股，而非仅手动分析过的个股
+        try:
+            from futu import SubType
+            ticker_codes = list(final)
+            ticker_result = self.subscription_manager.subscribe_multi_types(
+                ticker_codes, [SubType.TICKER]
+            )
+            ticker_ok = ticker_result.get('subscribed_count', 0)
+            logging.info(f"【TICKER批量订阅】成功订阅 {ticker_ok}/{len(ticker_codes)} 只股票的逐笔数据")
+        except Exception as e:
+            logging.warning(f"【TICKER批量订阅】失败（不影响QUOTE）: {e}")
+
     def _handle_subscribe_failure(self, result, subscribe_result, stock_count):
         """处理订阅失败的结果"""
         result.update({
