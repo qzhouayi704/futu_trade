@@ -78,14 +78,14 @@ def calc_buy_sell_timeline(records: List[TickerRecord]) -> List[Dict[str, Any]]:
         if sell_t > 0 and buy_t > 0:
             ratio = buy_t / sell_t
         elif buy_t > 0:
-            ratio = 5.0  # 纯买无卖，cap 到 5
+            ratio = 3.0  # 纯买无卖，cap 到 3
         elif sell_t > 0:
             ratio = 0.2  # 纯卖无买，floor 到 0.2
         else:
             ratio = 1.0
 
-        # cap 到合理范围 [0.1, 5.0]
-        ratio = max(0.1, min(5.0, ratio))
+        # cap 到合理范围 [0.1, 3.0]
+        ratio = max(0.1, min(3.0, ratio))
 
         timeline.append({
             "time": key,
