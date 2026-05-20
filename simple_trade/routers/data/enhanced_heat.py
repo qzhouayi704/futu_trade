@@ -203,6 +203,14 @@ async def get_capital_flow_timeline(stock_code: str, container=Depends(get_conta
         db = getattr(container, 'db_manager', None)
         today_str = _date.today().isoformat()
 
+        # 港股交易时段过滤：只保留 09:15 ~ 16:10 的数据点
+        def _in_trading_hours(hhmm: str) -> bool:
+            """判断 HH:MM 格式的时间是否在港股交易时段内"""
+            try:
+                return '09:15' <= hhmm <= '16:10'
+            except (TypeError, ValueError):
+                return False
+
         # ====== 1. 尝试从 ticker_data 构建逐笔时间线 ======
         ticker_rows = None
         if db:
@@ -265,6 +273,8 @@ async def get_capital_flow_timeline(stock_code: str, container=Depends(get_conta
             cum_buy = 0.0
             cum_sell = 0.0
             for minute in sorted(minute_data.keys()):
+                if not _in_trading_hours(minute):
+                    continue
                 entry = minute_data[minute]
                 buy_t = entry['buy_turnover']
                 sell_t = entry['sell_turnover']
@@ -324,6 +334,8 @@ async def get_capital_flow_timeline(stock_code: str, container=Depends(get_conta
         for _, row in df.iterrows():
             time_str = str(row.get('capital_flow_item_time', ''))
             time_short = time_str[11:16] if len(time_str) >= 16 else time_str
+            if not _in_trading_hours(time_short):
+                continue
 
             super_in = float(row.get('super_in_flow', 0) or 0)
             big_in = float(row.get('big_in_flow', 0) or 0)
