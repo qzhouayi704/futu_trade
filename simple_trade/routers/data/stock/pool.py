@@ -176,6 +176,59 @@ async def get_stock_pool(container=Depends(get_container)):
     )
 
 
+@router.get("/stocks/list")
+async def get_stocks_list(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    plate_id: Optional[int] = Query(None, description="板块ID"),
+    search: Optional[str] = Query(None, description="搜索关键词")
+):
+    """获取股票列表（带分页和筛选）"""
+    state = get_state_manager()
+    pool_data = state.get_stock_pool()
+    stocks_data = pool_data['stocks']
+
+    # 筛选
+    filtered = []
+    for stock in stocks_data:
+        if plate_id:
+            stock_plate_id = stock.get('plate_id')
+            if not stock_plate_id or str(stock_plate_id) != str(plate_id):
+                continue
+
+        if search:
+            search_lower = search.lower()
+            code = str(stock.get('code', '')).lower()
+            name = str(stock.get('name', '')).lower()
+            if search_lower not in code and search_lower not in name:
+                continue
+
+        filtered.append(stock)
+
+    total = len(filtered)
+    start = (page - 1) * limit
+    paginated = filtered[start:start + limit]
+
+    stocks = [{
+        'id': s.get('id', 0),
+        'code': s.get('code', ''),
+        'name': s.get('name', ''),
+        'market': s.get('market', ''),
+        'plate_name': s.get('plate_name', ''),
+        'plate_names': s.get('plate_names', []),
+        'is_manual': s.get('is_manual', False),
+        'stock_priority': s.get('stock_priority', 0)
+    } for s in paginated]
+
+    return PaginatedResponse.create(
+        data=stocks,
+        page=page,
+        page_size=limit,
+        total=total,
+        message="获取股票列表成功"
+    )
+
+
 @router.get("/data")
 async def get_data(
     data_type: str = Query(default="stock-pool", description="数据类型"),
@@ -429,3 +482,51 @@ async def get_unsubscribed_stocks(
     except Exception as e:
         logging.error(f"获取未订阅股票失败: {e}", exc_info=True)
         raise BusinessError(message=f"获取未订阅股票失败: {str(e)}")
+
+
+@router.get("/stocks/pool-capital-flow")
+async def get_pool_capital_flow(container=Depends(get_container)):
+    """批量获取股票池所有股票的资金流向（仅读缓存，不调API）"""
+    try:
+        state = get_state_manager()
+        pool_data = state.get_stock_pool()
+        all_stocks = pool_data.get('stocks', [])
+        stock_codes = [s.get('code', '') for s in all_stocks if s.get('code')]
+
+        if not stock_codes:
+            return APIResponse.ok(data={'flows': {}, 'total': 0}, message="股票池为空")
+
+        # 纯缓存读取，不触发 API 调用
+        db = container.db_manager
+        placeholders = ','.join(['?' for _ in stock_codes])
+        rows = db.execute_query(f"""
+            SELECT stock_code, main_net_inflow, net_inflow_ratio,
+                   big_order_buy_ratio, capital_score, timestamp
+            FROM capital_flow_cache
+            WHERE stock_code IN ({placeholders})
+            ORDER BY timestamp DESC
+        """, tuple(stock_codes))
+
+        # 每只股票只取最新一条
+        flows = {}
+        for row in (rows or []):
+            code = row[0]
+            if code in flows:
+                continue
+            flows[code] = {
+                'stock_code': code,
+                'main_net_inflow': row[1],
+                'net_inflow_ratio': row[2],
+                'big_order_buy_ratio': row[3],
+                'capital_score': row[4],
+                'timestamp': row[5],
+                'is_net_inflow': (row[1] or 0) > 0,
+            }
+
+        return APIResponse.ok(
+            data={'flows': flows, 'total': len(flows), 'pool_size': len(stock_codes)},
+            message=f"获取 {len(flows)}/{len(stock_codes)} 只股票资金流向缓存"
+        )
+    except Exception as e:
+        logging.error(f"获取股票池资金流向失败: {e}", exc_info=True)
+        raise BusinessError(message=f"获取股票池资金流向失败: {str(e)}")

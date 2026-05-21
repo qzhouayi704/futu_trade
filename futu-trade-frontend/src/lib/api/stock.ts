@@ -50,7 +50,7 @@ export const stockApi = {
     market?: string;
     plate_id?: number;
   }): Promise<ApiResponse<Stock[]>> => {
-    return apiClient.get("/data", { params: { data_type: 'stocks', ...params } });
+    return apiClient.get("/stocks/list", { params });
   },
 
   // 添加股票
@@ -108,17 +108,17 @@ export const stockApi = {
 
   // 初始化数据（强制刷新）
   initializeData: async (forceRefresh: boolean = false): Promise<ApiResponse> => {
-    return apiClient.post("/init", { force_refresh: forceRefresh });
+    return apiClient.post("/stocks/init", { force_refresh: forceRefresh });
   },
 
   // 增量更新数据（不删除现有数据）
   refreshData: async (): Promise<ApiResponse> => {
-    return apiClient.post("/refresh");
+    return apiClient.post("/stocks/refresh");
   },
 
   // 重置数据（清空并重新初始化）
   resetData: async (): Promise<ApiResponse> => {
-    return apiClient.post("/init", { force_refresh: true });
+    return apiClient.post("/stocks/init", { force_refresh: true });
   },
 
   // 获取初始化状态
@@ -179,5 +179,22 @@ export const stockApi = {
   // 重置活跃度记录
   resetActivityRecords: async (): Promise<ApiResponse<any>> => {
     return apiClient.post("/stocks/reset-activity-records");
+  },
+
+  // 获取股票池资金流向（缓存）
+  getPoolCapitalFlow: async (): Promise<ApiResponse<{
+    flows: Record<string, {
+      stock_code: string;
+      main_net_inflow: number;
+      net_inflow_ratio: number;
+      big_order_buy_ratio: number;
+      capital_score: number;
+      timestamp: string;
+      is_net_inflow: boolean;
+    }>;
+    total: number;
+    pool_size: number;
+  }>> => {
+    return apiClient.get("/stocks/pool-capital-flow");
   },
 };

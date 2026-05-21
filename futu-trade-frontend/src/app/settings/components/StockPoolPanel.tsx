@@ -2,12 +2,23 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, Button, Modal } from "@/components/common";
 import { useStockPool } from "@/app/stock-pool/hooks/useStockPool";
 import { PlateTable } from "@/app/stock-pool/components/PlateTable";
 import { useToast } from "@/components/common/Toast";
+import { stockApi } from "@/lib/api";
 import type { Plate, Stock } from "@/types";
+
+interface CapitalFlowItem {
+  stock_code: string;
+  main_net_inflow: number;
+  net_inflow_ratio: number;
+  big_order_buy_ratio: number;
+  capital_score: number;
+  timestamp: string;
+  is_net_inflow: boolean;
+}
 
 export default function StockPoolPanel() {
   const {
@@ -31,6 +42,10 @@ export default function StockPoolPanel() {
 
   const { showToast } = useToast();
 
+  // 资金流向状态
+  const [capitalFlows, setCapitalFlows] = useState<Record<string, CapitalFlowItem>>({});
+  const [flowLoading, setFlowLoading] = useState(false);
+
   // 表单状态
   const [plateCode, setPlateCode] = useState("");
   const [stockCodes, setStockCodes] = useState("");
@@ -53,11 +68,27 @@ export default function StockPoolPanel() {
     initHotStocks: false,
   });
 
+  // 加载资金流向
+  const loadCapitalFlows = useCallback(async () => {
+    setFlowLoading(true);
+    try {
+      const res = await stockApi.getPoolCapitalFlow();
+      if (res.success && res.data?.flows) {
+        setCapitalFlows(res.data.flows);
+      }
+    } catch {
+      // 静默失败，资金流向是辅助信息
+    } finally {
+      setFlowLoading(false);
+    }
+  }, []);
+
   // 加载数据
   useEffect(() => {
     loadPlates().catch(() => {});
     loadStocks(1, 200).catch(() => {});
-  }, [loadPlates, loadStocks]);
+    loadCapitalFlows();
+  }, [loadPlates, loadStocks, loadCapitalFlows]);
 
   // 处理添加板块
   const handleAddPlate = async () => {
@@ -188,12 +219,23 @@ export default function StockPoolPanel() {
     );
   });
 
+  // 资金流向辅助函数
+  const formatAmount = (val: number) => {
+    const abs = Math.abs(val);
+    if (abs >= 1e8) return `${(val / 1e8).toFixed(2)}亿`;
+    if (abs >= 1e4) return `${(val / 1e4).toFixed(0)}万`;
+    return `${val.toFixed(0)}`;
+  };
+
   // 统计信息
+  const netInflowCount = Object.values(capitalFlows).filter(f => f.is_net_inflow).length;
   const stats = {
     totalPlates: platesTotalCount || plates.length,
     totalStocks: stocksTotalCount || stocks.length,
     manualStocks: stocks.filter((s) => s.is_manual).length,
     plateStocks: stocks.filter((s) => !s.is_manual).length,
+    netInflowCount,
+    flowDataCount: Object.keys(capitalFlows).length,
   };
 
   return (
@@ -231,8 +273,10 @@ export default function StockPoolPanel() {
 
         <Card>
           <div className="text-center">
-            <h3 className="text-3xl font-bold text-purple-600">{stats.plateStocks}</h3>
-            <p className="text-gray-600 mt-1">板块股票</p>
+            <h3 className={`text-3xl font-bold ${netInflowCount > 0 ? 'text-red-500' : 'text-gray-400'}`}>
+              {flowLoading ? <i className="fas fa-spinner fa-spin text-xl" /> : `${netInflowCount}/${stats.flowDataCount}`}
+            </h3>
+            <p className="text-gray-600 mt-1">资金净流入</p>
           </div>
         </Card>
       </div>
@@ -317,15 +361,17 @@ export default function StockPoolPanel() {
               <i className="fas fa-list-alt text-green-600"></i>
               股票管理
             </h2>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => loadStocks()}
-              className="flex items-center gap-1"
-            >
-              <i className="fas fa-sync-alt"></i>
-              刷新
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => { loadStocks(); loadCapitalFlows(); }}
+                className="flex items-center gap-1"
+              >
+                <i className="fas fa-sync-alt"></i>
+                刷新
+              </Button>
+            </div>
           </div>
 
           {/* 搜索和添加股票 */}
@@ -369,16 +415,22 @@ export default function StockPoolPanel() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50 sticky top-0">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     代码
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     名称
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     市场
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                  <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    主力净流入
+                  </th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                    资金评分
+                  </th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     操作
                   </th>
                 </tr>
@@ -386,42 +438,69 @@ export default function StockPoolPanel() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {loading ? (
                   <tr>
-                    <td colSpan={4} className="px-4 py-8 text-center text-gray-500">
+                    <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
                       <i className="fas fa-spinner fa-spin mr-2"></i>
                       加载中...
                     </td>
                   </tr>
                 ) : filteredStocks.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-4 py-8 text-center text-gray-500">
+                    <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
                       暂无股票数据
                     </td>
                   </tr>
                 ) : (
-                  filteredStocks.map((stock) => (
-                    <tr key={stock.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-sm text-gray-900">
-                        {stock.code}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-900">
-                        {stock.name}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-900">
-                        {stock.market}
-                      </td>
-                      <td className="px-4 py-3 text-sm">
-                        <Button
-                          variant="danger"
-                          size="sm"
-                          onClick={() => handleDeleteStock(stock.id, stock.name)}
-                          className="flex items-center gap-1"
-                        >
-                          <i className="fas fa-trash"></i>
-                          删除
-                        </Button>
-                      </td>
-                    </tr>
-                  ))
+                  filteredStocks.map((stock) => {
+                    const flow = capitalFlows[stock.code];
+                    return (
+                      <tr key={stock.id} className="hover:bg-gray-50">
+                        <td className="px-3 py-3 text-sm text-gray-900 font-mono">
+                          {stock.code}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-gray-900">
+                          {stock.name}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-gray-900">
+                          {stock.market}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-right">
+                          {flow ? (
+                            <span className={`font-medium ${
+                              flow.is_net_inflow ? 'text-red-500' : 'text-green-600'
+                            }`}>
+                              {flow.is_net_inflow ? '+' : ''}{formatAmount(flow.main_net_inflow)}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">--</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-center">
+                          {flow ? (
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                              flow.capital_score >= 65 ? 'bg-red-100 text-red-700' :
+                              flow.capital_score >= 50 ? 'bg-yellow-100 text-yellow-700' :
+                              'bg-green-100 text-green-700'
+                            }`}>
+                              {flow.capital_score.toFixed(0)}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">--</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-sm">
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => handleDeleteStock(stock.id, stock.name)}
+                            className="flex items-center gap-1"
+                          >
+                            <i className="fas fa-trash"></i>
+                            删除
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

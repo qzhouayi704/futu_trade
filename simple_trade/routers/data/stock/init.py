@@ -26,6 +26,7 @@ router = APIRouter(prefix="/api", tags=["数据管理"])
 
 
 @router.post("/init")
+@router.post("/stocks/init")
 async def init_data(
     force_refresh: bool = Query(default=False, description="是否强制刷新"),
     container=Depends(get_container)
@@ -46,6 +47,7 @@ async def init_data(
 
 
 @router.post("/refresh")
+@router.post("/stocks/refresh")
 async def refresh_data(
     container=Depends(get_container)
 ):
