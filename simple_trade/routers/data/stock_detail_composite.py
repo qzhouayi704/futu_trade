@@ -290,25 +290,84 @@ def _get_big_orders(db, stock_code: str, trade_date: str) -> list:
 
 
 def _get_strategy_dimension(container, stock_code: str) -> dict:
-    """策略评分维度"""
+    """策略评分维度 — 从DB构建指标并实时计算"""
     dim = {"name": "趋势评分", "icon": "📈", "score": None, "label": "-"}
     try:
-        from ...services.strategy.stock_scorer import StockScorer
+        from ...services.strategy.stock_scorer import StockScorer, PASSING_SCORE
         scorer = StockScorer()
+
+        # 先尝试内存缓存
         cached = scorer.get_score(stock_code)
         if cached:
             dim["score"] = cached.total_score
             dim["label"] = "看多" if cached.total_score >= 60 else ("偏空" if cached.total_score < 40 else "中性")
             return dim
 
-        # 尝试从snapshot获取
-        snapshot_store = getattr(container, 'snapshot_store', None)
-        if snapshot_store:
-            snap = snapshot_store.get(stock_code)
-            if snap:
-                result = scorer.score_snapshot(snap)
-                dim["score"] = result.total_score
-                dim["label"] = "看多" if result.total_score >= 60 else ("偏空" if result.total_score < 40 else "中性")
+        # 缓存为空 → 从DB构建指标并计算
+        db = container.db_manager
+        today = datetime.now().strftime('%Y-%m-%d')
+        indicators = {}
+
+        # K线数据
+        klines = db.execute_query(
+            """SELECT close_price, high_price, low_price, open_price, volume
+               FROM kline_data WHERE stock_code = ?
+               ORDER BY time_key DESC LIMIT 25""",
+            (stock_code,)
+        )
+        if klines and len(klines) >= 2:
+            closes = [k[0] for k in klines if k[0]]
+            closes.reverse()
+            if len(closes) >= 2:
+                indicators['prev_day_change'] = (closes[-1] - closes[-2]) / closes[-2] * 100
+            if len(closes) >= 6:
+                indicators['change_5d'] = (closes[-1] - closes[-6]) / closes[-6] * 100
+            # K线位置
+            highs = [k[1] for k in klines if k[1]]
+            lows = [k[2] for k in klines if k[2]]
+            if highs and lows:
+                h, l = max(highs), min(lows)
+                if h > l:
+                    indicators['kline_pos_20d'] = (closes[-1] - l) / (h - l)
+            # 反弹
+            if lows:
+                period_low = min(lows)
+                if period_low > 0:
+                    indicators['rise_from_low'] = (closes[-1] - period_low) / period_low * 100
+
+        # 逐笔成交力量
+        ticker_rows = db.execute_query(
+            """SELECT
+                 SUM(CASE WHEN direction='BUY' THEN turnover ELSE 0 END),
+                 SUM(CASE WHEN direction='SELL' THEN turnover ELSE 0 END)
+               FROM ticker_data
+               WHERE stock_code = ? AND trade_date = ?""",
+            (stock_code, today)
+        )
+        if ticker_rows and ticker_rows[0][0] is not None:
+            buy = ticker_rows[0][0] or 0
+            sell = ticker_rows[0][1] or 0
+            if sell > 0:
+                indicators['ticker_power'] = buy / sell - 1.0
+            elif buy > 0:
+                indicators['ticker_power'] = 0.5
+
+        # 资金流向回退
+        if 'ticker_power' not in indicators:
+            cap_rows = db.execute_query(
+                "SELECT net_inflow_ratio FROM capital_flow_cache WHERE stock_code = ? ORDER BY timestamp DESC LIMIT 1",
+                (stock_code,)
+            )
+            if cap_rows and cap_rows[0][0] is not None:
+                indicators['ticker_power'] = cap_rows[0][0]
+
+        if not indicators:
+            return dim
+
+        # 计算趋势评分
+        trend_score, _ = scorer._score_trend(indicators)
+        dim["score"] = trend_score
+        dim["label"] = "看多" if trend_score >= 60 else ("偏空" if trend_score < 40 else "中性")
     except Exception as e:
         logger.debug(f"策略评分获取失败 {stock_code}: {e}")
     return dim
