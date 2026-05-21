@@ -238,6 +238,12 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning(f"动量引擎启动失败: {e}")
 
+            # 注入容器到 Ticker 推送处理器（使推送数据能驱动动量引擎）
+            try:
+                container.futu_client.set_container_for_push(container)
+            except Exception as e:
+                logging.warning(f"Ticker推送处理器容器注入失败: {e}")
+
             # 自动恢复监控：如果上次关闭前监控在运行，则自动重启
             if state_manager.was_running_before_shutdown():
                 async def _auto_resume_monitoring():

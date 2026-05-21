@@ -140,6 +140,9 @@ class FutuClient:
         self._last_request_time = 0.0
         self._qps_lock = threading.Lock()
 
+        # Ticker 推送处理器
+        self._ticker_push_handler = None
+
     @property
     def executor(self) -> ThreadPoolExecutor:
         """获取专用线程池（供 run_in_executor 使用）"""
@@ -201,6 +204,9 @@ class FutuClient:
                     logging.debug(f"港股板块列表测试成功，获取到 {count} 个板块")
                 else:
                     logging.warning(f"港股板块列表测试失败: {test_data}")
+
+                # 注册 Ticker 推送处理器
+                self._register_ticker_handler()
 
                 return True
             else:
@@ -297,6 +303,24 @@ class FutuClient:
     def is_available(self) -> bool:
         """检查富途API是否可用"""
         return FUTU_AVAILABLE and self.client is not None and self.is_connected
+
+    def _register_ticker_handler(self):
+        """注册 Ticker 推送回调处理器"""
+        try:
+            from .ticker_push_handler import TickerPushHandler, FUTU_AVAILABLE as TH_AVAIL
+            if not TH_AVAIL:
+                return
+            self._ticker_push_handler = TickerPushHandler()
+            self.client.set_handler(self._ticker_push_handler)
+            logging.info("[TickerPush] 推送处理器已注册到 OpenQuoteContext")
+        except Exception as e:
+            logging.warning(f"[TickerPush] 注册推送处理器失败: {e}")
+
+    def set_container_for_push(self, container):
+        """注入容器到推送处理器（延迟注入，在container构建完成后调用）"""
+        if self._ticker_push_handler:
+            self._ticker_push_handler.set_container(container)
+            logging.info("[TickerPush] 容器已注入推送处理器")
 
     def get_connection_status(self) -> dict:
         """获取连接状态信息"""
