@@ -129,7 +129,7 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         })));
       }
 
-      // === 3. 分钟净买柱状图（底部叠加层）===
+      // === 3. 分钟净买柱状图（底部叠加层，5分钟聚合加粗）===
       // 正值=主动买入超过卖出（红色朝上），负值=主动卖出超过买入（绿色朝下）
       const netBuySeries = chart.addHistogramSeries({
         priceScaleId: "volume_scale",
@@ -144,14 +144,20 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         visible: false,
       });
 
-      netBuySeries.setData(data.map((p) => {
-        const val = (p as any).net_buy as number ?? (p as any).main_in ?? 0;
-        return {
-          time: toTimestamp(p.time),
-          value: val,  // 保留正负值，正=净买入朝上，负=净卖出朝下
-          color: val >= 0 ? "rgba(239, 68, 68, 0.55)" : "rgba(34, 197, 94, 0.55)",
-        };
-      }));
+      // 5分钟聚合：让柱子更宽更易读
+      const barInterval = 5;
+      const aggregated: { time: string; value: number }[] = [];
+      for (let i = 0; i < data.length; i += barInterval) {
+        const chunk = data.slice(i, i + barInterval);
+        const sum = chunk.reduce((s, p) => s + ((p as any).net_buy ?? (p as any).main_in ?? 0), 0);
+        aggregated.push({ time: chunk[Math.floor(chunk.length / 2)].time, value: sum });
+      }
+
+      netBuySeries.setData(aggregated.map((p) => ({
+        time: toTimestamp(p.time),
+        value: p.value,
+        color: p.value >= 0 ? "rgba(239, 68, 68, 0.6)" : "rgba(34, 197, 94, 0.6)",
+      })));
 
       chart.timeScale().fitContent();
 
