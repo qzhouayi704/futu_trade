@@ -543,6 +543,8 @@ async def get_capital_flow_timeline(stock_code: str, container=Depends(get_conta
             pass
 
         timeline = []
+        prev_main_cum = 0.0
+        prev_retail_cum = 0.0
         for _, row in df.iterrows():
             time_str = str(row.get('capital_flow_item_time', ''))
             time_short = time_str[11:16] if len(time_str) >= 16 else time_str
@@ -554,15 +556,27 @@ async def get_capital_flow_timeline(stock_code: str, container=Depends(get_conta
             mid_in = float(row.get('mid_in_flow', 0) or 0)
             sml_in = float(row.get('sml_in_flow', 0) or 0)
 
-            main_in = super_in + big_in
-            retail_in = mid_in + sml_in
+            main_cum = super_in + big_in      # 富途API返回的是累计值
+            retail_cum = mid_in + sml_in
+
+            # 差分得到本分钟净流入
+            main_delta = main_cum - prev_main_cum
+            retail_delta = retail_cum - prev_retail_cum
+            prev_main_cum = main_cum
+            prev_retail_cum = retail_cum
+
+            # buy_in / sell_in 从 delta 拆分
+            buy_in = max(main_delta, 0)
+            sell_in = min(main_delta, 0)
 
             point = {
                 'time': time_short,
-                'main_in': round(main_in / 10000, 1),
-                'retail_in': round(retail_in / 10000, 1),
-                'net_buy': round(main_in / 10000, 1),  # 兼容新字段
-                'cum_net': round(main_in / 10000, 1),
+                'main_in': round(main_cum / 10000, 1),
+                'retail_in': round(retail_cum / 10000, 1),
+                'buy_in': round(buy_in / 10000, 1),
+                'sell_in': round(sell_in / 10000, 1),
+                'net_buy': round(main_delta / 10000, 1),
+                'cum_net': round(main_cum / 10000, 1),
             }
             if time_short in price_map:
                 point['price'] = round(price_map[time_short], 3)
