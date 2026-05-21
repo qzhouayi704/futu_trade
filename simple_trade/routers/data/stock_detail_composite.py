@@ -188,7 +188,7 @@ async def get_kline_delta(
 # ==================== 数据提取函数 ====================
 
 def _get_rt_data(db, stock_code: str, trade_date: str) -> list:
-    """获取分时数据"""
+    """获取分时数据，优先 rt_data 表，无数据时从 ticker_data 合成"""
     rows = db.execute_query(
         """SELECT time, cur_price, avg_price, volume, turnover
            FROM rt_data
@@ -196,18 +196,52 @@ def _get_rt_data(db, stock_code: str, trade_date: str) -> list:
            ORDER BY time ASC""",
         (stock_code, trade_date)
     )
-    return [
-        {"time": r[0], "price": r[1], "avg_price": r[2],
-         "volume": r[3], "turnover": r[4]}
-        for r in rows
-    ]
+    if rows:
+        return [
+            {"time": r[0], "price": r[1], "avg_price": r[2],
+             "volume": r[3], "turnover": r[4]}
+            for r in rows
+        ]
+
+    # 回退：从 ticker_data（Unix毫秒时间戳）按1分钟聚合合成价格线
+    rows = db.execute_query(
+        """SELECT
+             CAST(timestamp / 60000 AS INTEGER) * 60000 as minute_ts,
+             AVG(price) as avg_price,
+             MAX(price) as high,
+             MIN(price) as low,
+             SUM(volume) as volume,
+             SUM(turnover) as turnover
+           FROM ticker_data
+           WHERE stock_code = ? AND trade_date = ?
+           GROUP BY minute_ts
+           ORDER BY minute_ts ASC""",
+        (stock_code, trade_date)
+    )
+    result = []
+    cum_vol = 0
+    for r in rows:
+        ts_ms = r[0]
+        cum_vol += (r[4] or 0)
+        # 将Unix毫秒转为 HH:MM 格式
+        from datetime import datetime as dt, timezone, timedelta
+        t = dt.fromtimestamp(ts_ms / 1000, tz=timezone(timedelta(hours=8)))
+        time_str = t.strftime('%H:%M')
+        result.append({
+            "time": time_str,
+            "price": round(r[1], 3) if r[1] else 0,
+            "avg_price": 0,
+            "volume": cum_vol,
+            "turnover": r[5] or 0,
+        })
+    return result
 
 
 def _get_ticker_strength(db, stock_code: str, trade_date: str) -> list:
-    """从逐笔数据按1分钟聚合买卖强度"""
+    """从逐笔数据按1分钟聚合买卖强度（timestamp为Unix毫秒）"""
     rows = db.execute_query(
         """SELECT
-             substr(timestamp, 1, 16) as minute,
+             CAST(timestamp / 60000 AS INTEGER) * 60000 as minute_ts,
              SUM(CASE WHEN direction='BUY' THEN volume ELSE 0 END) as buy_vol,
              SUM(CASE WHEN direction='SELL' THEN volume ELSE 0 END) as sell_vol,
              SUM(CASE WHEN direction='BUY' THEN turnover ELSE 0 END) as buy_amt,
@@ -215,18 +249,21 @@ def _get_ticker_strength(db, stock_code: str, trade_date: str) -> list:
              COUNT(*) as tick_count
            FROM ticker_data
            WHERE stock_code = ? AND trade_date = ?
-           GROUP BY minute
-           ORDER BY minute ASC""",
+           GROUP BY minute_ts
+           ORDER BY minute_ts ASC""",
         (stock_code, trade_date)
     )
     result = []
     for r in rows:
+        ts_ms = r[0]
+        from datetime import datetime as dt, timezone, timedelta
+        t = dt.fromtimestamp(ts_ms / 1000, tz=timezone(timedelta(hours=8)))
+        time_str = t.strftime('%H:%M')
         buy_vol = r[1] or 0
         sell_vol = r[2] or 0
-        total = buy_vol + sell_vol
         delta = buy_vol - sell_vol
         result.append({
-            "time": r[0],
+            "time": time_str,
             "buy_volume": buy_vol,
             "sell_volume": sell_vol,
             "delta": delta,
@@ -278,27 +315,25 @@ def _get_strategy_dimension(container, stock_code: str) -> dict:
 
 
 def _get_ticker_dimension(container, stock_code: str) -> dict:
-    """成交力量维度"""
+    """成交力量维度（从ticker_data DB查询，避免依赖5s TTL缓存）"""
     dim = {"name": "成交力量", "icon": "⚡", "score": None, "label": "-"}
     try:
-        ticker_cache = getattr(container, 'ticker_df_cache', None)
-        if not ticker_cache:
-            return dim
-        df = ticker_cache.get(stock_code)
-        if df is None or df.empty:
-            return dim
-
-        buy_mask = df['ticker_direction'].isin(['BUY']) if 'ticker_direction' in df.columns else None
-        if buy_mask is None:
-            return dim
-
-        if 'volume' in df.columns:
-            buy_vol = df.loc[buy_mask, 'volume'].sum()
-            total_vol = df['volume'].sum()
-            if total_vol > 0:
-                ratio = buy_vol / total_vol
-                dim["score"] = int(ratio * 100)
-                dim["label"] = "看多" if ratio >= 0.55 else ("偏空" if ratio < 0.45 else "均衡")
+        db = container.db_manager
+        today = datetime.now().strftime('%Y-%m-%d')
+        rows = db.execute_query(
+            """SELECT
+                 SUM(CASE WHEN direction='BUY' THEN volume ELSE 0 END) as buy_vol,
+                 SUM(volume) as total_vol
+               FROM ticker_data
+               WHERE stock_code = ? AND trade_date = ?""",
+            (stock_code, today)
+        )
+        if rows and rows[0][1] and rows[0][1] > 0:
+            buy_vol = rows[0][0] or 0
+            total_vol = rows[0][1]
+            ratio = buy_vol / total_vol
+            dim["score"] = int(ratio * 100)
+            dim["label"] = "看多" if ratio >= 0.55 else ("偏空" if ratio < 0.45 else "均衡")
     except Exception as e:
         logger.debug(f"成交力量获取失败 {stock_code}: {e}")
     return dim
@@ -326,43 +361,49 @@ def _get_capital_dimension(db, stock_code: str) -> dict:
 
 
 def _get_orderbook_dimension(db, stock_code: str) -> dict:
-    """盘口维度"""
-    dim = {"name": "盘口挂单", "icon": "📊", "score": None, "label": "-"}
+    """大单买卖比维度（替代不存在的盘口快照表）"""
+    dim = {"name": "大单买卖", "icon": "📊", "score": None, "label": "-"}
     try:
         rows = db.execute_query(
             """SELECT buy_sell_ratio
-               FROM order_book_snapshot
+               FROM big_order_tracking
                WHERE stock_code = ?
                ORDER BY timestamp DESC LIMIT 1""",
             (stock_code,)
         )
         if rows and rows[0][0]:
             ratio = rows[0][0]
-            score = min(100, max(0, int(ratio * 50)))
+            score = min(100, max(0, int(ratio / 3.0 * 100)))  # ratio 1.5=50, 3.0=100
             dim["score"] = score
             dim["label"] = "偏多" if score >= 60 else ("偏空" if score < 40 else "均衡")
     except Exception as e:
-        logger.debug(f"盘口获取失败 {stock_code}: {e}")
+        logger.debug(f"大单买卖获取失败 {stock_code}: {e}")
     return dim
 
 
 def _get_volume_dimension(db, stock_code: str) -> dict:
-    """量能可信度维度"""
-    dim = {"name": "量能可信", "icon": "📐", "score": None, "label": "-"}
+    """成交量能维度（从ticker_data今日买卖比推算）"""
+    dim = {"name": "量能强弱", "icon": "📐", "score": None, "label": "-"}
     try:
+        today = datetime.now().strftime('%Y-%m-%d')
         rows = db.execute_query(
-            """SELECT credibility_score
-               FROM ticker_credibility
-               WHERE stock_code = ?
-               ORDER BY timestamp DESC LIMIT 1""",
-            (stock_code,)
+            """SELECT
+                 SUM(CASE WHEN direction='BUY' THEN turnover ELSE 0 END) as buy_amt,
+                 SUM(CASE WHEN direction='SELL' THEN turnover ELSE 0 END) as sell_amt
+               FROM ticker_data
+               WHERE stock_code = ? AND trade_date = ?""",
+            (stock_code, today)
         )
-        if rows and rows[0][0]:
-            score = int(rows[0][0])
-            dim["score"] = score
-            dim["label"] = "可信" if score >= 60 else ("存疑" if score < 40 else "正常")
+        if rows and rows[0][0] is not None:
+            buy = rows[0][0] or 0
+            sell = rows[0][1] or 0
+            total = buy + sell
+            if total > 0:
+                ratio = buy / total
+                dim["score"] = int(ratio * 100)
+                dim["label"] = "买强" if ratio >= 0.55 else ("卖强" if ratio < 0.45 else "均衡")
     except Exception as e:
-        logger.debug(f"量能可信度获取失败 {stock_code}: {e}")
+        logger.debug(f"量能获取失败 {stock_code}: {e}")
     return dim
 
 
@@ -391,10 +432,31 @@ def _detect_conflicts(dimensions: list) -> list:
 
 
 def _get_5min_klines(db, stock_code: str, limit: int) -> list:
-    """获取5分钟K线"""
+    """获取K线，优先5min表，回退到日线kline_data"""
+    # 先尝试5分钟K线
+    try:
+        rows = db.execute_query(
+            """SELECT time_key, open_price, high_price, low_price, close_price, volume
+               FROM kline_5min_data
+               WHERE stock_code = ?
+               ORDER BY time_key DESC LIMIT ?""",
+            (stock_code, limit)
+        )
+        if rows:
+            result = [
+                {"time": r[0], "open": r[1], "high": r[2],
+                 "low": r[3], "close": r[4], "volume": r[5]}
+                for r in rows
+            ]
+            result.reverse()
+            return result
+    except Exception:
+        pass
+
+    # 回退到日线K线
     rows = db.execute_query(
         """SELECT time_key, open_price, high_price, low_price, close_price, volume
-           FROM kline_5min_data
+           FROM kline_data
            WHERE stock_code = ?
            ORDER BY time_key DESC LIMIT ?""",
         (stock_code, limit)
@@ -409,22 +471,60 @@ def _get_5min_klines(db, stock_code: str, limit: int) -> list:
 
 
 def _get_delta_history(db, stock_code: str, limit: int) -> list:
-    """获取Delta历史"""
+    """获取Delta历史，优先专用表，回退从ticker_data合成"""
+    # 先尝试专用表
+    try:
+        rows = db.execute_query(
+            """SELECT timestamp, delta_value, cumulative_delta,
+                      buy_volume, sell_volume
+               FROM scalping_delta_history
+               WHERE stock_code = ?
+               ORDER BY timestamp DESC LIMIT ?""",
+            (stock_code, limit)
+        )
+        if rows:
+            result = [
+                {"time": r[0], "delta": r[1], "cum_delta": r[2],
+                 "buy_vol": r[3], "sell_vol": r[4]}
+                for r in rows
+            ]
+            result.reverse()
+            return result
+    except Exception:
+        pass
+
+    # 回退：从 ticker_data 按5分钟聚合合成 delta
+    today = datetime.now().strftime('%Y-%m-%d')
     rows = db.execute_query(
-        """SELECT timestamp, delta_value, cumulative_delta,
-                  buy_volume, sell_volume
-           FROM scalping_delta_history
-           WHERE stock_code = ?
-           ORDER BY timestamp DESC LIMIT ?""",
-        (stock_code, limit)
+        """SELECT
+             CAST(timestamp / 300000 AS INTEGER) * 300000 as bar_ts,
+             SUM(CASE WHEN direction='BUY' THEN volume ELSE 0 END) -
+             SUM(CASE WHEN direction='SELL' THEN volume ELSE 0 END) as delta,
+             SUM(CASE WHEN direction='BUY' THEN volume ELSE 0 END) as buy_vol,
+             SUM(CASE WHEN direction='SELL' THEN volume ELSE 0 END) as sell_vol
+           FROM ticker_data
+           WHERE stock_code = ? AND trade_date = ?
+           GROUP BY bar_ts
+           ORDER BY bar_ts ASC""",
+        (stock_code, today)
     )
-    result = [
-        {"time": r[0], "delta": r[1], "cum_delta": r[2],
-         "buy_vol": r[3], "sell_vol": r[4]}
-        for r in rows
-    ]
-    result.reverse()
-    return result
+    result = []
+    cum = 0
+    for r in rows:
+        ts_ms = r[0]
+        from datetime import datetime as dt, timezone, timedelta
+        t = dt.fromtimestamp(ts_ms / 1000, tz=timezone(timedelta(hours=8)))
+        time_str = t.strftime('%Y-%m-%d %H:%M')
+        d = r[1] or 0
+        cum += d
+        result.append({
+            "time": time_str,
+            "delta": d,
+            "cum_delta": cum,
+            "buy_vol": r[2] or 0,
+            "sell_vol": r[3] or 0,
+        })
+    return result[-limit:] if len(result) > limit else result
 
 
 def _merge_kline_delta(klines: list, deltas: list) -> list:
