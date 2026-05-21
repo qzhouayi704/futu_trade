@@ -94,8 +94,9 @@ class MomentumEngine:
         if not self._running:
             return
 
+        # 自动将收到数据的股票加入监控（无需预配置）
         if stock_code not in self._monitored:
-            return
+            self._monitored.add(stock_code)
 
         # 检查交易时间
         if not self._is_trading_time():
@@ -145,17 +146,30 @@ class MomentumEngine:
             logger.error(f"[MomentumEngine] 处理bar失败 {bar.stock_code}: {e}")
 
     def _sync_monitored_stocks(self):
-        """同步监控股票列表"""
+        """同步监控股票列表 — 从已订阅ticker的股票获取"""
         try:
+            # 优先从 SubscriptionManager 获取已订阅 TICKER 的股票
+            sub_mgr = getattr(self.container, 'subscription_manager', None)
+            if sub_mgr and hasattr(sub_mgr, 'ticker_subscribed_stocks'):
+                subscribed = sub_mgr.ticker_subscribed_stocks
+                if subscribed:
+                    self._monitored = set(subscribed)
+                    logger.info(
+                        f"[MomentumEngine] 从订阅列表同步: {len(self._monitored)} 只"
+                    )
+                    return
+
+            # 回退：从数据库获取今天有ticker数据的股票
             db = self.container.db_manager
-            # 获取目标股票池（所有订阅了ticker的股票）
+            today = datetime.now(HK_TZ).strftime('%Y-%m-%d')
             rows = db.execute_query(
-                "SELECT code FROM stocks WHERE stock_priority > 0"
+                "SELECT DISTINCT stock_code FROM ticker_data WHERE trade_date=?",
+                (today,)
             )
             if rows:
                 self._monitored = {r[0] for r in rows}
                 logger.info(
-                    f"[MomentumEngine] 同步监控列表: {len(self._monitored)} 只"
+                    f"[MomentumEngine] 从DB同步: {len(self._monitored)} 只"
                 )
         except Exception as e:
             logger.error(f"同步监控列表失败: {e}")
