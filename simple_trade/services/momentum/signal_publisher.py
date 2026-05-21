@@ -23,15 +23,39 @@ class SignalPublisher:
 
     # 信号优先级映射
     SIGNAL_PRIORITY = {
-        "EXHAUSTION": "HIGH",         # 动量衰竭 → 高优
-        "SELL_MOMENTUM": "HIGH",      # 卖方碾压 → 高优
-        "BUY_MOMENTUM": "MEDIUM",     # 买方强势 → 中优
-        "RECOVERY": "MEDIUM",         # 动量恢复 → 中优
-        "DELTA_TURN_DOWN": "HIGH",    # Delta拐头 → 高优
-        "DELTA_TURN_UP": "MEDIUM",    # Delta回升 → 中优
-        "BEARISH_DIVERGENCE": "HIGH", # 看空背离 → 高优
-        "BULLISH_DIVERGENCE": "MEDIUM",
-        "EXTREME_DELTA": "LOW",       # 极端值 → 低优
+        # BSR
+        "EXHAUSTION": "HIGH", "SELL_MOMENTUM": "HIGH",
+        "BUY_MOMENTUM": "MEDIUM", "RECOVERY": "MEDIUM",
+        # Delta
+        "DELTA_TURN_DOWN": "HIGH", "DELTA_TURN_UP": "MEDIUM",
+        "BEARISH_DIVERGENCE": "HIGH", "BULLISH_DIVERGENCE": "MEDIUM",
+        "EXTREME_DELTA": "LOW",
+        # 速度
+        "ACCELERATE_BUY": "MEDIUM", "ACCELERATE_SELL": "HIGH",
+        "VOLUME_SPIKE": "LOW", "VOLUME_DRY": "LOW",
+        # 大单
+        "BIG_BUY_CLUSTER": "HIGH", "BIG_SELL_CLUSTER": "HIGH",
+        "BIG_ORDER_BATTLE": "MEDIUM",
+        # VWAP
+        "VWAP_BOUNCE": "MEDIUM", "VWAP_BREAK": "HIGH",
+        "OVERBOUGHT": "LOW", "OVERSOLD": "LOW",
+        # 吸筹/派发
+        "ACCUMULATION": "HIGH", "DISTRIBUTION": "HIGH",
+        # 共振
+        "STRONG_BUY": "HIGH", "STRONG_SELL": "HIGH",
+        "MODERATE_BUY": "MEDIUM", "MODERATE_SELL": "MEDIUM",
+    }
+
+    # BUY/SELL分类
+    BUY_TYPES = {
+        "BUY_MOMENTUM", "RECOVERY", "BULLISH_DIVERGENCE", "DELTA_TURN_UP",
+        "ACCELERATE_BUY", "BIG_BUY_CLUSTER", "VWAP_BOUNCE", "OVERSOLD",
+        "ACCUMULATION", "STRONG_BUY", "MODERATE_BUY",
+    }
+    SELL_TYPES = {
+        "SELL_MOMENTUM", "EXHAUSTION", "BEARISH_DIVERGENCE", "DELTA_TURN_DOWN",
+        "ACCELERATE_SELL", "BIG_SELL_CLUSTER", "VWAP_BREAK", "OVERBOUGHT",
+        "DISTRIBUTION", "STRONG_SELL", "MODERATE_SELL",
     }
 
     def __init__(self, container):
@@ -84,9 +108,9 @@ class SignalPublisher:
             stock_id = rows[0][0]
 
             # 信号类型映射
-            if signal.signal_type in ("BUY_MOMENTUM", "RECOVERY", "BULLISH_DIVERGENCE", "DELTA_TURN_UP"):
+            if signal.signal_type in self.BUY_TYPES:
                 signal_type = "BUY"
-            elif signal.signal_type in ("SELL_MOMENTUM", "EXHAUSTION", "BEARISH_DIVERGENCE", "DELTA_TURN_DOWN"):
+            elif signal.signal_type in self.SELL_TYPES:
                 signal_type = "SELL"
             else:
                 signal_type = "WATCH"
@@ -121,12 +145,13 @@ class SignalPublisher:
                     "stock_code": signal.stock_code,
                     "signal_type": signal.signal_type,
                     "description": signal.description,
-                    "price": signal.price,
+                    "price": getattr(signal, 'price', 0),
                     "priority": priority,
                     "confidence": getattr(signal, 'confidence', 0.5),
                     "bsr": getattr(signal, 'bsr', None),
-                    "cum_delta": signal.cum_delta,
-                    "timestamp": signal.timestamp,
+                    "cum_delta": getattr(signal, 'cum_delta', None),
+                    "timestamp": getattr(signal, 'timestamp', 0),
+                    "dimensions": getattr(signal, 'dimensions', None),
                 }
                 await socket_manager.emit_to_all(
                     "momentum_signal", data

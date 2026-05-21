@@ -3,10 +3,12 @@
 """
 动量引擎 (MomentumEngine)
 
-实时监听逐笔成交数据，通过BSR和Delta分析产出买卖信号。
+实时监听逐笔成交数据，通过7维度分析产出买卖信号:
+  1. BSR买卖力量  2. Delta累积净力  3. 成交速度  4. 大单聚集
+  5. VWAP偏离     6. 吸筹/派发     7. 多维共振
 
 架构:
-  Ticker推送 → TickerAggregator(1分钟聚合) → BSRMonitor + DeltaDetector → SignalPublisher
+  Ticker推送 → TickerAggregator(1分钟聚合) → 7个Detector → ResonanceDetector → SignalPublisher
 """
 
 import asyncio
@@ -16,13 +18,17 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Set
 
 from .ticker_aggregator import TickerAggregator, AggregatedBar
-from .bsr_monitor import BSRMonitor, MomentumSignal
-from .delta_detector import DeltaDetector, DeltaSignal
+from .bsr_monitor import BSRMonitor
+from .delta_detector import DeltaDetector
+from .velocity_detector import VelocityDetector
+from .big_order_detector import BigOrderDetector
+from .vwap_detector import VWAPDetector
+from .absorption_detector import AbsorptionDetector
+from .resonance_detector import ResonanceDetector
 from .signal_publisher import SignalPublisher
 
 logger = logging.getLogger(__name__)
 
-# 港股交易时间 (HKT = UTC+8)
 HK_TZ = timezone(timedelta(hours=8))
 MORNING_START = (9, 30)
 MORNING_END = (12, 0)
@@ -31,78 +37,57 @@ AFTERNOON_END = (16, 0)
 
 
 class MomentumEngine:
-    """
-    动量引擎 — 实时监听逐笔数据，检测买卖动量信号
-
-    Usage:
-        engine = MomentumEngine(container)
-        await engine.start()
-
-    集成方式:
-        在 app.py lifespan 中启动，注册到 ScalpingEngine 的 ticker 回调
-    """
+    """动量引擎 — 7维度实时信号检测"""
 
     def __init__(self, container):
         self.container = container
 
-        # 核心组件
+        # 数据聚合
         self.aggregator = TickerAggregator()
+
+        # 7个检测器
         self.bsr_monitor = BSRMonitor()
         self.delta_detector = DeltaDetector()
+        self.velocity_detector = VelocityDetector()
+        self.big_order_detector = BigOrderDetector()
+        self.vwap_detector = VWAPDetector()
+        self.absorption_detector = AbsorptionDetector()
+        self.resonance_detector = ResonanceDetector()
+
+        # 信号发布
         self.publisher = SignalPublisher(container)
 
-        # 监控的股票集合
+        # 状态
         self._monitored: Set[str] = set()
-
-        # 运行状态
         self._running = False
         self._bars_processed = 0
         self._signals_emitted = 0
+        self._resonance_count = 0
         self._last_daily_reset: Optional[str] = None
 
     async def start(self):
-        """启动动量引擎"""
         self._running = True
         self._sync_monitored_stocks()
         self._daily_reset()
-
-        logger.info(
-            f"[MomentumEngine] 启动成功，监控 {len(self._monitored)} 只股票"
-        )
-
-        # 启动后台维护任务
+        logger.info(f"[MomentumEngine] 启动成功(7维度), 监控 {len(self._monitored)} 只")
         asyncio.create_task(self._maintenance_loop())
 
     async def stop(self):
-        """停止动量引擎"""
         self._running = False
         logger.info("[MomentumEngine] 已停止")
 
     def on_ticker(self, stock_code: str, ticker_data: dict):
-        """
-        逐笔数据回调入口（同步，由Scalping/QuotePipeline调用）
-
-        ticker_data 格式:
-        {
-            'price': float,
-            'volume': int,
-            'turnover': float,
-            'ticker_direction': str,  # 'BUY'/'SELL'/'NEUTRAL'
-            'timestamp': int (ms),    # 或 'time' str
-        }
-        """
+        """逐笔数据回调入口"""
         if not self._running:
             return
 
-        # 自动将收到数据的股票加入监控（无需预配置）
+        # 自动将收到数据的股票加入监控
         if stock_code not in self._monitored:
             self._monitored.add(stock_code)
 
-        # 检查交易时间
         if not self._is_trading_time():
             return
 
-        # 提取字段
         price = ticker_data.get('price', 0)
         volume = ticker_data.get('volume', 0)
         turnover = ticker_data.get('turnover', 0)
@@ -113,34 +98,68 @@ class MomentumEngine:
         if not price or not volume:
             return
 
-        # 送入聚合器
         completed_bar = self.aggregator.on_tick(
             stock_code, price, volume, turnover, direction, timestamp_ms
         )
 
-        # 如果有完成的bar，进行信号分析
         if completed_bar:
-            # 使用 fire-and-forget 方式处理（避免阻塞ticker回调）
             asyncio.get_event_loop().create_task(
                 self._process_bar(completed_bar)
             )
 
     async def _process_bar(self, bar: AggregatedBar):
-        """处理完成的1分钟bar"""
+        """处理完成的1分钟bar — 通过7个检测器"""
         self._bars_processed += 1
 
         try:
-            # BSR 分析
-            bsr_signal = self.bsr_monitor.update(bar)
-            if bsr_signal:
-                self._signals_emitted += 1
-                await self.publisher.publish(bsr_signal)
+            signals = []
 
-            # Delta 分析
-            delta_signal = self.delta_detector.update(bar)
-            if delta_signal:
+            # 1. BSR
+            s = self.bsr_monitor.update(bar)
+            if s:
+                signals.append(s)
+
+            # 2. Delta
+            s = self.delta_detector.update(bar)
+            if s:
+                signals.append(s)
+
+            # 3. 成交速度
+            s = self.velocity_detector.update(bar)
+            if s:
+                signals.append(s)
+
+            # 4. 大单聚集
+            s = self.big_order_detector.update(bar)
+            if s:
+                signals.append(s)
+
+            # 5. VWAP偏离
+            s = self.vwap_detector.update(bar)
+            if s:
+                signals.append(s)
+
+            # 6. 吸筹/派发
+            s = self.absorption_detector.update(bar)
+            if s:
+                signals.append(s)
+
+            # 发布各维度信号 + 收集到共振器
+            for sig in signals:
                 self._signals_emitted += 1
-                await self.publisher.publish(delta_signal)
+                await self.publisher.publish(sig)
+                self.resonance_detector.collect_signal(
+                    bar.stock_code, sig, bar.timestamp
+                )
+
+            # 7. 多维共振检查
+            resonance = self.resonance_detector.check_resonance(
+                bar.stock_code, bar.close_price, bar.timestamp
+            )
+            if resonance:
+                self._resonance_count += 1
+                self._signals_emitted += 1
+                await self.publisher.publish(resonance)
 
         except Exception as e:
             logger.error(f"[MomentumEngine] 处理bar失败 {bar.stock_code}: {e}")
@@ -148,18 +167,14 @@ class MomentumEngine:
     def _sync_monitored_stocks(self):
         """同步监控股票列表 — 从已订阅ticker的股票获取"""
         try:
-            # 优先从 SubscriptionManager 获取已订阅 TICKER 的股票
             sub_mgr = getattr(self.container, 'subscription_manager', None)
             if sub_mgr and hasattr(sub_mgr, 'ticker_subscribed_stocks'):
                 subscribed = sub_mgr.ticker_subscribed_stocks
                 if subscribed:
                     self._monitored = set(subscribed)
-                    logger.info(
-                        f"[MomentumEngine] 从订阅列表同步: {len(self._monitored)} 只"
-                    )
+                    logger.info(f"[MomentumEngine] 从订阅列表同步: {len(self._monitored)} 只")
                     return
 
-            # 回退：从数据库获取今天有ticker数据的股票
             db = self.container.db_manager
             today = datetime.now(HK_TZ).strftime('%Y-%m-%d')
             rows = db.execute_query(
@@ -168,14 +183,11 @@ class MomentumEngine:
             )
             if rows:
                 self._monitored = {r[0] for r in rows}
-                logger.info(
-                    f"[MomentumEngine] 从DB同步: {len(self._monitored)} 只"
-                )
+                logger.info(f"[MomentumEngine] 从DB同步: {len(self._monitored)} 只")
         except Exception as e:
             logger.error(f"同步监控列表失败: {e}")
 
     def _daily_reset(self):
-        """每日重置（开盘前）"""
         today = datetime.now(HK_TZ).strftime('%Y-%m-%d')
         if self._last_daily_reset == today:
             return
@@ -183,59 +195,60 @@ class MomentumEngine:
         self.aggregator.reset_daily()
         self.bsr_monitor.reset_daily()
         self.delta_detector.reset_daily()
+        self.velocity_detector.reset_daily()
+        self.big_order_detector.reset_daily()
+        self.vwap_detector.reset_daily()
+        self.absorption_detector.reset_daily()
+        self.resonance_detector.reset_daily()
         self._bars_processed = 0
         self._signals_emitted = 0
+        self._resonance_count = 0
         self._last_daily_reset = today
         logger.info(f"[MomentumEngine] 每日重置: {today}")
 
     def _is_trading_time(self) -> bool:
-        """检查是否在港股交易时间"""
         now = datetime.now(HK_TZ)
-        h, m = now.hour, now.minute
-        t = (h, m)
+        t = (now.hour, now.minute)
         return (MORNING_START <= t < MORNING_END
                 or AFTERNOON_START <= t < AFTERNOON_END)
 
     async def _maintenance_loop(self):
-        """后台维护循环"""
         while self._running:
             try:
-                # 每30分钟同步一次监控列表
                 self._sync_monitored_stocks()
                 self._daily_reset()
-
                 logger.info(
-                    f"[MomentumEngine] 状态: "
-                    f"监控={len(self._monitored)}只 "
-                    f"已处理={self._bars_processed}bar "
-                    f"信号={self._signals_emitted}个"
+                    f"[MomentumEngine] 监控={len(self._monitored)}只 "
+                    f"bar={self._bars_processed} 信号={self._signals_emitted} "
+                    f"共振={self._resonance_count}"
                 )
             except Exception as e:
-                logger.error(f"[MomentumEngine] 维护循环错误: {e}")
+                logger.error(f"[MomentumEngine] 维护错误: {e}")
+            await asyncio.sleep(1800)
 
-            await asyncio.sleep(1800)  # 30分钟
-
-    # ==================== API 查询接口 ====================
+    # ==================== API ====================
 
     def get_status(self) -> dict:
-        """获取引擎状态"""
         return {
             "running": self._running,
             "monitored_count": len(self._monitored),
             "bars_processed": self._bars_processed,
             "signals_emitted": self._signals_emitted,
+            "resonance_count": self._resonance_count,
             "last_reset": self._last_daily_reset,
+            "detectors": [
+                "BSR", "Delta", "Velocity",
+                "BigOrder", "VWAP", "Absorption", "Resonance"
+            ],
         }
 
     def get_stock_momentum(self, stock_code: str) -> dict:
-        """获取单只股票的动量状态"""
         return {
             "bsr": self.bsr_monitor.get_state(stock_code),
             "monitored": stock_code in self._monitored,
         }
 
     def get_all_states(self) -> dict:
-        """获取所有监控股票的动量状态"""
         result = {}
         for code in self._monitored:
             state = self.bsr_monitor.get_state(code)
