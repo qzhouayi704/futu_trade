@@ -43,12 +43,12 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         crosshair: { mode: CrosshairMode.Magnet },
         rightPriceScale: {
           borderColor: "#e5e7eb",
-          scaleMargins: { top: 0.05, bottom: 0.25 },  // 底部留25%给柱状图
+          scaleMargins: { top: 0.05, bottom: 0.4 },  // 底部留40%给柱状图
         },
         leftPriceScale: {
           borderColor: "#d1d5db",
           visible: true,
-          scaleMargins: { top: 0.05, bottom: 0.25 },  // 与右轴对齐
+          scaleMargins: { top: 0.05, bottom: 0.4 },  // 与右轴对齐
         },
         timeScale: {
           borderColor: "#e5e7eb",
@@ -138,9 +138,9 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         lastValueVisible: false,
       });
 
-      // 底部30%空间，上下各留余量显示正负柱
+      // 底部45%空间
       chart.priceScale("volume_scale").applyOptions({
-        scaleMargins: { top: 0.7, bottom: 0 },
+        scaleMargins: { top: 0.55, bottom: 0 },
         visible: false,
       });
 
