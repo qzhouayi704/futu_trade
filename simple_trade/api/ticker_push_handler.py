@@ -76,6 +76,9 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             # 2. 喂给 MomentumEngine
             self._feed_momentum(stock_code, df)
 
+            # 3. 落库到 ticker_data 表（供资金流时间线等查询）
+            self._persist_to_db(stock_code, df)
+
             # 定期日志
             now = time.time()
             if now - self._last_log_time > 300:  # 每5分钟
@@ -120,3 +123,47 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                     engine.on_ticker(stock_code, ticker_data)
         except Exception as e:
             logger.debug(f"[TickerPush] 喂动量引擎失败: {e}")
+
+    def _persist_to_db(self, stock_code: str, df):
+        """将推送的逐笔数据异步写入 ticker_data 表"""
+        if not self._container:
+            return
+        try:
+            db = getattr(self._container, 'db_manager', None)
+            if not db:
+                return
+
+            from datetime import datetime as _dt
+            from ..database.queries.ticker_queries import TickerQueries
+
+            today_str = _dt.now().strftime('%Y-%m-%d')
+            rows = []
+            for _, row in df.iterrows():
+                price = float(row.get('price', 0) or 0)
+                volume = int(row.get('volume', 0) or 0)
+                turnover = float(row.get('turnover', 0) or 0)
+                direction = str(row.get('ticker_direction', 'NEUTRAL'))
+
+                # 方向映射: 富途推送的方向字段转换
+                if direction in ('BUY', 'BULL'):
+                    direction = 'BUY'
+                elif direction in ('SELL', 'BEAR'):
+                    direction = 'SELL'
+                else:
+                    direction = 'NEUTRAL'
+
+                if price <= 0 or volume <= 0:
+                    continue
+
+                ts_ms = int(time.time() * 1000)
+                if not turnover:
+                    turnover = price * volume
+
+                rows.append((stock_code, price, volume, turnover, direction, ts_ms, today_str))
+
+            if rows:
+                queries = TickerQueries(db.conn_manager)
+                queries.insert_ticker_batch(rows)
+        except Exception as e:
+            logger.debug(f"[TickerPush] 落库失败: {e}")
+
