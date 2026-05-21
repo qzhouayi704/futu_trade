@@ -129,12 +129,23 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         })));
       }
 
-      // === 3. 分钟净买柱状图（底部叠加层，独立刻度）===
-      const netBuySeries = chart.addHistogramSeries({
+      // === 3. 分钟买入/卖出柱状图（底部叠加层）===
+      // 买入柱（正值，红色）
+      const buySeries = chart.addHistogramSeries({
         priceScaleId: "volume_scale",
         title: "",
         priceFormat: { type: "volume" },
         lastValueVisible: false,
+        color: "rgba(239, 68, 68, 0.5)",
+      });
+
+      // 卖出柱（负值，绿色）
+      const sellSeries = chart.addHistogramSeries({
+        priceScaleId: "volume_scale",
+        title: "",
+        priceFormat: { type: "volume" },
+        lastValueVisible: false,
+        color: "rgba(34, 197, 94, 0.5)",
       });
 
       // 底部20%空间
@@ -143,14 +154,15 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         visible: false,
       });
 
-      netBuySeries.setData(data.map((p) => {
-        const val = (p as any).net_buy as number ?? (p as any).main_in ?? 0;
-        return {
-          time: toTimestamp(p.time),
-          value: Math.abs(val),  // 柱状图用绝对值，颜色区分方向
-          color: val >= 0 ? "rgba(239, 68, 68, 0.5)" : "rgba(34, 197, 94, 0.5)",
-        };
-      }));
+      buySeries.setData(data.map((p) => ({
+        time: toTimestamp(p.time),
+        value: (p as any).buy_in ?? Math.max((p as any).net_buy ?? 0, 0),
+      })));
+
+      sellSeries.setData(data.map((p) => ({
+        time: toTimestamp(p.time),
+        value: (p as any).sell_in ?? Math.min((p as any).net_buy ?? 0, 0),
+      })));
 
       chart.timeScale().fitContent();
 
