@@ -33,7 +33,7 @@ def _compute_flow_summary(timeline: list) -> dict:
     total_buy = sum(p.get('buy_in', 0) for p in timeline)
     total_sell = sum(abs(p.get('sell_in', 0)) for p in timeline)
     cum_net = timeline[-1].get('cum_net', 0)
-    buy_sell_ratio = round(total_buy / total_sell, 2) if total_sell > 0 else 99.0
+    buy_sell_ratio = min(round(total_buy / total_sell, 2), 9.99) if total_sell > 0 else (9.99 if total_buy > 0 else 1.0)
 
     # 前后半段动能对比
     mid = len(timeline) // 2
