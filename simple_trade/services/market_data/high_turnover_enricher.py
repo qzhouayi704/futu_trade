@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,10 @@ class HighTurnoverEnricher:
         # 买卖推荐扫描计时器（每 5 分钟扫描一次）
         self._recommendation_scan_counter: int = 0
         self._RECOMMENDATION_INTERVAL: int = 15  # 15 * 20s = 300s = 5分钟
+        # 抗跌吸筹检测：冷却记录（每只股票 10 分钟内不重复报警）
+        self._absorption_cooldown: dict[str, float] = {}
+        self._absorption_scan_counter: int = 0
+        self._ABSORPTION_INTERVAL: int = 3  # 3 * 20s = 60s，每分钟扫描一次
 
     async def start(self):
         """启动后台循环"""
@@ -180,6 +184,14 @@ class HighTurnoverEnricher:
         if self._recommendation_scan_counter >= self._RECOMMENDATION_INTERVAL:
             self._recommendation_scan_counter = 0
             await self._scan_and_push_recommendations()
+
+        # 11. 资金流信号检测（每分钟扫描一次）
+        self._absorption_scan_counter += 1
+        if self._absorption_scan_counter >= self._ABSORPTION_INTERVAL:
+            self._absorption_scan_counter = 0
+            await self._detect_absorption_pattern(filtered_pool, quotes_map)
+            await self._detect_pump_dump_pattern(filtered_pool, quotes_map)
+            await self._detect_failed_catch_pattern(filtered_pool, quotes_map)
 
     async def _enrich_big_orders(self, codes: list[str], enrichment: dict):
         """读取大单数据：从 daily_order_accumulator DB 表获取全天持久化数据"""
@@ -794,3 +806,573 @@ class HighTurnoverEnricher:
                 json.dump(data, f, ensure_ascii=False)
         except Exception as e:
             logger.debug(f"保存活跃股票池失败: {e}")
+
+    # ==================== 资金流信号公共工具 ====================
+
+    @staticmethod
+    def _volatility_threshold(quote: dict, default: float = 2.0) -> float:
+        """根据个股当日波幅动态计算涨跌阈值
+
+        用日内最高/最低/开盘价计算波幅，取波幅的 40% 作为阈值，
+        最低 1%、最高 8%，避免极端值。
+
+        Args:
+            quote: 报价字典，含 high_price/low_price/open_price 等字段
+            default: 无法计算时的默认值
+        Returns:
+            阈值百分比（正数），如 2.5 表示 ±2.5%
+        """
+        high = quote.get('high_price', 0) or quote.get('high', 0) or 0
+        low = quote.get('low_price', 0) or quote.get('low', 0) or 0
+        opn = quote.get('open_price', 0) or quote.get('open', 0) or 0
+        if opn <= 0 or high <= 0 or low <= 0:
+            return default
+        intraday_range_pct = (high - low) / opn * 100
+        # 波幅的 40%，夹在 [1.0, 8.0] 之间
+        return max(1.0, min(intraday_range_pct * 0.4, 8.0))
+
+    # ==================== 抗跌吸筹检测 ====================
+
+    async def _detect_absorption_pattern(
+        self, pool_codes: list[str], quotes_map: dict
+    ):
+        """检测抗跌吸筹信号：多次主卖但股价不跌
+
+        检测逻辑：
+        1. 查询最近 10 分钟的 big_order_tracking 快照
+        2. 统计 order_strength < -0.1 的快照数（卖方主导周期）
+        3. 同时对比该区间内的价格变化
+        4. 若卖方周期 >= 3 且价格跌幅 < 0.5%，判定为"抗跌吸筹"
+
+        Args:
+            pool_codes: 目标股票池代码列表
+            quotes_map: {code: quote_dict} 实时报价
+        """
+        import time as _time
+
+        db = getattr(self._container, 'db_manager', None)
+        if not db or not pool_codes:
+            return
+
+        now = _time.time()
+        # 10 分钟冷却
+        COOLDOWN_SECONDS = 600
+        # 清理过期冷却记录
+        self._absorption_cooldown = {
+            k: v for k, v in self._absorption_cooldown.items()
+            if now - v < COOLDOWN_SECONDS
+        }
+
+        # 只检查有报价且流动性足够的目标股票
+        MIN_TURNOVER_RATE = 1.0   # 最低换手率 1%
+        MIN_TURNOVER_AMOUNT = 5e6  # 最低日成交额 500万
+        check_codes = [
+            c for c in pool_codes
+            if c in quotes_map
+            and c not in self._absorption_cooldown
+            and (quotes_map[c].get('turnover_rate', 0) or 0) >= MIN_TURNOVER_RATE
+            and (quotes_map[c].get('turnover', 0) or 0) >= MIN_TURNOVER_AMOUNT
+        ]
+        if not check_codes:
+            return
+
+        # 批量查询最近 10 分钟的 big_order_tracking
+        lookback = (datetime.now() - timedelta(minutes=10)).isoformat()
+        placeholders = ','.join(['?' for _ in check_codes])
+
+        try:
+            rows = db.execute_query(f"""
+                SELECT stock_code, order_strength, buy_sell_ratio,
+                       big_buy_amount, big_sell_amount, timestamp
+                FROM big_order_tracking
+                WHERE stock_code IN ({placeholders}) AND timestamp > ?
+                ORDER BY stock_code, timestamp ASC
+            """, tuple(check_codes) + (lookback,))
+        except Exception as e:
+            logger.debug(f"【吸筹检测】查询 big_order_tracking 失败: {e}")
+            return
+
+        if not rows:
+            return
+
+        # 按股票分组
+        from collections import defaultdict
+        snapshots: dict[str, list] = defaultdict(list)
+        for row in rows:
+            snapshots[row[0]].append({
+                'strength': float(row[1] or 0),
+                'ratio': float(row[2] or 1),
+                'buy_amt': float(row[3] or 0),
+                'sell_amt': float(row[4] or 0),
+                'ts': row[5],
+            })
+
+        signals = []
+
+        for code, snaps in snapshots.items():
+            if len(snaps) < 3:
+                continue
+
+            # 统计卖方主导周期（strength < -0.1）
+            sell_dominant_count = sum(1 for s in snaps if s['strength'] < -0.1)
+            # 至少 3 个卖方周期
+            if sell_dominant_count < 3:
+                continue
+
+            # 计算价格变化
+            quote = quotes_map.get(code, {})
+            change_pct = quote.get('change_percent', 0) or quote.get('change_rate', 0) or 0
+
+            # 价格不跌：跌幅 < 波幅阈值的一半（或正在涨）
+            vol_thresh = self._volatility_threshold(quote, default=1.0)
+            if change_pct < -(vol_thresh * 0.5):
+                continue
+
+            # 额外条件：近期快照中大单卖出金额显著但价格坚挺
+            total_sell = sum(s['sell_amt'] for s in snaps)
+            total_buy = sum(s['buy_amt'] for s in snaps)
+            if total_sell < 50000:  # 忽略成交太小的
+                continue
+
+            # 计算近 3 个快照的 strength 趋势（是否在转强）
+            recent_3 = snaps[-3:]
+            strength_improving = (
+                recent_3[-1]['strength'] > recent_3[0]['strength']
+            )
+
+            # 获取股票名称
+            name = quote.get('name', '') or code
+            try:
+                name_rows = db.execute_query(
+                    "SELECT name FROM stocks WHERE code = ?", (code,)
+                )
+                if name_rows and name_rows[0][0]:
+                    name = name_rows[0][0]
+            except Exception:
+                pass
+
+            cur_price = quote.get('last_price', 0) or quote.get('cur_price', 0)
+            sell_str = (
+                f"{total_sell/1e8:.2f}亿" if total_sell >= 1e8
+                else f"{total_sell/1e4:.0f}万"
+            )
+
+            signals.append({
+                'code': code,
+                'name': name,
+                'sell_dominant_count': sell_dominant_count,
+                'total_snapshots': len(snaps),
+                'change_pct': change_pct,
+                'cur_price': cur_price,
+                'total_sell': sell_str,
+                'overall_ratio': round(total_buy / total_sell, 2) if total_sell > 0 else 0,
+                'strength_improving': strength_improving,
+            })
+
+            # 标记冷却
+            self._absorption_cooldown[code] = now
+
+        if not signals:
+            return
+
+        # 写入 high_turnover_cache 供前端读取
+        from ...core import get_state_manager
+        signal_state = get_state_manager()
+        cache_update = {}
+        for s in signals:
+            cache_update[s['code']] = {
+                'flow_signal': 'absorption',
+                'flow_signal_label': '🧲 抗跌吸筹',
+                'flow_signal_detail': f"卖压{s['sell_dominant_count']}次不跌 涨{s['change_pct']:+.1f}%",
+                'flow_signal_time': datetime.now().isoformat(),
+            }
+        signal_state.high_turnover_cache.update_batch(cache_update)
+
+        # 推送企业微信
+        wechat = getattr(self._container, 'wechat_alert_service', None)
+        if not wechat or not wechat.enabled:
+            logger.info(f"【吸筹检测】检测到 {len(signals)} 只信号但未配置企业微信")
+            return
+
+        lines = ["**🧲 抗跌吸筹信号：**\n"]
+        for s in signals:
+            trend_icon = "📈" if s['strength_improving'] else "➡️"
+            lines.append(
+                f"> **{s['name']}** ({s['code']}) "
+                f"¥{s['cur_price']:.2f} "
+                f"涨跌 <font color=\"{'info' if s['change_pct'] >= 0 else 'warning'}\">"
+                f"{s['change_pct']:+.2f}%</font>\n"
+                f"> 卖压周期 {s['sell_dominant_count']}/{s['total_snapshots']}次 "
+                f"大单卖出 {s['total_sell']} "
+                f"买卖比 {s['overall_ratio']} "
+                f"{trend_icon}\n"
+            )
+
+        content = "\n".join(lines)
+        try:
+            from ..alert.wechat_alert import AlertLevel
+            await wechat.send(
+                level=AlertLevel.INFO,
+                title="抗跌吸筹预警",
+                content=content,
+                dedup_key=f"absorption_{'_'.join(s['code'] for s in signals[:3])}",
+            )
+            logger.info(
+                f"【吸筹检测】推送 {len(signals)} 只: "
+                f"{', '.join(s['code'] for s in signals)}"
+            )
+        except Exception as e:
+            logger.warning(f"【吸筹检测】推送失败: {e}")
+
+    # ==================== 拉高出货检测 ====================
+
+    async def _detect_pump_dump_pattern(
+        self, pool_codes: list[str], quotes_map: dict
+    ):
+        """检测拉高出货信号：价格上涨但主力在卖
+
+        检测逻辑：
+        1. 当前涨幅 > 2%（价格在涨）
+        2. 最近 10 分钟 big_order_tracking 中 order_strength < -0.1 的快照 >= 3
+        3. 说明主力趁拉升出货，涨势缺乏资金支撑
+        """
+        import time as _time
+        from ...core import get_state_manager
+
+        db = getattr(self._container, 'db_manager', None)
+        if not db or not pool_codes:
+            return
+
+        now = _time.time()
+        COOLDOWN_SECONDS = 600
+
+        # ---- 信号修正：检查之前的 pump_dump / failed_catch 信号是否应修正为"洗盘" ----
+        signal_state = get_state_manager()
+        ht_cache = signal_state.high_turnover_cache.get_all()
+        correction_update = {}
+        for code, cached in ht_cache.items():
+            old_signal = cached.get('flow_signal')
+            if old_signal not in ('pump_dump', 'failed_catch'):
+                continue
+            quote = quotes_map.get(code)
+            if not quote:
+                continue
+            change_pct = quote.get('change_percent', 0) or quote.get('change_rate', 0) or 0
+            vol_thresh = self._volatility_threshold(quote)
+            # 修正条件：之前判定为出货/接盘失败，但现在涨跌幅已回到 ±阈值一半 以内
+            if abs(change_pct) < vol_thresh * 0.5:
+                correction_update[code] = {
+                    'flow_signal': 'washout',
+                    'flow_signal_label': '🔄 疑似洗盘',
+                    'flow_signal_detail': f"原{cached.get('flow_signal_label','')} 价格已收复 现{change_pct:+.1f}%",
+                    'flow_signal_time': datetime.now().isoformat(),
+                }
+                # 清除冷却，允许后续重新检测
+                self._absorption_cooldown.pop(code, None)
+                logger.info(f"【信号修正】{code} {old_signal} → washout (价格收复)")
+        if correction_update:
+            signal_state.high_turnover_cache.update_batch(correction_update)
+
+        # 流动性过滤 + 冷却（价格筛选移到内层循环，使用动态阈值）
+        MIN_TURNOVER_RATE = 1.0
+        MIN_TURNOVER_AMOUNT = 5e6
+        check_codes = [
+            c for c in pool_codes
+            if c in quotes_map
+            and c not in self._absorption_cooldown
+            and (quotes_map[c].get('turnover_rate', 0) or 0) >= MIN_TURNOVER_RATE
+            and (quotes_map[c].get('turnover', 0) or 0) >= MIN_TURNOVER_AMOUNT
+        ]
+        if not check_codes:
+            return
+
+        lookback = (datetime.now() - timedelta(minutes=10)).isoformat()
+        placeholders = ','.join(['?' for _ in check_codes])
+
+        try:
+            rows = db.execute_query(f"""
+                SELECT stock_code, order_strength, buy_sell_ratio,
+                       big_buy_amount, big_sell_amount
+                FROM big_order_tracking
+                WHERE stock_code IN ({placeholders}) AND timestamp > ?
+                ORDER BY stock_code, timestamp ASC
+            """, tuple(check_codes) + (lookback,))
+        except Exception as e:
+            logger.debug(f"【出货检测】查询失败: {e}")
+            return
+
+        if not rows:
+            return
+
+        from collections import defaultdict
+        snapshots: dict[str, list] = defaultdict(list)
+        for row in rows:
+            snapshots[row[0]].append({
+                'strength': float(row[1] or 0),
+                'ratio': float(row[2] or 1),
+                'buy_amt': float(row[3] or 0),
+                'sell_amt': float(row[4] or 0),
+            })
+
+        signals = []
+        for code, snaps in snapshots.items():
+            if len(snaps) < 3:
+                continue
+
+            # 统计卖方主导周期
+            sell_dominant_count = sum(1 for s in snaps if s['strength'] < -0.1)
+            if sell_dominant_count < 3:
+                continue
+
+            quote = quotes_map.get(code, {})
+            change_pct = quote.get('change_percent', 0) or quote.get('change_rate', 0) or 0
+
+            # 动态阈值：涨幅必须超过个股波幅阈值
+            vol_thresh = self._volatility_threshold(quote)
+            if change_pct <= vol_thresh:
+                continue
+
+            total_sell = sum(s['sell_amt'] for s in snaps)
+            total_buy = sum(s['buy_amt'] for s in snaps)
+            if total_sell < 50000:
+                continue
+
+            # 获取股票名称
+            name = quote.get('name', '') or code
+            try:
+                name_rows = db.execute_query(
+                    "SELECT name FROM stocks WHERE code = ?", (code,)
+                )
+                if name_rows and name_rows[0][0]:
+                    name = name_rows[0][0]
+            except Exception:
+                pass
+
+            cur_price = quote.get('last_price', 0) or quote.get('cur_price', 0)
+            net_sell = total_sell - total_buy
+            net_str = (
+                f"{net_sell/1e8:.2f}亿" if net_sell >= 1e8
+                else f"{net_sell/1e4:.0f}万"
+            )
+
+            signals.append({
+                'code': code,
+                'name': name,
+                'sell_dominant_count': sell_dominant_count,
+                'total_snapshots': len(snaps),
+                'change_pct': change_pct,
+                'cur_price': cur_price,
+                'net_sell': net_str,
+                'overall_ratio': round(total_buy / total_sell, 2) if total_sell > 0 else 0,
+            })
+
+            self._absorption_cooldown[code] = now
+
+        if not signals:
+            return
+
+        # 写入 high_turnover_cache
+        signal_state = get_state_manager()
+        cache_update = {}
+        for s in signals:
+            cache_update[s['code']] = {
+                'flow_signal': 'pump_dump',
+                'flow_signal_label': '💀 拉高出货',
+                'flow_signal_detail': f"涨{s['change_pct']:+.1f}%但主力卖{s['sell_dominant_count']}次 净卖{s['net_sell']}",
+                'flow_signal_time': datetime.now().isoformat(),
+            }
+        signal_state.high_turnover_cache.update_batch(cache_update)
+
+        # 推送企业微信
+        wechat = getattr(self._container, 'wechat_alert_service', None)
+        if not wechat or not wechat.enabled:
+            logger.info(f"【出货检测】检测到 {len(signals)} 只信号但未配置企业微信")
+            return
+
+        lines = ["**💀 拉高出货预警：**\n"]
+        for s in signals:
+            lines.append(
+                f"> **{s['name']}** ({s['code']}) "
+                f"¥{s['cur_price']:.2f} "
+                f"涨 <font color=\"warning\">{s['change_pct']:+.2f}%</font>\n"
+                f"> 主卖 {s['sell_dominant_count']}/{s['total_snapshots']}次 "
+                f"净卖出 {s['net_sell']} "
+                f"买卖比 {s['overall_ratio']}\n"
+            )
+
+        content = "\n".join(lines)
+        try:
+            from ..alert.wechat_alert import AlertLevel
+            await wechat.send(
+                level=AlertLevel.WARNING,
+                title="拉高出货预警",
+                content=content,
+                dedup_key=f"pump_dump_{'_'.join(s['code'] for s in signals[:3])}",
+            )
+            logger.info(
+                f"【出货检测】推送 {len(signals)} 只: "
+                f"{', '.join(s['code'] for s in signals)}"
+            )
+        except Exception as e:
+            logger.warning(f"【出货检测】推送失败: {e}")
+
+    # ==================== 接盘失败检测 ====================
+
+    async def _detect_failed_catch_pattern(
+        self, pool_codes: list[str], quotes_map: dict
+    ):
+        """检测接盘失败信号：主力在买但价格持续下跌
+
+        检测逻辑：
+        1. 当前跌幅 > 2%
+        2. 最近 10 分钟 big_order_tracking 中 buy_sell_ratio > 1.3 的快照 >= 3
+        3. 说明有人在接盘但卖压太大接不住
+        """
+        import time as _time
+        from ...core import get_state_manager
+
+        db = getattr(self._container, 'db_manager', None)
+        if not db or not pool_codes:
+            return
+
+        now = _time.time()
+
+        MIN_TURNOVER_RATE = 1.0
+        MIN_TURNOVER_AMOUNT = 5e6
+        check_codes = [
+            c for c in pool_codes
+            if c in quotes_map
+            and c not in self._absorption_cooldown
+            and (quotes_map[c].get('turnover_rate', 0) or 0) >= MIN_TURNOVER_RATE
+            and (quotes_map[c].get('turnover', 0) or 0) >= MIN_TURNOVER_AMOUNT
+        ]
+        if not check_codes:
+            return
+
+        lookback = (datetime.now() - timedelta(minutes=10)).isoformat()
+        placeholders = ','.join(['?' for _ in check_codes])
+
+        try:
+            rows = db.execute_query(f"""
+                SELECT stock_code, order_strength, buy_sell_ratio,
+                       big_buy_amount, big_sell_amount
+                FROM big_order_tracking
+                WHERE stock_code IN ({placeholders}) AND timestamp > ?
+                ORDER BY stock_code, timestamp ASC
+            """, tuple(check_codes) + (lookback,))
+        except Exception as e:
+            logger.debug(f"【接盘检测】查询失败: {e}")
+            return
+
+        if not rows:
+            return
+
+        from collections import defaultdict
+        snapshots: dict[str, list] = defaultdict(list)
+        for row in rows:
+            snapshots[row[0]].append({
+                'strength': float(row[1] or 0),
+                'ratio': float(row[2] or 1),
+                'buy_amt': float(row[3] or 0),
+                'sell_amt': float(row[4] or 0),
+            })
+
+        signals = []
+        for code, snaps in snapshots.items():
+            if len(snaps) < 3:
+                continue
+
+            # 统计买方主导周期（ratio > 1.3 = 主力在买）
+            buy_dominant_count = sum(1 for s in snaps if s['ratio'] > 1.3)
+            if buy_dominant_count < 3:
+                continue
+
+            quote = quotes_map.get(code, {})
+            change_pct = quote.get('change_percent', 0) or quote.get('change_rate', 0) or 0
+
+            # 动态阈值：跌幅必须超过个股波幅阈值
+            vol_thresh = self._volatility_threshold(quote)
+            if change_pct >= -vol_thresh:
+                continue
+
+            total_buy = sum(s['buy_amt'] for s in snaps)
+            total_sell = sum(s['sell_amt'] for s in snaps)
+            if total_buy < 50000:
+                continue
+
+            name = quote.get('name', '') or code
+            try:
+                name_rows = db.execute_query(
+                    "SELECT name FROM stocks WHERE code = ?", (code,)
+                )
+                if name_rows and name_rows[0][0]:
+                    name = name_rows[0][0]
+            except Exception:
+                pass
+
+            cur_price = quote.get('last_price', 0) or quote.get('cur_price', 0)
+            buy_str = (
+                f"{total_buy/1e8:.2f}亿" if total_buy >= 1e8
+                else f"{total_buy/1e4:.0f}万"
+            )
+
+            signals.append({
+                'code': code,
+                'name': name,
+                'buy_dominant_count': buy_dominant_count,
+                'total_snapshots': len(snaps),
+                'change_pct': change_pct,
+                'cur_price': cur_price,
+                'total_buy': buy_str,
+                'overall_ratio': round(total_buy / total_sell, 2) if total_sell > 0 else 0,
+            })
+
+            self._absorption_cooldown[code] = now
+
+        if not signals:
+            return
+
+        # 写入 high_turnover_cache
+        signal_state = get_state_manager()
+        cache_update = {}
+        for s in signals:
+            cache_update[s['code']] = {
+                'flow_signal': 'failed_catch',
+                'flow_signal_label': '🪤 接盘失败',
+                'flow_signal_detail': f"跌{s['change_pct']:.1f}%但主买{s['buy_dominant_count']}次 买入{s['total_buy']}",
+                'flow_signal_time': datetime.now().isoformat(),
+            }
+        signal_state.high_turnover_cache.update_batch(cache_update)
+
+        # 推送企业微信
+        wechat = getattr(self._container, 'wechat_alert_service', None)
+        if not wechat or not wechat.enabled:
+            logger.info(f"【接盘检测】检测到 {len(signals)} 只信号但未配置企业微信")
+            return
+
+        lines = ["**🪤 接盘失败预警：**\n"]
+        for s in signals:
+            lines.append(
+                f"> **{s['name']}** ({s['code']}) "
+                f"¥{s['cur_price']:.2f} "
+                f"跌 <font color=\"warning\">{s['change_pct']:.2f}%</font>\n"
+                f"> 主买 {s['buy_dominant_count']}/{s['total_snapshots']}次 "
+                f"买入 {s['total_buy']} "
+                f"买卖比 {s['overall_ratio']}\n"
+            )
+
+        content = "\n".join(lines)
+        try:
+            from ..alert.wechat_alert import AlertLevel
+            await wechat.send(
+                level=AlertLevel.WARNING,
+                title="接盘失败预警",
+                content=content,
+                dedup_key=f"failed_catch_{'_'.join(s['code'] for s in signals[:3])}",
+            )
+            logger.info(
+                f"【接盘检测】推送 {len(signals)} 只: "
+                f"{', '.join(s['code'] for s in signals)}"
+            )
+        except Exception as e:
+            logger.warning(f"【接盘检测】推送失败: {e}")

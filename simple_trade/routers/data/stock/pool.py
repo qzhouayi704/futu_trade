@@ -486,8 +486,10 @@ async def get_unsubscribed_stocks(
 
 @router.get("/stocks/pool-capital-flow")
 async def get_pool_capital_flow(container=Depends(get_container)):
-    """批量获取股票池所有股票的资金流向（仅读缓存，不调API）"""
+    """批量获取股票池所有股票的逐笔成交资金数据（来自 daily_order_accumulator）"""
     try:
+        from datetime import datetime as _dt
+
         state = get_state_manager()
         pool_data = state.get_stock_pool()
         all_stocks = pool_data.get('stocks', [])
@@ -496,37 +498,62 @@ async def get_pool_capital_flow(container=Depends(get_container)):
         if not stock_codes:
             return APIResponse.ok(data={'flows': {}, 'total': 0}, message="股票池为空")
 
-        # 纯缓存读取，不触发 API 调用
         db = container.db_manager
+        trade_date = _dt.now().strftime("%Y-%m-%d")
         placeholders = ','.join(['?' for _ in stock_codes])
-        rows = db.execute_query(f"""
-            SELECT stock_code, main_net_inflow, net_inflow_ratio,
-                   big_order_buy_ratio, capital_score, timestamp
-            FROM capital_flow_cache
-            WHERE stock_code IN ({placeholders})
-            ORDER BY timestamp DESC
-        """, tuple(stock_codes))
 
-        # 每只股票只取最新一条
+        rows = db.execute_query(f"""
+            SELECT stock_code,
+                   super_large_buy_amt, super_large_sell_amt,
+                   large_buy_amt, large_sell_amt
+            FROM daily_order_accumulator
+            WHERE stock_code IN ({placeholders}) AND trade_date = ?
+        """, tuple(stock_codes) + (trade_date,))
+
         flows = {}
         for row in (rows or []):
             code = row[0]
-            if code in flows:
-                continue
+            big_buy = float(row[1] or 0) + float(row[3] or 0)
+            big_sell = float(row[2] or 0) + float(row[4] or 0)
+            net_amount = big_buy - big_sell
+            ratio = big_buy / big_sell if big_sell > 0 else (999.0 if big_buy > 0 else 1.0)
             flows[code] = {
                 'stock_code': code,
-                'main_net_inflow': row[1],
-                'net_inflow_ratio': row[2],
-                'big_order_buy_ratio': row[3],
-                'capital_score': row[4],
-                'timestamp': row[5],
-                'is_net_inflow': (row[1] or 0) > 0,
+                'big_buy_amount': big_buy,
+                'big_sell_amount': big_sell,
+                'net_amount': net_amount,
+                'buy_sell_ratio': round(ratio, 2),
+                'is_net_inflow': net_amount > 0,
+                'flow_signal': None,
+                'flow_signal_label': None,
+                'flow_signal_detail': None,
             }
+
+        # 合并 high_turnover_cache 中的资金流信号
+        ht_cache = state.high_turnover_cache.get_all()
+        for code in stock_codes:
+            cached = ht_cache.get(code)
+            if not cached:
+                continue
+            signal = cached.get('flow_signal')
+            if not signal:
+                continue
+            if code not in flows:
+                flows[code] = {
+                    'stock_code': code,
+                    'big_buy_amount': 0, 'big_sell_amount': 0,
+                    'net_amount': 0, 'buy_sell_ratio': 1.0,
+                    'is_net_inflow': False,
+                }
+            flows[code]['flow_signal'] = signal
+            flows[code]['flow_signal_label'] = cached.get('flow_signal_label', '')
+            flows[code]['flow_signal_detail'] = cached.get('flow_signal_detail', '')
 
         return APIResponse.ok(
             data={'flows': flows, 'total': len(flows), 'pool_size': len(stock_codes)},
-            message=f"获取 {len(flows)}/{len(stock_codes)} 只股票资金流向缓存"
+            message=f"获取 {len(flows)}/{len(stock_codes)} 只股票逐笔成交数据"
         )
     except Exception as e:
-        logging.error(f"获取股票池资金流向失败: {e}", exc_info=True)
-        raise BusinessError(message=f"获取股票池资金流向失败: {str(e)}")
+        logging.error(f"获取股票池逐笔成交数据失败: {e}", exc_info=True)
+        raise BusinessError(message=f"获取股票池逐笔成交数据失败: {str(e)}")
+

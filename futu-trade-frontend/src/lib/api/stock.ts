@@ -181,16 +181,18 @@ export const stockApi = {
     return apiClient.post("/stocks/reset-activity-records");
   },
 
-  // 获取股票池资金流向（缓存）
+  // 获取股票池逐笔成交资金数据
   getPoolCapitalFlow: async (): Promise<ApiResponse<{
     flows: Record<string, {
       stock_code: string;
-      main_net_inflow: number;
-      net_inflow_ratio: number;
-      big_order_buy_ratio: number;
-      capital_score: number;
-      timestamp: string;
+      big_buy_amount: number;
+      big_sell_amount: number;
+      net_amount: number;
+      buy_sell_ratio: number;
       is_net_inflow: boolean;
+      flow_signal: string | null;
+      flow_signal_label: string | null;
+      flow_signal_detail: string | null;
     }>;
     total: number;
     pool_size: number;

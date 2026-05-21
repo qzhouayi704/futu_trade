@@ -282,53 +282,95 @@ async def get_high_turnover_stocks(
         for stock in result_stocks:
             stock["ticker_summary"] = analysis_results.get(stock["code"])
 
-    # 轻量级 ticker 摘要：从 DB ticker_data 表批量计算（<0.1s）
     # 为没有 ticker_summary 的股票提供力量比和方向数据
+    # 优先从内存 ticker_df_cache 读取（覆盖所有已订阅 TICKER 的股票），
+    # 回退到 DB ticker_data 表
     _need_ticker = [s["code"] for s in result_stocks if not s.get("ticker_summary")]
     if _need_ticker:
+        _ticker_map = {}
+        # ---- 第1优先：内存 ticker_df_cache（实时推送数据）----
         try:
-            from datetime import datetime as _dt
-            _today = _dt.now().strftime('%Y-%m-%d')
-            db_manager = container.db_manager
-            if db_manager:
-                _ph = ",".join(["?"] * len(_need_ticker))
-                _rows = db_manager.execute_query(f"""
-                    SELECT stock_code,
-                           SUM(CASE WHEN direction='BUY' THEN turnover ELSE 0 END) as buy_amt,
-                           SUM(CASE WHEN direction='SELL' THEN turnover ELSE 0 END) as sell_amt,
-                           SUM(turnover) as total_amt,
-                           COUNT(*) as tick_count
-                    FROM ticker_data
-                    WHERE stock_code IN ({_ph}) AND trade_date = ?
-                    GROUP BY stock_code
-                """, tuple(_need_ticker) + (_today,))
-                _ticker_map = {}
-                for r in (_rows or []):
-                    code, buy_amt, sell_amt = r[0], r[1] or 0, r[2] or 0
-                    ratio = round(buy_amt / sell_amt, 2) if sell_amt > 0 else (2.0 if buy_amt > 0 else 1.0)
-                    net = round((buy_amt - sell_amt) / 10000, 2)  # 万元
-                    score = min(100, max(-100, round((ratio - 1) * 50, 1)))
-                    if score > 20 and ratio > 1.5:
-                        bias, bias_label = "strong_bullish", "强买"
-                    elif score > 20:
-                        bias, bias_label = "bullish", "偏多"
-                    elif score < -20:
-                        bias, bias_label = "bearish", "偏空"
-                    else:
-                        bias, bias_label = "neutral", "中性"
-                    signal = "bullish" if score > 20 else ("bearish" if score < -20 else "neutral")
-                    label = "看涨" if score > 20 else ("看跌" if score < -20 else "中性")
-                    _ticker_map[code] = {
-                        "score": score, "signal": signal, "label": label,
-                        "buy_sell_ratio": ratio, "net_turnover": net,
-                        "bias": bias, "bias_label": bias_label,
-                        "big_order_pct": 0, "big_buy_turnover": 0, "big_sell_turnover": 0,
-                    }
-                for stock in result_stocks:
-                    if not stock.get("ticker_summary") and stock["code"] in _ticker_map:
-                        stock["ticker_summary"] = _ticker_map[stock["code"]]
+            _df_cache = state.ticker_df_cache
+            for code in _need_ticker:
+                df = _df_cache.get(code)
+                if df is None or df.empty:
+                    continue
+                # 汇总买卖额
+                buy_mask = df['ticker_direction'].astype(str).str.upper().isin(['BUY', 'B', '1', 'BID'])
+                sell_mask = df['ticker_direction'].astype(str).str.upper().isin(['SELL', 'S', '2', 'ASK'])
+                buy_amt = float(df.loc[buy_mask, 'turnover'].sum()) if 'turnover' in df.columns else 0
+                sell_amt = float(df.loc[sell_mask, 'turnover'].sum()) if 'turnover' in df.columns else 0
+                if buy_amt == 0 and sell_amt == 0:
+                    continue
+                ratio = round(buy_amt / sell_amt, 2) if sell_amt > 0 else (2.0 if buy_amt > 0 else 1.0)
+                net = round((buy_amt - sell_amt) / 10000, 2)
+                score = min(100, max(-100, round((ratio - 1) * 50, 1)))
+                if score > 20 and ratio > 1.5:
+                    bias, bias_label = "strong_bullish", "强买"
+                elif score > 20:
+                    bias, bias_label = "bullish", "偏多"
+                elif score < -20:
+                    bias, bias_label = "bearish", "偏空"
+                else:
+                    bias, bias_label = "neutral", "中性"
+                signal = "bullish" if score > 20 else ("bearish" if score < -20 else "neutral")
+                label = "看涨" if score > 20 else ("看跌" if score < -20 else "中性")
+                _ticker_map[code] = {
+                    "score": score, "signal": signal, "label": label,
+                    "buy_sell_ratio": ratio, "net_turnover": net,
+                    "bias": bias, "bias_label": bias_label,
+                    "big_order_pct": 0, "big_buy_turnover": 0, "big_sell_turnover": 0,
+                }
         except Exception as e:
-            logger.warning(f"DB ticker 摘要计算失败: {e}")
+            logger.debug(f"ticker_df_cache 摘要失败: {e}")
+
+        # ---- 第2优先：DB ticker_data 表（已持久化的历史数据）----
+        _still_need_db = [c for c in _need_ticker if c not in _ticker_map]
+        if _still_need_db:
+            try:
+                from datetime import datetime as _dt
+                _today = _dt.now().strftime('%Y-%m-%d')
+                db_manager = container.db_manager
+                if db_manager:
+                    _ph = ",".join(["?"] * len(_still_need_db))
+                    _rows = db_manager.execute_query(f"""
+                        SELECT stock_code,
+                               SUM(CASE WHEN direction='BUY' THEN turnover ELSE 0 END) as buy_amt,
+                               SUM(CASE WHEN direction='SELL' THEN turnover ELSE 0 END) as sell_amt,
+                               SUM(turnover) as total_amt,
+                               COUNT(*) as tick_count
+                        FROM ticker_data
+                        WHERE stock_code IN ({_ph}) AND trade_date = ?
+                        GROUP BY stock_code
+                    """, tuple(_still_need_db) + (_today,))
+                    for r in (_rows or []):
+                        code, buy_amt, sell_amt = r[0], r[1] or 0, r[2] or 0
+                        ratio = round(buy_amt / sell_amt, 2) if sell_amt > 0 else (2.0 if buy_amt > 0 else 1.0)
+                        net = round((buy_amt - sell_amt) / 10000, 2)
+                        score = min(100, max(-100, round((ratio - 1) * 50, 1)))
+                        if score > 20 and ratio > 1.5:
+                            bias, bias_label = "strong_bullish", "强买"
+                        elif score > 20:
+                            bias, bias_label = "bullish", "偏多"
+                        elif score < -20:
+                            bias, bias_label = "bearish", "偏空"
+                        else:
+                            bias, bias_label = "neutral", "中性"
+                        signal = "bullish" if score > 20 else ("bearish" if score < -20 else "neutral")
+                        label = "看涨" if score > 20 else ("看跌" if score < -20 else "中性")
+                        _ticker_map[code] = {
+                            "score": score, "signal": signal, "label": label,
+                            "buy_sell_ratio": ratio, "net_turnover": net,
+                            "bias": bias, "bias_label": bias_label,
+                            "big_order_pct": 0, "big_buy_turnover": 0, "big_sell_turnover": 0,
+                        }
+            except Exception as e:
+                logger.warning(f"DB ticker 摘要计算失败: {e}")
+
+        # 应用到结果
+        for stock in result_stocks:
+            if not stock.get("ticker_summary") and stock["code"] in _ticker_map:
+                stock["ticker_summary"] = _ticker_map[stock["code"]]
 
     # 从后台预计算缓存读取大单、量比和流动性数据（不再在请求链路中实时计算）
     for stock in result_stocks:
@@ -387,6 +429,52 @@ async def get_high_turnover_stocks(
                 "bias": bias, "bias_label": bias_label,
                 "big_order_pct": 0, "big_buy_turnover": buy_amt, "big_sell_turnover": sell_amt,
             }
+
+    # ===== 第4层 fallback: 从 big_order_tracking 表取最新快照构造 ticker_summary =====
+    _still_need = [s["code"] for s in result_stocks if not s.get("ticker_summary")]
+    if _still_need:
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            _lookback = (_dt.now() - _td(hours=4)).isoformat()
+            _ph2 = ",".join(["?"] * len(_still_need))
+            _bot_rows = db_manager.execute_query(f"""
+                SELECT stock_code, buy_sell_ratio, order_strength,
+                       big_buy_amount, big_sell_amount
+                FROM big_order_tracking
+                WHERE stock_code IN ({_ph2}) AND timestamp > ?
+                GROUP BY stock_code
+                HAVING timestamp = MAX(timestamp)
+            """, tuple(_still_need) + (_lookback,)) if db_manager else []
+            _bot_map = {}
+            for r in (_bot_rows or []):
+                code = r[0]
+                ratio = float(r[1] or 1)
+                strength = float(r[2] or 0)
+                buy_amt = float(r[3] or 0)
+                sell_amt = float(r[4] or 0)
+                score = min(100, max(-100, round((ratio - 1) * 50, 1)))
+                if score > 20 and ratio > 1.5:
+                    bias, bias_label = "strong_bullish", "强买"
+                elif score > 20:
+                    bias, bias_label = "bullish", "偏多"
+                elif score < -20:
+                    bias, bias_label = "bearish", "偏空"
+                else:
+                    bias, bias_label = "neutral", "中性"
+                signal = "bullish" if score > 20 else ("bearish" if score < -20 else "neutral")
+                label = "看涨" if score > 20 else ("看跌" if score < -20 else "中性")
+                net = round((buy_amt - sell_amt) / 10000, 2)
+                _bot_map[code] = {
+                    "score": score, "signal": signal, "label": label,
+                    "buy_sell_ratio": ratio, "net_turnover": net,
+                    "bias": bias, "bias_label": bias_label,
+                    "big_order_pct": 0, "big_buy_turnover": buy_amt, "big_sell_turnover": sell_amt,
+                }
+            for stock in result_stocks:
+                if not stock.get("ticker_summary") and stock["code"] in _bot_map:
+                    stock["ticker_summary"] = _bot_map[stock["code"]]
+        except Exception as e:
+            logger.debug(f"big_order_tracking fallback 失败: {e}")
 
     # ==================== 价格位置分析（日线 + 当日双时间框架） ====================
     from ...services.analysis.price_position import (

@@ -102,6 +102,7 @@ class StockAIAnalyzer:
         plate_info: Optional[str] = None,
         position_info: Optional[Dict] = None,
         news_data: Optional[Dict] = None,
+        flow_data: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """对单只股票执行 AI 分析
 
@@ -134,7 +135,7 @@ class StockAIAnalyzer:
             # 构建分析 Prompt
             prompt = self._build_analysis_prompt(
                 stock_code, stock_name, quote, klines,
-                score_result, plate_info, position_info, news_data,
+                score_result, plate_info, position_info, news_data, flow_data,
             )
             logger.info(f"[AI分析] {stock_code} Prompt 构建完成，长度: {len(prompt)} 字符，K线: {len(klines) if klines else 0} 条")
 
@@ -179,6 +180,7 @@ class StockAIAnalyzer:
         plate_info: Optional[str],
         position_info: Optional[Dict],
         news_data: Optional[Dict] = None,
+        flow_data: Optional[Dict] = None,
     ) -> str:
         """构建完整的分析 Prompt"""
 
@@ -347,6 +349,49 @@ class StockAIAnalyzer:
             if risks:
                 prompt += f"- **风险因素**: {', '.join(risks)}\n"
             prompt += f"- **总体情绪**: {news_data.get('overall_sentiment', 'neutral')}\n"
+
+        # 9. 日内资金流分析（逐笔成交数据）
+        if flow_data:
+            prompt += "\n## 日内资金流分析（实时逐笔成交）\n"
+
+            # 大单追踪汇总
+            summary = flow_data.get('big_order_summary')
+            if summary:
+                prompt += f"""### 近 30 分钟大单追踪
+- 主力趋势: **{summary['trend']}**
+- 平均强度: {summary['avg_strength']:+.2f} (正=买方主导, 负=卖方主导)
+- 买方主导周期: {summary['buy_dominant_periods']}/{summary['total_periods']}
+- 卖方主导周期: {summary['sell_dominant_periods']}/{summary['total_periods']}
+"""
+
+            # 当日累计
+            accum = flow_data.get('daily_accumulator')
+            if accum:
+                prompt += f"""### 当日累计
+- 大单买入: {accum['big_buy']}
+- 大单卖出: {accum['big_sell']}
+- **净额**: {accum['net']} ({'\u2191净流入' if accum['is_net_inflow'] else '\u2193净流出'})
+- 买卖比: {accum['ratio']}
+"""
+
+            # 资金流信号
+            signal = flow_data.get('flow_signal')
+            if signal:
+                prompt += f"""### \u26a0\ufe0f 资金流信号
+- **信号类型**: {signal['label']}
+- **详情**: {signal['detail']}
+- **含义**: {'\u5e95部承接,看多' if signal['type']=='absorption' else '\u4e3b\u529b\u51fa\u8d27,\u770b\u7a7a' if signal['type']=='pump_dump' else '\u4e70\u65b9\u65e0\u529b,\u770b\u7a7a' if signal['type']=='failed_catch' else '\u6d17\u76d8\u53ef\u80fd,\u89c2\u671b' if signal['type']=='washout' else '\u5f85\u5224\u65ad'}
+"""
+
+            # 最近快照明细
+            snapshots = flow_data.get('recent_big_orders', [])
+            if snapshots:
+                prompt += "### 最近大单快照\n"
+                prompt += "| 时间 | 买入额 | 卖出额 | 买卖比 | 强度 |\n"
+                prompt += "|------|--------|--------|--------|------|\n"
+                for s in snapshots[:6]:
+                    prompt += f"| {s['time'][-8:]} | {s['buy_amt']} | {s['sell_amt']} | {s['ratio']} | {s['strength']:+.2f} |\n"
+                prompt += "\n"
 
         # 9. 输出格式要求
         prompt += """

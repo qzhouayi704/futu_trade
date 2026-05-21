@@ -34,14 +34,19 @@ const TickerAnalysisPanel = dynamic(
   () => import("@/app/enhanced-heat/components/TickerAnalysisPanel").then(m => m.TickerAnalysisPanel),
   { ssr: false }
 );
-const KlinePanel = dynamic(
-  () => import("./components/KlinePanel"),
+const IntradayCompositeChart = dynamic(
+  () => import("./components/IntradayCompositeChart").then(m => m.IntradayCompositeChart),
   { ssr: false }
 );
-const PriceAnalysisPanel = dynamic(
-  () => import("./components/PriceAnalysisPanel"),
+const SignalResonancePanel = dynamic(
+  () => import("./components/SignalResonancePanel").then(m => m.SignalResonancePanel),
   { ssr: false }
 );
+const KlineDeltaChart = dynamic(
+  () => import("./components/KlineDeltaChart").then(m => m.KlineDeltaChart),
+  { ssr: false }
+);
+
 
 export default function StockDetailPage() {
   const searchParams = useSearchParams();
@@ -50,8 +55,6 @@ export default function StockDetailPage() {
   const [stock, setStock] = useState<TopHotStock | null>(null);
   const [loading, setLoading] = useState(false);
   const [flowTimeline, setFlowTimeline] = useState<CapitalFlowTimelinePoint[]>([]);
-  const [showKline, setShowKline] = useState(false);
-  const [showPriceAnalysis, setShowPriceAnalysis] = useState(false);
 
   // URL参数初始化
   useEffect(() => {
@@ -156,6 +159,21 @@ export default function StockDetailPage() {
         {/* ③ 关键指标面板 */}
         <KeyMetricsPanel stock={stock} />
 
+        {/* ③.5 信号共振 + 日内分时叠加图 */}
+        {stockCode && (
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+            <div className="xl:col-span-2">
+              <IntradayCompositeChart stockCode={stockCode} />
+            </div>
+            <SignalResonancePanel stockCode={stockCode} />
+          </div>
+        )}
+
+        {/* ③.8 5分钟K线+Delta联动图 */}
+        {stockCode && (
+          <KlineDeltaChart stockCode={stockCode} />
+        )}
+
         {/* ④ 资金流向 + 大单追踪 */}
         {stockCode && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -180,34 +198,6 @@ export default function StockDetailPage() {
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
             <OrderBookPanel stockCode={stockCode} />
             <TickerAnalysisPanel stockCode={stockCode} />
-          </div>
-        )}
-
-        {/* ⑦ 价格位置分析（可折叠） */}
-        {stockCode && (
-          <div className="bg-card rounded-xl border border-border overflow-hidden">
-            <button
-              onClick={() => setShowPriceAnalysis(!showPriceAnalysis)}
-              className="w-full px-4 py-3 flex items-center justify-between hover:bg-accent/30 transition-colors"
-            >
-              <span className="text-sm font-semibold text-foreground">📉 价格位置分析</span>
-              <span className="text-muted-foreground text-sm">{showPriceAnalysis ? "▲ 收起" : "▼ 展开"}</span>
-            </button>
-            {showPriceAnalysis && <PriceAnalysisPanel />}
-          </div>
-        )}
-
-        {/* ⑧ K线图表（可折叠） */}
-        {stockCode && (
-          <div className="bg-card rounded-xl border border-border overflow-hidden">
-            <button
-              onClick={() => setShowKline(!showKline)}
-              className="w-full px-4 py-3 flex items-center justify-between hover:bg-accent/30 transition-colors"
-            >
-              <span className="text-sm font-semibold text-foreground">📈 K线图表</span>
-              <span className="text-muted-foreground text-sm">{showKline ? "▲ 收起" : "▼ 展开"}</span>
-            </button>
-            {showKline && <KlinePanel />}
           </div>
         )}
       </div>

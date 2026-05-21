@@ -60,13 +60,17 @@ async def analyze_stock(
         # 6. 异步获取消息面（不阻塞，失败不影响分析）
         news_data = await _get_stock_news(container, stock_code, stock_name)
 
+        # 6.5 获取实时逐笔成交 / 资金流信号
+        flow_data = _get_intraday_flow_data(container, stock_code)
+
         logger.info(
             f"[AI分析API] {stock_code} 数据聚合完成 | "
             f"行情: {'\u2713' if quote else '\u2717'} | "
             f"K线: {len(klines) if klines else 0}条 | "
             f"板块: {'\u2713' if plate_info else '\u2717'} | "
             f"持仓: {'\u2713' if position_info else '\u2717'} | "
-            f"消息面: {len(news_data.get('news', [])) if news_data else 0}条"
+            f"消息面: {len(news_data.get('news', [])) if news_data else 0}条 | "
+            f"资金流: {'\u2713' if flow_data else '\u2717'}"
         )
 
         # 7. 执行 AI 分析
@@ -79,6 +83,7 @@ async def analyze_stock(
             plate_info=plate_info,
             position_info=position_info,
             news_data=news_data,
+            flow_data=flow_data,
         )
 
         if result.get('success'):
@@ -340,3 +345,102 @@ async def _get_stock_news(container, stock_code: str, stock_name: str) -> dict:
     except Exception as e:
         logger.debug(f"获取 {stock_code} 消息面失败: {e}")
         return {}
+
+
+def _get_intraday_flow_data(container, stock_code: str) -> dict:
+    """获取日内逐笔成交资金流数据
+
+    聚合三个来源：
+    1. big_order_tracking — 最近30分钟大单快照
+    2. daily_order_accumulator — 当日累计
+    3. high_turnover_cache — 资金流信号（吸筹/出货/接盘失败）
+    """
+    result = {}
+    db = container.db_manager
+    if not db:
+        return result
+
+    # 1) 大单追踪快照（最近30分钟）
+    try:
+        from datetime import datetime, timedelta
+        lookback = (datetime.now() - timedelta(minutes=30)).isoformat()
+        rows = db.execute_query("""
+            SELECT timestamp, big_buy_count, big_sell_count,
+                   big_buy_amount, big_sell_amount,
+                   buy_sell_ratio, order_strength
+            FROM big_order_tracking
+            WHERE stock_code = ? AND timestamp > ?
+            ORDER BY timestamp DESC LIMIT 10
+        """, (stock_code, lookback))
+
+        if rows:
+            snapshots = []
+            for r in rows:
+                snapshots.append({
+                    'time': (r[0] or '')[:19],
+                    'buy_count': r[1] or 0,
+                    'sell_count': r[2] or 0,
+                    'buy_amt': f"{(r[3] or 0)/1e4:.0f}万",
+                    'sell_amt': f"{(r[4] or 0)/1e4:.0f}万",
+                    'ratio': round(float(r[5] or 1), 2),
+                    'strength': round(float(r[6] or 0), 2),
+                })
+            result['recent_big_orders'] = snapshots
+
+            # 汇总趋势
+            strengths = [float(r[6] or 0) for r in rows]
+            avg_strength = sum(strengths) / len(strengths) if strengths else 0
+            sell_dominant = sum(1 for s in strengths if s < -0.1)
+            buy_dominant = sum(1 for s in strengths if s > 0.1)
+            result['big_order_summary'] = {
+                'avg_strength': round(avg_strength, 2),
+                'sell_dominant_periods': sell_dominant,
+                'buy_dominant_periods': buy_dominant,
+                'total_periods': len(rows),
+                'trend': '主力卖出' if avg_strength < -0.15 else '主力买入' if avg_strength > 0.15 else '均衡',
+            }
+    except Exception as e:
+        logger.debug(f"获取 {stock_code} 大单追踪失败: {e}")
+
+    # 2) 当日累计
+    try:
+        from datetime import datetime as _dt
+        trade_date = _dt.now().strftime("%Y-%m-%d")
+        rows2 = db.execute_query("""
+            SELECT super_large_buy_amt, super_large_sell_amt,
+                   large_buy_amt, large_sell_amt
+            FROM daily_order_accumulator
+            WHERE stock_code = ? AND trade_date = ?
+        """, (stock_code, trade_date))
+
+        if rows2:
+            r = rows2[0]
+            big_buy = float(r[0] or 0) + float(r[2] or 0)
+            big_sell = float(r[1] or 0) + float(r[3] or 0)
+            net = big_buy - big_sell
+            result['daily_accumulator'] = {
+                'big_buy': f"{big_buy/1e4:.0f}万",
+                'big_sell': f"{big_sell/1e4:.0f}万",
+                'net': f"{'+' if net > 0 else ''}{net/1e4:.0f}万",
+                'ratio': round(big_buy / big_sell, 2) if big_sell > 0 else 999,
+                'is_net_inflow': net > 0,
+            }
+    except Exception as e:
+        logger.debug(f"获取 {stock_code} 日内累计失败: {e}")
+
+    # 3) 资金流信号
+    try:
+        from ...core import get_state_manager
+        state = get_state_manager()
+        ht_cache = state.high_turnover_cache.get_all()
+        cached = ht_cache.get(stock_code)
+        if cached and cached.get('flow_signal'):
+            result['flow_signal'] = {
+                'type': cached['flow_signal'],
+                'label': cached.get('flow_signal_label', ''),
+                'detail': cached.get('flow_signal_detail', ''),
+            }
+    except Exception:
+        pass
+
+    return result

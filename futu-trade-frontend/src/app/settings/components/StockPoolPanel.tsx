@@ -12,12 +12,14 @@ import type { Plate, Stock } from "@/types";
 
 interface CapitalFlowItem {
   stock_code: string;
-  main_net_inflow: number;
-  net_inflow_ratio: number;
-  big_order_buy_ratio: number;
-  capital_score: number;
-  timestamp: string;
+  big_buy_amount: number;
+  big_sell_amount: number;
+  net_amount: number;
+  buy_sell_ratio: number;
   is_net_inflow: boolean;
+  flow_signal: string | null;
+  flow_signal_label: string | null;
+  flow_signal_detail: string | null;
 }
 
 export default function StockPoolPanel() {
@@ -425,10 +427,13 @@ export default function StockPoolPanel() {
                     市场
                   </th>
                   <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
-                    主力净流入
+                    大单净额
                   </th>
                   <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">
-                    资金评分
+                    买卖比
+                  </th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                    信号
                   </th>
                   <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     操作
@@ -438,14 +443,14 @@ export default function StockPoolPanel() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {loading ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
                       <i className="fas fa-spinner fa-spin mr-2"></i>
                       加载中...
                     </td>
                   </tr>
                 ) : filteredStocks.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
                       暂无股票数据
                     </td>
                   </tr>
@@ -468,7 +473,7 @@ export default function StockPoolPanel() {
                             <span className={`font-medium ${
                               flow.is_net_inflow ? 'text-red-500' : 'text-green-600'
                             }`}>
-                              {flow.is_net_inflow ? '+' : ''}{formatAmount(flow.main_net_inflow)}
+                              {flow.is_net_inflow ? '+' : ''}{formatAmount(flow.net_amount)}
                             </span>
                           ) : (
                             <span className="text-gray-300">--</span>
@@ -477,11 +482,33 @@ export default function StockPoolPanel() {
                         <td className="px-3 py-3 text-sm text-center">
                           {flow ? (
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                              flow.capital_score >= 65 ? 'bg-red-100 text-red-700' :
-                              flow.capital_score >= 50 ? 'bg-yellow-100 text-yellow-700' :
+                              flow.buy_sell_ratio >= 1.3 ? 'bg-red-100 text-red-700' :
+                              flow.buy_sell_ratio >= 0.8 ? 'bg-yellow-100 text-yellow-700' :
                               'bg-green-100 text-green-700'
                             }`}>
-                              {flow.capital_score.toFixed(0)}
+                              {flow.buy_sell_ratio >= 999 ? '∞' : flow.buy_sell_ratio.toFixed(2)}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">--</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-center">
+                          {flow?.flow_signal ? (
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${
+                                flow.flow_signal === 'absorption'
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : flow.flow_signal === 'pump_dump'
+                                  ? 'bg-red-100 text-red-700'
+                                  : flow.flow_signal === 'failed_catch'
+                                  ? 'bg-orange-100 text-orange-700'
+                                  : flow.flow_signal === 'washout'
+                                  ? 'bg-purple-100 text-purple-700'
+                                  : 'bg-gray-100 text-gray-600'
+                              }`}
+                              title={flow.flow_signal_detail || ''}
+                            >
+                              {flow.flow_signal_label}
                             </span>
                           ) : (
                             <span className="text-gray-300">--</span>

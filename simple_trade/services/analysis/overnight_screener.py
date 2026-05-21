@@ -55,13 +55,13 @@ class OvernightScreener:
 
     async def run_screen(self, stock_list: List[Dict[str, Any]]) -> List[OvernightCandidate]:
         """
-        主入口：三模式选股
+        主入口：双模式选股
 
-        每只股票同时评估 TREND、REVERSAL、MOMENTUM 三种模式，
+        每只股票同时评估 TREND、MOMENTUM 两种模式，
         分别排除、评分、排名，最终合并输出。
 
         Returns:
-            合并的候选列表（TREND Top10 + REVERSAL Top10 + MOMENTUM Top10），按总分降序
+            合并的候选列表（TREND Top10 + MOMENTUM Top10），按总分降序
         """
         if not stock_list:
             return []
@@ -69,7 +69,6 @@ class OvernightScreener:
         logger.info(f"[盘后优选] 开始三模评分，共 {len(stock_list)} 只股票")
 
         trend_candidates = []
-        reversal_candidates = []
         momentum_candidates = []
 
         # --- MOMENTUM 预计算: 板块缓存 ---
@@ -131,28 +130,7 @@ class OvernightScreener:
                 if trend_score >= PASSING_SCORE:
                     trend_candidates.append(c_t)
 
-            # --- REVERSAL 候选 ---
-            if indicators:
-                c_r = OvernightCandidate(stock_code=code, stock_name=name)
-                c_r.key_metrics = self._collect_metrics(stock)
-                c_r.category = "趋势反转"
-
-                from ..strategy.stock_scorer import StockScorer, PASSING_SCORE
-                scorer = StockScorer()
-                rev_score, rev_details = scorer._score_reversal(indicators)
-                c_r.scores['scorer_reversal'] = rev_score
-                c_r.total_score = rev_score
-
-                bonus = self._overnight_bonus(stock, code)
-                c_r.total_score += bonus['total']
-                c_r.reasons = bonus['reasons']
-
-                c_r.penalty_factor, c_r.penalty_reasons = self._check_penalties(stock, code)
-                c_r.total_score *= c_r.penalty_factor
-
-                c_r.verdict = self._verdict(c_r.total_score)
-                if rev_score >= PASSING_SCORE:
-                    reversal_candidates.append(c_r)
+            # REVERSAL 策略已归档 → strategy_archive/reversal_v1.py
 
             # --- MOMENTUM 候选 ---
             if klines and len(klines) >= 5:
@@ -178,26 +156,19 @@ class OvernightScreener:
 
         # 排序 + 排名
         trend_candidates.sort(key=lambda x: x.total_score, reverse=True)
-        reversal_candidates.sort(key=lambda x: x.total_score, reverse=True)
         momentum_candidates.sort(key=lambda x: x.total_score, reverse=True)
 
         for i, c in enumerate(trend_candidates[:10]):
-            c.rank = i + 1
-        for i, c in enumerate(reversal_candidates[:10]):
             c.rank = i + 1
         for i, c in enumerate(momentum_candidates[:10]):
             c.rank = i + 1
 
         # 合并输出
-        result = trend_candidates[:10] + reversal_candidates[:10] + momentum_candidates[:10]
+        result = trend_candidates[:10] + momentum_candidates[:10]
 
         logger.info(
             f"[盘后优选] 完成 | TREND: {len(trend_candidates)}只(Top1={trend_candidates[0].total_score:.0f}分)"
             if trend_candidates else "[盘后优选] TREND: 0只"
-        )
-        logger.info(
-            f"[盘后优选] 完成 | REVERSAL: {len(reversal_candidates)}只(Top1={reversal_candidates[0].total_score:.0f}分)"
-            if reversal_candidates else "[盘后优选] REVERSAL: 0只"
         )
         logger.info(
             f"[盘后优选] 完成 | MOMENTUM: {len(momentum_candidates)}只(Top1={momentum_candidates[0].total_score:.0f}分)"

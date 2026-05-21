@@ -1,14 +1,47 @@
 // 个股头部 — 价格/涨跌/标签/最佳策略摘要
 "use client";
 
+import { useState, useEffect, useCallback } from "react";
 import type { TopHotStock } from "@/types";
+import { stockApi } from "@/lib/api/stock";
 
 interface Props {
   stock: TopHotStock | null;
   loading?: boolean;
+  onWatchlistChange?: (inWatchlist: boolean) => void;
 }
 
-export default function StockHeader({ stock, loading }: Props) {
+export default function StockHeader({ stock, loading, onWatchlistChange }: Props) {
+  const [inWatchlist, setInWatchlist] = useState(false);
+  const [toggling, setToggling] = useState(false);
+
+  // 检查当前股票是否已在自选
+  useEffect(() => {
+    if (!stock?.code) return;
+    stockApi.getWatchlist().then(res => {
+      if (res.success && res.data?.codes) {
+        setInWatchlist(res.data.codes.includes(stock.code));
+      }
+    }).catch(() => {});
+  }, [stock?.code]);
+
+  const handleToggleWatchlist = useCallback(async () => {
+    if (!stock?.code || toggling) return;
+    setToggling(true);
+    try {
+      if (inWatchlist) {
+        await stockApi.removeFromWatchlist(stock.code);
+        setInWatchlist(false);
+        onWatchlistChange?.(false);
+      } else {
+        await stockApi.addToWatchlist([stock.code]);
+        setInWatchlist(true);
+        onWatchlistChange?.(true);
+      }
+    } catch { /* ignore */ }
+    setToggling(false);
+  }, [stock?.code, inWatchlist, toggling, onWatchlistChange]);
+
   if (loading) {
     return (
       <div className="animate-pulse flex items-center gap-6 p-6 bg-card rounded-xl border border-border">
@@ -81,8 +114,21 @@ export default function StockHeader({ stock, loading }: Props) {
           </span>
         )}
 
-        {/* 最佳策略徽章 — 推到右侧 */}
+        {/* 自选 + 最佳策略徽章 — 推到右侧 */}
         <div className="ml-auto flex items-center gap-3">
+          {/* 加入/移除自选 */}
+          <button
+            onClick={handleToggleWatchlist}
+            disabled={toggling}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm font-medium transition-all ${
+              inWatchlist
+                ? 'bg-yellow-500/15 text-yellow-600 border-yellow-500/30 hover:bg-yellow-500/25'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent hover:text-foreground'
+            } ${toggling ? 'opacity-50 cursor-wait' : ''}`}
+          >
+            <span className="text-base">{inWatchlist ? '⭐' : '☆'}</span>
+            {inWatchlist ? '已自选' : '加自选'}
+          </button>
           {veto && (
             <span className="text-xs text-red-500 bg-red-500/10 px-2 py-1 rounded border border-red-500/20">
               ⛔ {veto}

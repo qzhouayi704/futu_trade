@@ -55,6 +55,7 @@ from .data.quick_scan import router as quick_scan_router
 from .data.overnight import router as overnight_screen_router
 from .data.stock_insight import router as stock_insight_router
 from .data.resistance_breakout import router as resistance_breakout_router
+from .data.stock_detail_composite import router as stock_detail_composite_router
 
 
 
@@ -105,3 +106,4 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(overnight_screen_router)
     app.include_router(stock_insight_router)
     app.include_router(resistance_breakout_router)
+    app.include_router(stock_detail_composite_router)
