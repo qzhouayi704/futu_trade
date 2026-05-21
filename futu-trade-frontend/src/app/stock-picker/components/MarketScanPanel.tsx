@@ -926,7 +926,7 @@ export default function MarketScanPanel() {
                       {/* 操作：深度分析 + 信号指示 */}
                       <td className="px-2 py-3 text-sm text-center relative">
                         <div className="inline-flex items-center gap-1">
-                          {/* 策略信号指示点 */}
+                          {/* 策略信号标签 */}
                           {(() => {
                             const ts = tradeSignals[stock.code];
                             const cr = stock.change_rate || 0;
@@ -938,11 +938,22 @@ export default function MarketScanPanel() {
                             if (valid && valid.length > 0) {
                               const main = valid[0];
                               const isBuy = main.signal_type === "BUY";
+                              const label = isBuy ? "买" : "卖";
+                              const icon = isBuy ? "▲" : "▼";
                               return (
                                 <span
-                                  className={`w-2 h-2 rounded-full flex-shrink-0 ${isBuy ? "bg-emerald-500 animate-pulse" : "bg-red-500 animate-pulse"}`}
-                                  title={`${isBuy ? "买入" : "卖出"}信号: ${main.condition_text || main.strategy_name}`}
-                                />
+                                  className={`
+                                    inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold
+                                    shadow-sm cursor-help animate-pulse
+                                    ${isBuy
+                                      ? "bg-emerald-500 text-white ring-1 ring-emerald-400/50"
+                                      : "bg-red-500 text-white ring-1 ring-red-400/50"
+                                    }
+                                  `}
+                                  title={`${isBuy ? "买入" : "卖出"}信号: ${main.condition_text || main.strategy_name}${valid.length > 1 ? `\n(共${valid.length}个信号)` : ""}`}
+                                >
+                                  {icon}{label}
+                                </span>
                               );
                             }
                             return null;
