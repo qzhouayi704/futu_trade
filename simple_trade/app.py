@@ -225,6 +225,19 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning(f"每日K线自动更新任务启动失败: {e}")
 
+            # 启动动量引擎（BSR + Delta 实时信号）
+            try:
+                from .services.momentum import MomentumEngine
+                momentum_engine = MomentumEngine(container)
+                container.momentum_engine = momentum_engine
+                async def _start_momentum():
+                    await asyncio.sleep(5)  # 等待订阅稳定
+                    await momentum_engine.start()
+                _track(_start_momentum(), name="momentum_engine")
+                logging.info("动量引擎已注册启动")
+            except Exception as e:
+                logging.warning(f"动量引擎启动失败: {e}")
+
             # 自动恢复监控：如果上次关闭前监控在运行，则自动重启
             if state_manager.was_running_before_shutdown():
                 async def _auto_resume_monitoring():

@@ -58,6 +58,7 @@ class TickerService:
         self._subscription_manager = subscription_manager
         self._db_manager = db_manager
         self._cache: Dict[str, TickerData] = {}
+        self._momentum_engine = None  # 动量引擎回调（延迟注入）
 
     def _ensure_subscribed(self, stock_code: str) -> bool:
         """确保股票已订阅 TICKER 类型，委托给 SubscriptionManager"""
@@ -245,6 +246,7 @@ class TickerService:
                 updated_at=datetime.now(),
             )
             self._persist_ticker_data(stock_code, records)
+            self._feed_momentum_engine(stock_code, records)
             return result
         except Exception as e:
             logger.error(f"解析逐笔成交数据异常 {stock_code}: {e}")
@@ -305,6 +307,35 @@ class TickerService:
             return 'SELL'
         else:
             return 'NEUTRAL'
+
+    def _feed_momentum_engine(self, stock_code: str, records: List[TickerRecord]) -> None:
+        """将逐笔数据喂给动量引擎（失败不影响主流程）"""
+        try:
+            if self._momentum_engine is None:
+                # 延迟获取动量引擎（避免循环依赖）
+                try:
+                    from ....dependencies import get_container
+                    container = get_container()
+                    if container and hasattr(container, 'momentum_engine'):
+                        self._momentum_engine = container.momentum_engine
+                except Exception:
+                    return
+
+            if self._momentum_engine is None:
+                return
+
+            for r in records:
+                parsed = self._parse_ticker_time(r.time)
+                ts_ms = parsed[0] if parsed else int(datetime.now().timestamp() * 1000)
+                self._momentum_engine.on_ticker(stock_code, {
+                    'price': r.price,
+                    'volume': r.volume,
+                    'turnover': r.turnover,
+                    'ticker_direction': r.direction,
+                    'timestamp': ts_ms,
+                })
+        except Exception as e:
+            logger.debug(f"动量引擎喂数据失败 {stock_code}: {e}")
 
     def clear_cache(self):
         """清除缓存"""
