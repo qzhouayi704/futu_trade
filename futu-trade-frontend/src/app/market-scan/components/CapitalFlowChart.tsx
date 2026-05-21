@@ -129,40 +129,29 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
         })));
       }
 
-      // === 3. 分钟买入/卖出柱状图（底部叠加层）===
-      // 买入柱（正值，红色）
-      const buySeries = chart.addHistogramSeries({
+      // === 3. 分钟净买柱状图（底部叠加层）===
+      // 正值=主动买入超过卖出（红色朝上），负值=主动卖出超过买入（绿色朝下）
+      const netBuySeries = chart.addHistogramSeries({
         priceScaleId: "volume_scale",
         title: "",
         priceFormat: { type: "volume" },
         lastValueVisible: false,
-        color: "rgba(239, 68, 68, 0.5)",
       });
 
-      // 卖出柱（负值，绿色）
-      const sellSeries = chart.addHistogramSeries({
-        priceScaleId: "volume_scale",
-        title: "",
-        priceFormat: { type: "volume" },
-        lastValueVisible: false,
-        color: "rgba(34, 197, 94, 0.5)",
-      });
-
-      // 底部20%空间
+      // 底部30%空间，上下各留余量显示正负柱
       chart.priceScale("volume_scale").applyOptions({
-        scaleMargins: { top: 0.8, bottom: 0 },
+        scaleMargins: { top: 0.7, bottom: 0 },
         visible: false,
       });
 
-      buySeries.setData(data.map((p) => ({
-        time: toTimestamp(p.time),
-        value: (p as any).buy_in ?? Math.max((p as any).net_buy ?? 0, 0),
-      })));
-
-      sellSeries.setData(data.map((p) => ({
-        time: toTimestamp(p.time),
-        value: (p as any).sell_in ?? Math.min((p as any).net_buy ?? 0, 0),
-      })));
+      netBuySeries.setData(data.map((p) => {
+        const val = (p as any).net_buy as number ?? (p as any).main_in ?? 0;
+        return {
+          time: toTimestamp(p.time),
+          value: val,  // 保留正负值，正=净买入朝上，负=净卖出朝下
+          color: val >= 0 ? "rgba(239, 68, 68, 0.55)" : "rgba(34, 197, 94, 0.55)",
+        };
+      }));
 
       chart.timeScale().fitContent();
 
@@ -204,11 +193,11 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
       <div className="absolute top-2 left-3 z-10 flex items-center gap-4 text-[10px]">
         <span className="flex items-center gap-1">
           <span className="w-3 h-3 bg-red-400/60 inline-block rounded-sm" />
-          <span className="text-gray-600">主动买入</span>
+          <span className="text-gray-600">净买入</span>
         </span>
         <span className="flex items-center gap-1">
           <span className="w-3 h-3 bg-green-400/60 inline-block rounded-sm" />
-          <span className="text-gray-600">主动卖出</span>
+          <span className="text-gray-600">净卖出</span>
         </span>
         <span className="flex items-center gap-1">
           <span className="w-4 h-[2px] bg-blue-500 inline-block rounded" />
