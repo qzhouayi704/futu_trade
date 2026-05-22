@@ -135,7 +135,7 @@ export function AlertsCard() {
                             ? (isHigh ? "bg-red-200 text-red-700" : "bg-orange-200 text-orange-700")
                             : (isHigh ? "bg-emerald-200 text-emerald-700" : "bg-blue-200 text-blue-700")
                         }`}>
-                          {label} · {isHigh ? "高危" : "注意"}
+                          {label} · {isAbsorption ? (isHigh ? "高危" : "注意") : (isHigh ? "强势" : "关注")}
                         </span>
                       </div>
                       <span className={`text-sm font-bold ${

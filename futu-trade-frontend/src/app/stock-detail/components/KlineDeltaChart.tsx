@@ -125,14 +125,28 @@ function CandleDeltaSVG({ candles }: { candles: KlineDeltaCandle[] }) {
     return arr;
   }, [minP, rangeP, padP]);
 
-  // Time labels
+  // Time labels — detect daily kline fallback (all times are 00:00) and show dates instead
   const timeLabels = useMemo(() => {
     const labels: { i: number; label: string }[] = [];
     const step = Math.max(1, Math.floor(n / 8));
+
+    // Check if all candle times are "00:00" (daily kline fallback)
+    const allZeroTime = candles.every((c) => {
+      const m = c.time.match(/(\d{2}:\d{2})/);
+      return !m || m[1] === "00:00";
+    });
+
     for (let i = 0; i < n; i += step) {
       const t = candles[i].time;
-      const match = t.match(/(\d{2}:\d{2})/);
-      if (match) labels.push({ i, label: match[1] });
+      if (allZeroTime) {
+        // Daily kline: show MM/DD from date portion
+        const dateMatch = t.match(/(\d{4})-(\d{2})-(\d{2})/);
+        if (dateMatch) labels.push({ i, label: `${dateMatch[2]}/${dateMatch[3]}` });
+      } else {
+        // 5min kline: show HH:MM
+        const match = t.match(/(\d{2}:\d{2})/);
+        if (match) labels.push({ i, label: match[1] });
+      }
     }
     return labels;
   }, [candles, n]);

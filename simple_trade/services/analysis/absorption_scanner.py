@@ -165,6 +165,24 @@ class AbsorptionScanner:
                     alerts.append(result)
                     self._cooldown[rally_key] = now
 
+        # 过滤过时预警：只保留 end_time 在最近30分钟内的
+        now_hhmm = now.strftime('%H:%M')
+        fresh_alerts = []
+        for a in alerts:
+            end_t = a.get('end_time', '')
+            if end_t and now_hhmm > end_t:
+                # 计算距离当前多少分钟
+                try:
+                    eh, em = int(end_t[:2]), int(end_t[3:5])
+                    nh, nm = now.hour, now.minute
+                    diff = (nh * 60 + nm) - (eh * 60 + em)
+                    if diff > 30:
+                        continue  # 超过30分钟，丢弃
+                except (ValueError, IndexError):
+                    pass
+            fresh_alerts.append(a)
+        alerts = fresh_alerts
+
         if alerts:
             abs_list = [a['stock_code'] for a in alerts if a['alert_type'] == 'absorption']
             rally_list = [a['stock_code'] for a in alerts if a['alert_type'] == 'rally']
