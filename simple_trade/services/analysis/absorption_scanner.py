@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class AbsorptionScanner:
-    """量价异常实时扫描器（吸收 + 拉升）"""
+    """量价异常实时扫描器（吸收 + 拉升 + 放量下跌）"""
 
     # 吸收检测参数
     MIN_WINDOW = 5              # 最少连续5分钟净买入
@@ -26,6 +26,12 @@ class AbsorptionScanner:
     # 拉升检测参数
     RALLY_PRICE_THRESHOLD = 1.0 # 拉升：价格涨幅 ≥1.0% 视为"真正拉升"
     RALLY_MIN_WINDOW = 5        # 拉升最少连续5分钟
+    # 放量下跌检测参数
+    DUMP_PRICE_THRESHOLD = -1.0 # 放量下跌：价格跌幅 ≤-1.0%
+    DUMP_MIN_WINDOW = 5         # 放量下跌最少连续5分钟
+    # 拉升位置阈值
+    HIGH_POSITION_PCT = 3.0     # 拉升起点距开盘涨幅 ≥3% 视为高位
+    LOW_POSITION_PCT = 0.0      # 拉升起点距开盘涨幅 ≤0% 视为低位
     # 冷却
     COOLDOWN_MINUTES = 15       # 同一只股票报警后冷却时间（分钟）
 
@@ -165,6 +171,18 @@ class AbsorptionScanner:
                     alerts.append(result)
                     self._cooldown[rally_key] = now
 
+            # 检测放量下跌（独立冷却）
+            dump_key = f"dump:{code}"
+            last_dump = self._cooldown.get(dump_key)
+            if not (last_dump and (now - last_dump).total_seconds() < self.COOLDOWN_MINUTES * 60):
+                result = self._detect_dump(timeline)
+                if result:
+                    result['stock_code'] = code
+                    result['stock_name'] = name_map.get(code, '')
+                    result['alert_type'] = 'dump'
+                    alerts.append(result)
+                    self._cooldown[dump_key] = now
+
         # 过滤过时预警：只保留 end_time 在最近30分钟内的
         now_hhmm = now.strftime('%H:%M')
         fresh_alerts = []
@@ -249,11 +267,14 @@ class AbsorptionScanner:
         判据：
         - 连续 ≥5 分钟净买入为正（允许中间1分钟微负）
         - 价格涨幅 ≥1%
-        - 只取最近的一段（关注当下机会）
+        - 区分高位拉升(风险)和低位拉升(机会)
         """
         priced = [p for p in timeline if p.get('price', 0) > 0]
         if len(priced) < self.RALLY_MIN_WINDOW:
             return None
+
+        # 日内开盘价：取第一个有价格的时间点
+        day_open = priced[0]['price']
 
         # 只检查最近 20 分钟的数据（关注当下）
         recent = priced[-20:] if len(priced) > 20 else priced
@@ -272,7 +293,6 @@ class AbsorptionScanner:
                 if recent[j].get('net_buy', 0) > 0:
                     j += 1
                 elif neg_tolerance < 1 and abs(recent[j].get('net_buy', 0)) < 50:
-                    # 容忍1次小幅净卖出（<50万）
                     neg_tolerance += 1
                     j += 1
                 else:
@@ -287,9 +307,21 @@ class AbsorptionScanner:
 
                 if pct >= self.RALLY_PRICE_THRESHOLD and cum_buy > 0:
                     severity = 'high' if pct >= 2.0 or window_len >= 8 else 'medium'
+
+                    # 判断拉升位置: 拉升起点相对开盘价的涨幅
+                    position_pct = (start_price - day_open) / day_open * 100 if day_open > 0 else 0
+                    if position_pct >= self.HIGH_POSITION_PCT:
+                        position = 'high'   # 高位拉升 — 警惕出货
+                    elif position_pct <= self.LOW_POSITION_PCT:
+                        position = 'low'    # 低位拉升 — 机会
+                    else:
+                        position = 'mid'    # 中位拉升
+
                     candidate = {
                         'detected': True,
                         'severity': severity,
+                        'position': position,
+                        'position_pct': round(position_pct, 2),
                         'start_time': recent[i]['time'],
                         'end_time': recent[j - 1]['time'],
                         'duration_min': window_len,
@@ -304,7 +336,73 @@ class AbsorptionScanner:
                             f" ({start_price:.2f}→{end_price:.2f})"
                         ),
                     }
-                    # 取最近的（更有操作价值）
+                    if best is None or recent[i]['time'] > best['start_time']:
+                        best = candidate
+
+            i = j
+
+        return best
+
+    def _detect_dump(self, timeline: List[Dict]) -> Optional[Dict]:
+        """检测放量下跌：持续净卖出且价格大幅下跌
+
+        判据：
+        - 连续 ≥5 分钟净卖出为负（允许中间1分钟微正）
+        - 价格跌幅 ≥1%
+        - 只取最近的一段
+        """
+        priced = [p for p in timeline if p.get('price', 0) > 0]
+        if len(priced) < self.DUMP_MIN_WINDOW:
+            return None
+
+        recent = priced[-20:] if len(priced) > 20 else priced
+
+        best = None
+        i = 0
+        while i < len(recent):
+            # 找净卖出起点
+            if recent[i].get('net_buy', 0) >= 0:
+                i += 1
+                continue
+
+            # 扩展窗口：允许中间最多1分钟微幅净买入
+            j = i
+            pos_tolerance = 0
+            while j < len(recent):
+                if recent[j].get('net_buy', 0) < 0:
+                    j += 1
+                elif pos_tolerance < 1 and abs(recent[j].get('net_buy', 0)) < 50:
+                    pos_tolerance += 1
+                    j += 1
+                else:
+                    break
+
+            window_len = j - i
+            if window_len >= self.DUMP_MIN_WINDOW:
+                start_price = recent[i]['price']
+                end_price = recent[j - 1]['price']
+                pct = (end_price - start_price) / start_price * 100 if start_price > 0 else 0
+                cum_sell = sum(p['net_buy'] for p in recent[i:j])  # 负值
+
+                if pct <= self.DUMP_PRICE_THRESHOLD and cum_sell < 0:
+                    severity = 'high' if pct <= -2.0 or window_len >= 8 else 'medium'
+                    candidate = {
+                        'detected': True,
+                        'severity': severity,
+                        'start_time': recent[i]['time'],
+                        'end_time': recent[j - 1]['time'],
+                        'duration_min': window_len,
+                        'price_change_pct': round(pct, 2),
+                        'cum_net_buy': round(cum_sell, 1),
+                        'start_price': round(start_price, 3),
+                        'end_price': round(end_price, 3),
+                        'message': (
+                            f"{recent[i]['time']}~{recent[j-1]['time']}"
+                            f" 连续{window_len}分钟放量下跌"
+                            f" 净卖{abs(cum_sell):.0f}万 股价{pct:.2f}%"
+                            f" ({start_price:.2f}→{end_price:.2f})"
+                        ),
+                    }
                     if best is None or recent[i]['time'] > best['start_time']:
                         best = candidate
 

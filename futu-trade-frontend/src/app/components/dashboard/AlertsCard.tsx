@@ -10,8 +10,10 @@ import apiClient from "@/lib/api/client";
 
 interface VolumePriceAlert {
   detected: boolean;
-  alert_type: "absorption" | "rally";
+  alert_type: "absorption" | "rally" | "dump";
   severity: "high" | "medium";
+  position?: "high" | "mid" | "low";  // 拉升位置
+  position_pct?: number;
   stock_code: string;
   stock_name: string;
   start_time: string;
@@ -78,6 +80,7 @@ export function AlertsCard() {
   // 分类
   const absorptions = alerts.filter((a) => a.alert_type === "absorption");
   const rallies = alerts.filter((a) => a.alert_type === "rally");
+  const dumps = alerts.filter((a) => a.alert_type === "dump");
   const bullishDivs = divAlerts.filter((d) => d.div_type === "bullish");
   const bearishDivs = divAlerts.filter((d) => d.div_type === "bearish");
 
@@ -97,6 +100,11 @@ export function AlertsCard() {
             {rallies.length > 0 && (
               <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-medium">
                 {rallies.length} 拉升
+              </span>
+            )}
+            {dumps.length > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium">
+                {dumps.length} 放量跌
               </span>
             )}
           </h3>
@@ -124,16 +132,53 @@ export function AlertsCard() {
                   })
                   .map((alert, idx) => {
                     const isAbsorption = alert.alert_type === "absorption";
+                    const isDump = alert.alert_type === "dump";
+                    const isRally = alert.alert_type === "rally";
                     const isHigh = alert.severity === "high";
-                    const bgColor = isAbsorption
-                      ? isHigh ? "bg-red-50/80 border-red-200/60" : "bg-orange-50/80 border-orange-200/60"
-                      : isHigh ? "bg-emerald-50/80 border-emerald-200/60" : "bg-blue-50/80 border-blue-200/60";
-                    const textColor = isAbsorption
-                      ? isHigh ? "text-red-600" : "text-orange-600"
-                      : isHigh ? "text-emerald-600" : "text-blue-600";
-                    const icon = isAbsorption ? (isHigh ? "🚨" : "⚠️") : (isHigh ? "🚀" : "📈");
-                    const label = isAbsorption ? "吸收" : "拉升";
-                    const severityLabel = isAbsorption ? (isHigh ? "高危" : "注意") : (isHigh ? "强势" : "关注");
+
+                    // 颜色/图标/标签
+                    let bgColor: string, textColor: string, icon: string, label: string, severityLabel: string, badgeColor: string;
+
+                    if (isAbsorption) {
+                      bgColor = isHigh ? "bg-red-50/80 border-red-200/60" : "bg-orange-50/80 border-orange-200/60";
+                      textColor = isHigh ? "text-red-600" : "text-orange-600";
+                      badgeColor = isHigh ? "bg-red-200/80 text-red-700" : "bg-orange-200/80 text-orange-700";
+                      icon = isHigh ? "🚨" : "⚠️";
+                      label = "吸收";
+                      severityLabel = isHigh ? "高危" : "注意";
+                    } else if (isDump) {
+                      bgColor = isHigh ? "bg-purple-50/80 border-purple-200/60" : "bg-pink-50/80 border-pink-200/60";
+                      textColor = isHigh ? "text-purple-600" : "text-pink-600";
+                      badgeColor = isHigh ? "bg-purple-200/80 text-purple-700" : "bg-pink-200/80 text-pink-700";
+                      icon = isHigh ? "💥" : "📉";
+                      label = "放量下跌";
+                      severityLabel = isHigh ? "高危" : "注意";
+                    } else {
+                      // rally — 根据位置区分
+                      const pos = alert.position;
+                      if (pos === "high") {
+                        bgColor = "bg-amber-50/80 border-amber-200/60";
+                        textColor = "text-amber-600";
+                        badgeColor = "bg-amber-200/80 text-amber-700";
+                        icon = "⚡";
+                        label = "高位拉升";
+                        severityLabel = "风险";
+                      } else if (pos === "low") {
+                        bgColor = isHigh ? "bg-emerald-50/80 border-emerald-200/60" : "bg-teal-50/80 border-teal-200/60";
+                        textColor = isHigh ? "text-emerald-600" : "text-teal-600";
+                        badgeColor = isHigh ? "bg-emerald-200/80 text-emerald-700" : "bg-teal-200/80 text-teal-700";
+                        icon = "🚀";
+                        label = "低位拉升";
+                        severityLabel = "机会";
+                      } else {
+                        bgColor = isHigh ? "bg-blue-50/80 border-blue-200/60" : "bg-sky-50/80 border-sky-200/60";
+                        textColor = isHigh ? "text-blue-600" : "text-sky-600";
+                        badgeColor = isHigh ? "bg-blue-200/80 text-blue-700" : "bg-sky-200/80 text-sky-700";
+                        icon = isHigh ? "🚀" : "📈";
+                        label = "拉升";
+                        severityLabel = isHigh ? "强势" : "关注";
+                      }
+                    }
 
                     return (
                       <div
@@ -147,11 +192,7 @@ export function AlertsCard() {
                               {alert.stock_name}
                             </span>
                             <span className="text-[10px] text-gray-400 shrink-0">{alert.stock_code}</span>
-                            <span className={`text-[9px] px-1 py-px rounded font-medium shrink-0 ${
-                              isAbsorption
-                                ? (isHigh ? "bg-red-200/80 text-red-700" : "bg-orange-200/80 text-orange-700")
-                                : (isHigh ? "bg-emerald-200/80 text-emerald-700" : "bg-blue-200/80 text-blue-700")
-                            }`}>
+                            <span className={`text-[9px] px-1 py-px rounded font-medium shrink-0 ${badgeColor}`}>
                               {label} · {severityLabel}
                             </span>
                           </div>
@@ -165,10 +206,21 @@ export function AlertsCard() {
                         </div>
                         <div className={`text-[10px] ${textColor} opacity-75 mt-0.5`}>
                           {alert.start_time}~{alert.end_time} 连续{alert.duration_min}分钟
-                          {isAbsorption ? "主买" : "量价齐升"} 净买{fmtAmt(alert.cum_net_buy)} {alert.start_price.toFixed(2)}→{alert.end_price.toFixed(2)}
-                          <span className="text-gray-400 ml-1">
-                            {isAbsorption ? "· 资金推动真实上涨，量价配合良好" : "· 资金推动真实上涨，量价配合良好"}
-                          </span>
+                          {isDump ? "放量卖出" : isAbsorption ? "主买" : "量价齐升"}
+                          {" "}{isDump ? `净卖${fmtAmt(Math.abs(alert.cum_net_buy))}` : `净买${fmtAmt(alert.cum_net_buy)}`}
+                          {" "}{alert.start_price.toFixed(2)}→{alert.end_price.toFixed(2)}
+                          {isRally && alert.position === "high" && (
+                            <span className="text-amber-500 ml-1">· 高位警惕出货</span>
+                          )}
+                          {isRally && alert.position === "low" && (
+                            <span className="text-emerald-500 ml-1">· 低位资金进场</span>
+                          )}
+                          {isDump && (
+                            <span className="text-purple-500 ml-1">· 主力出逃，回避</span>
+                          )}
+                          {isAbsorption && (
+                            <span className="text-gray-400 ml-1">· 隐性卖单吸收买盘</span>
+                          )}
                         </div>
                       </div>
                     );
