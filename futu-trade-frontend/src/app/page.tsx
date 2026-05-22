@@ -5,7 +5,6 @@
 import { useState, useEffect } from "react";
 import { useSocket } from "@/lib/socket";
 import { systemApi, quoteApi } from "@/lib/api";
-import { alertApi } from "@/lib/api/alert";
 import { useToast } from "@/components/common/Toast";
 import { MonitorStartModal, StrategyPanel, SignalTabs } from "@/components/monitor";
 import {
@@ -27,44 +26,6 @@ import {
   useHighTurnoverStocks,
 } from "./hooks/useDashboard";
 import type { QuoteData } from "@/types/socket";
-import type { Alert } from "@/types/alert";
-
-/** 预警保留时长（毫秒），超过后自动清理 */
-const ALERT_RETENTION_MS = 10 * 60 * 1000; // 10分钟
-/** 最多保留的预警条数 */
-const MAX_ALERTS = 20;
-
-/**
- * 合并新预警到已有列表：去重 + 过期清理 + 数量限制
- * 去重键: stock_code + type
- * 同一只股票同类型预警只保留最新的
- */
-function mergeAlerts(existing: Alert[], incoming: Alert[]): Alert[] {
-  const now = Date.now();
-  const cutoff = now - ALERT_RETENTION_MS;
-
-  // 用 map 做去重，同 stock_code+type 保留最新
-  const alertMap = new Map<string, Alert>();
-
-  // 先放旧的（过滤掉过期的）
-  for (const alert of existing) {
-    if (new Date(alert.timestamp).getTime() >= cutoff) {
-      const key = `${alert.stock_code}:${alert.type}`;
-      alertMap.set(key, alert);
-    }
-  }
-
-  // 再放新的（会覆盖同 key 的旧预警）
-  for (const alert of incoming) {
-    const key = `${alert.stock_code}:${alert.type}`;
-    alertMap.set(key, alert);
-  }
-
-  // 按时间倒序，截取最多 MAX_ALERTS 条
-  return [...alertMap.values()]
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-    .slice(0, MAX_ALERTS);
-}
 
 export default function Dashboard() {
   const { socket, isConnected } = useSocket();
@@ -81,10 +42,6 @@ export default function Dashboard() {
   // 启动监控 Modal
   const [startModalOpen, setStartModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-
-  // 预警信号状态
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [alertsLoading, setAlertsLoading] = useState(false);
 
   // 交易信号状态
   const [tradeSignals, setTradeSignals] = useState<any[]>([]);
@@ -143,29 +100,12 @@ export default function Dashboard() {
     refetchSystemStatus();
     refetchHotStocks();
     refetchPositions();
-    loadAlerts();
     loadTradeSignals();
-  };
-
-  // 加载预警数据（合并模式，不覆盖已有预警）
-  const loadAlerts = async () => {
-    setAlertsLoading(true);
-    try {
-      const response = await alertApi.getAlerts();
-      if (response.success && response.data?.length > 0) {
-        setAlerts(prev => mergeAlerts(prev, response.data));
-      }
-    } catch (error) {
-      console.error("加载预警失败:", error);
-    } finally {
-      setAlertsLoading(false);
-    }
   };
 
   // 初始加载
   useEffect(() => {
     setLastUpdate(new Date());
-    loadAlerts();
     loadTradeSignals();
   }, []);
 
@@ -176,11 +116,8 @@ export default function Dashboard() {
     // 防抖定时器
     let positionsUpdateTimer: NodeJS.Timeout | null = null;
 
-    // 报价更新 - 累积预警信息 + 交易信号
-    socket.on("quotes_update", (data: { quotes: QuoteData[]; alerts?: Alert[]; trade_actions?: any[] }) => {
-      if (data.alerts && Array.isArray(data.alerts) && data.alerts.length > 0) {
-        setAlerts(prev => mergeAlerts(prev, data.alerts!));
-      }
+    // 报价更新 - 交易信号
+    socket.on("quotes_update", (data: { quotes: QuoteData[]; trade_actions?: any[] }) => {
       // 有新的交易信号时追加
       if (data.trade_actions && Array.isArray(data.trade_actions) && data.trade_actions.length > 0) {
         setTradeSignals(prev => {
@@ -286,9 +223,9 @@ export default function Dashboard() {
         <StrategyPanel />
       </div>
 
-      {/* 5分钟预警 */}
+      {/* 量价预警 */}
       <div className="mb-4 md:mb-6">
-        <AlertsCard alerts={alerts} loading={alertsLoading} />
+        <AlertsCard />
       </div>
 
       {/* 板块热度 + 热门股票 + 活跃个股 */}

@@ -1,145 +1,170 @@
-// 5分钟预警卡片组件
+// 量价预警卡片 — 替代原 5 分钟预警
+// 展示吸收/拉升异常检测结果
 
 "use client";
 
+import { useState, useEffect, useCallback } from "react";
 import { Card } from "@/components/common";
-import { Alert } from "@/types/alert";
-import { formatDistanceToNow } from "date-fns";
-import { zhCN } from "date-fns/locale";
+import apiClient from "@/lib/api/client";
 
-interface AlertsCardProps {
-  alerts: Alert[];
-  loading?: boolean;
+interface VolumePriceAlert {
+  detected: boolean;
+  alert_type: "absorption" | "rally";
+  severity: "high" | "medium";
+  stock_code: string;
+  stock_name: string;
+  start_time: string;
+  end_time: string;
+  duration_min: number;
+  price_change_pct: number;
+  cum_net_buy: number;
+  start_price: number;
+  end_price: number;
+  message: string;
 }
 
-export function AlertsCard({ alerts, loading = false }: AlertsCardProps) {
-  // 按时间倒序排序，只显示最新5条
-  const sortedAlerts = [...alerts]
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-    .slice(0, 5);
+export function AlertsCard() {
+  const [alerts, setAlerts] = useState<VolumePriceAlert[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  // 获取预警级别对应的颜色
-  const getLevelColor = (level: string) => {
-    switch (level) {
-      case "danger":
-        return "bg-red-50 border-red-300 text-red-700";
-      case "warning":
-        return "bg-orange-50 border-orange-300 text-orange-700";
-      case "info":
-        return "bg-blue-50 border-blue-300 text-blue-700";
-      default:
-        return "bg-gray-50 border-gray-300 text-gray-700";
-    }
-  };
-
-  // 获取预警类型图标
-  const getAlertIcon = (type: string) => {
-    if (type.includes("涨幅")) {
-      return (
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-        </svg>
-      );
-    }
-    if (type.includes("跌幅")) {
-      return (
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6" />
-        </svg>
-      );
-    }
-    if (type.includes("振幅")) {
-      return (
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-        </svg>
-      );
-    }
-    if (type.includes("成交量")) {
-      return (
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-        </svg>
-      );
-    }
-    return null;
-  };
-
-  // 格式化相对时间
-  const formatRelativeTime = (timestamp: string) => {
+  const loadAlerts = useCallback(async () => {
     try {
-      return formatDistanceToNow(new Date(timestamp), {
-        addSuffix: true,
-        locale: zhCN,
-      });
-    } catch {
-      return "刚刚";
+      const res = await apiClient.get("/enhanced-heat/volume-price-alerts");
+      if (res.success && Array.isArray(res.data)) {
+        setAlerts(res.data);
+      }
+      setLastUpdate(new Date());
+    } catch (e) {
+      console.error("加载量价预警失败:", e);
+    } finally {
+      setLoading(false);
     }
+  }, []);
+
+  // 初始加载 + 60秒轮询
+  useEffect(() => {
+    loadAlerts();
+    const timer = setInterval(loadAlerts, 60000);
+    return () => clearInterval(timer);
+  }, [loadAlerts]);
+
+  const fmtAmt = (v: number) => {
+    const abs = Math.abs(v);
+    if (abs >= 10000) return `${(v / 10000).toFixed(1)}亿`;
+    return `${v.toFixed(0)}万`;
   };
 
-  // 获取价格变化显示
-  const getPriceChange = (alert: Alert) => {
-    if (alert.type.includes("涨幅") && alert.rise_percent !== undefined) {
-      return `+${alert.rise_percent.toFixed(2)}%`;
-    }
-    if (alert.type.includes("跌幅") && alert.fall_percent !== undefined) {
-      return `${alert.fall_percent.toFixed(2)}%`;
-    }
-    if (alert.type.includes("振幅") && alert.amplitude !== undefined) {
-      return `${alert.amplitude.toFixed(2)}%`;
-    }
-    if (alert.type.includes("成交量") && alert.volume_display) {
-      return alert.volume_display;
-    }
-    return "";
-  };
+  // 分类
+  const absorptions = alerts.filter((a) => a.alert_type === "absorption");
+  const rallies = alerts.filter((a) => a.alert_type === "rally");
+  const total = alerts.length;
 
   return (
     <Card>
-      <div className="p-6">
+      <div className="p-4 md:p-6">
+        {/* 标题 */}
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            <svg className="w-5 h-5 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            5分钟预警
+            <span className="text-lg">📡</span>
+            量价预警
+            {absorptions.length > 0 && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">
+                {absorptions.length} 吸收
+              </span>
+            )}
+            {rallies.length > 0 && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-medium">
+                {rallies.length} 拉升
+              </span>
+            )}
           </h3>
-          {sortedAlerts.length > 0 && (
-            <span className="text-xs text-gray-500">
-              {sortedAlerts.length} 条预警
-            </span>
-          )}
+          <span className="text-xs text-gray-400">
+            {lastUpdate ? `${lastUpdate.toLocaleTimeString("zh-CN")} 更新` : ""}
+          </span>
         </div>
 
         {loading ? (
-          <div className="text-center py-8 text-gray-500">加载中...</div>
-        ) : sortedAlerts.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">暂无预警</div>
+          <div className="text-center py-8 text-gray-400 text-sm">扫描中...</div>
+        ) : total === 0 ? (
+          <div className="text-center py-8 text-gray-400 text-sm">
+            暂无量价异常 — 所有股票走势正常
+          </div>
         ) : (
           <div className="space-y-2">
-            {sortedAlerts.map((alert, index) => (
-              <div
-                key={`${alert.stock_code}-${alert.timestamp}-${index}`}
-                className={`p-3 rounded-lg border ${getLevelColor(alert.level)} transition-colors hover:shadow-md`}
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    {getAlertIcon(alert.type)}
-                    <div>
-                      <span className="font-medium">{alert.stock_name}</span>
-                      <span className="text-xs ml-2 opacity-75">{alert.stock_code}</span>
+            {alerts
+              .sort((a, b) => {
+                // 高危优先，然后吸收优先
+                if (a.severity !== b.severity) return a.severity === "high" ? -1 : 1;
+                if (a.alert_type !== b.alert_type) return a.alert_type === "absorption" ? -1 : 1;
+                return b.duration_min - a.duration_min;
+              })
+              .map((alert, idx) => {
+                const isAbsorption = alert.alert_type === "absorption";
+                const isHigh = alert.severity === "high";
+
+                const bgColor = isAbsorption
+                  ? isHigh ? "bg-red-50 border-red-200" : "bg-orange-50 border-orange-200"
+                  : isHigh ? "bg-emerald-50 border-emerald-200" : "bg-blue-50 border-blue-200";
+
+                const textColor = isAbsorption
+                  ? isHigh ? "text-red-700" : "text-orange-700"
+                  : isHigh ? "text-emerald-700" : "text-blue-700";
+
+                const icon = isAbsorption
+                  ? (isHigh ? "🚨" : "⚠️")
+                  : (isHigh ? "🚀" : "📈");
+
+                const label = isAbsorption ? "吸收" : "拉升";
+
+                return (
+                  <div
+                    key={`${alert.stock_code}-${alert.alert_type}-${idx}`}
+                    className={`p-3 rounded-lg border ${bgColor} transition-all hover:shadow-md`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className={isHigh ? "animate-pulse" : ""}>{icon}</span>
+                        <span className={`font-bold text-sm ${textColor}`}>
+                          {alert.stock_name}
+                        </span>
+                        <span className="text-xs text-gray-400">{alert.stock_code}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                          isAbsorption
+                            ? (isHigh ? "bg-red-200 text-red-700" : "bg-orange-200 text-orange-700")
+                            : (isHigh ? "bg-emerald-200 text-emerald-700" : "bg-blue-200 text-blue-700")
+                        }`}>
+                          {label} · {isHigh ? "高危" : "注意"}
+                        </span>
+                      </div>
+                      <span className={`text-sm font-bold ${
+                        alert.price_change_pct >= 0
+                          ? (isAbsorption ? "text-gray-500" : "text-red-600")
+                          : "text-emerald-600"
+                      }`}>
+                        {alert.price_change_pct >= 0 ? "+" : ""}{alert.price_change_pct.toFixed(2)}%
+                      </span>
                     </div>
+                    <div className={`text-[11px] ${textColor} opacity-80`}>
+                      {alert.start_time}~{alert.end_time}
+                      {" "}连续{alert.duration_min}分钟
+                      {isAbsorption ? "主买" : "量价齐升"}
+                      {" "}净买{fmtAmt(alert.cum_net_buy)}
+                      {" "}{alert.start_price.toFixed(2)}→{alert.end_price.toFixed(2)}
+                    </div>
+                    {isAbsorption && (
+                      <div className="text-[10px] text-gray-400 mt-0.5">
+                        💡 隐性卖单正在吸收买盘，价格被压制
+                      </div>
+                    )}
+                    {!isAbsorption && (
+                      <div className="text-[10px] text-gray-400 mt-0.5">
+                        💡 资金推动真实上涨，量价配合良好
+                      </div>
+                    )}
                   </div>
-                  <span className="text-sm font-bold">
-                    {getPriceChange(alert)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-xs opacity-75">
-                  <span className="truncate mr-2">{alert.message}</span>
-                  <span className="shrink-0">{formatRelativeTime(alert.timestamp)}</span>
-                </div>
-              </div>
-            ))}
+                );
+              })}
           </div>
         )}
       </div>

@@ -794,4 +794,39 @@ async def get_ccass_holdings(
         raise BusinessError(f"获取 CCASS 数据失败: {str(e)}")
 
 
+# ==================== 量价异常预警（全量扫描） ====================
+
+@router.get("/volume-price-alerts")
+async def get_volume_price_alerts(container=Depends(get_container)):
+    """扫描所有已订阅股票的量价异常（吸收+拉升），供首页预警卡片使用"""
+    from ...services.analysis.absorption_scanner import AbsorptionScanner
+
+    db = getattr(container, 'db_manager', None)
+    if not db:
+        return APIResponse(success=True, data=[], message="数据库不可用")
+
+    # 获取已订阅的股票代码
+    sub_mgr = getattr(container, 'subscription_manager', None)
+    if sub_mgr and hasattr(sub_mgr, 'subscribed_stocks'):
+        codes = list(sub_mgr.subscribed_stocks)
+    else:
+        codes = []
+
+    if not codes:
+        return APIResponse(success=True, data=[], message="无已订阅股票")
+
+    scanner = AbsorptionScanner(db)
+    # 不受冷却限制 — 清空冷却记录
+    scanner._cooldown.clear()
+
+    loop = asyncio.get_running_loop()
+    alerts = await loop.run_in_executor(None, scanner.scan_all, codes)
+
+    return APIResponse(
+        success=True,
+        data=alerts,
+        message=f"量价扫描完成: {len(alerts)} 条预警, 共扫描 {len(codes)} 只股票"
+    )
+
+
 logging.info("增强热度分析路由已注册")
