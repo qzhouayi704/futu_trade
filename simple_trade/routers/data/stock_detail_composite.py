@@ -491,8 +491,8 @@ def _detect_conflicts(dimensions: list) -> list:
 
 
 def _get_5min_klines(db, stock_code: str, limit: int) -> list:
-    """获取K线，优先5min表，回退到日线kline_data"""
-    # 先尝试5分钟K线
+    """获取K线，优先5min表，回退到ticker_data合成，最后回退日线"""
+    # 1. 先尝试5分钟K线表
     try:
         rows = db.execute_query(
             """SELECT time_key, open_price, high_price, low_price, close_price, volume
@@ -512,7 +512,68 @@ def _get_5min_klines(db, stock_code: str, limit: int) -> list:
     except Exception:
         pass
 
-    # 回退到日线K线
+    # 2. 回退：从 ticker_data 合成5分钟OHLCV
+    today = datetime.now().strftime('%Y-%m-%d')
+    try:
+        rows = db.execute_query(
+            """SELECT
+                 CAST(timestamp / 300000 AS INTEGER) * 300000 as bar_ts,
+                 MIN(price) as low_price,
+                 MAX(price) as high_price,
+                 SUM(volume) as total_volume
+               FROM ticker_data
+               WHERE stock_code = ? AND trade_date = ? AND price > 0
+               GROUP BY bar_ts
+               ORDER BY bar_ts ASC""",
+            (stock_code, today)
+        )
+        if rows and len(rows) >= 3:
+            from datetime import timezone, timedelta
+            tz8 = timezone(timedelta(hours=8))
+            # 需要单独获取 open/close（每个 bar 的第一笔和最后一笔价格）
+            ohlc_rows = db.execute_query(
+                """SELECT
+                     CAST(timestamp / 300000 AS INTEGER) * 300000 as bar_ts,
+                     timestamp, price
+                   FROM ticker_data
+                   WHERE stock_code = ? AND trade_date = ? AND price > 0
+                   ORDER BY timestamp ASC""",
+                (stock_code, today)
+            )
+            # 构建每个 bar 的 open/close
+            bar_first: dict = {}  # bar_ts -> first price
+            bar_last: dict = {}   # bar_ts -> last price
+            for r in ohlc_rows:
+                bts = r[0]
+                if bts not in bar_first:
+                    bar_first[bts] = r[2]
+                bar_last[bts] = r[2]
+
+            result = []
+            for r in rows:
+                bar_ts = r[0]
+                t = datetime.fromtimestamp(bar_ts / 1000, tz=tz8)
+                # 过滤午休时段
+                hhmm = t.strftime('%H:%M')
+                if '12:00' <= hhmm < '13:00':
+                    continue
+                if hhmm < '09:15' or hhmm > '16:10':
+                    continue
+                time_str = t.strftime('%Y-%m-%d %H:%M')
+                result.append({
+                    "time": time_str,
+                    "open": bar_first.get(bar_ts, r[1]),
+                    "high": r[2],
+                    "low": r[1],
+                    "close": bar_last.get(bar_ts, r[2]),
+                    "volume": r[3],
+                })
+            if result:
+                return result[-limit:] if len(result) > limit else result
+    except Exception:
+        pass
+
+    # 3. 最终回退：日线K线
     rows = db.execute_query(
         """SELECT time_key, open_price, high_price, low_price, close_price, volume
            FROM kline_data
