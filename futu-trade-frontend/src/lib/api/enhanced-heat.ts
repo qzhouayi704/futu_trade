@@ -175,6 +175,19 @@ export interface CapitalFlowTimelinePoint {
   bs_ratio?: number;  // 大单买卖比
 }
 
+export interface AbsorptionAlert {
+  detected: boolean;
+  severity: 'high' | 'medium';
+  start_time: string;
+  end_time: string;
+  duration_min: number;
+  price_change_pct: number;
+  cum_net_buy: number;
+  start_price: number;
+  end_price: number;
+  message: string;
+}
+
 export interface FlowSummary {
   momentum_label: string;    // 加速流入/稳定流入/减速流入/冲高回落/加速流出/...
   momentum_change: number;   // 后半段相对前半段变化百分比
@@ -184,6 +197,7 @@ export interface FlowSummary {
   recent_net: number;        // 最近5分钟净买入(万)
   first_half_net: number;
   second_half_net: number;
+  absorption?: AbsorptionAlert | null;  // 买入吸收异常检测
 }
 
 export interface CapitalFlowTimelineData {

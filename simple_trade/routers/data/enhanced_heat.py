@@ -24,6 +24,76 @@ from .helpers.enhanced_heat_helpers import (
 router = APIRouter(prefix="/api/enhanced-heat", tags=["增强热度分析"])
 
 
+def _detect_absorption(timeline: list) -> dict | None:
+    """检测买入吸收异常：连续主买但价格不涨，说明有大量隐性卖单压盘
+
+    扫描条件：
+    - 滑动窗口内 ≥5 分钟连续净买入为正
+    - 窗口期间股价涨幅 ≤ 0.1% (几乎持平或下跌)
+    - 累计净买入额 > 0 (确认确实是资金流入)
+
+    Returns:
+        dict with detected=True/False, details if detected
+    """
+    MIN_WINDOW = 5         # 最少连续5分钟
+    PRICE_THRESHOLD = 0.1  # 价格变化阈值 ±0.1%
+
+    if not timeline or len(timeline) < MIN_WINDOW:
+        return None
+
+    # 只检查有价格数据的点
+    priced = [p for p in timeline if p.get('price', 0) > 0]
+    if len(priced) < MIN_WINDOW:
+        return None
+
+    best = None  # 记录最强的吸收段
+
+    # 滑动窗口扫描
+    i = 0
+    while i < len(priced):
+        # 找连续净买入起点
+        if priced[i].get('net_buy', 0) <= 0:
+            i += 1
+            continue
+
+        # 扩展窗口
+        j = i
+        while j < len(priced) and priced[j].get('net_buy', 0) > 0:
+            j += 1
+
+        window_len = j - i
+        if window_len >= MIN_WINDOW:
+            start_price = priced[i]['price']
+            end_price = priced[j - 1]['price']
+            price_change_pct = (end_price - start_price) / start_price * 100 if start_price > 0 else 0
+            cum_buy_in_window = sum(p.get('net_buy', 0) for p in priced[i:j])
+
+            # 核心判据：持续买入 + 价格不涨
+            if price_change_pct <= PRICE_THRESHOLD and cum_buy_in_window > 0:
+                severity = 'high' if window_len >= 8 or (window_len >= 5 and price_change_pct < -0.1) else 'medium'
+                candidate = {
+                    'detected': True,
+                    'severity': severity,
+                    'start_time': priced[i].get('time', ''),
+                    'end_time': priced[j - 1].get('time', ''),
+                    'duration_min': window_len,
+                    'price_change_pct': round(price_change_pct, 2),
+                    'cum_net_buy': round(cum_buy_in_window, 1),
+                    'start_price': round(start_price, 3),
+                    'end_price': round(end_price, 3),
+                    'message': f"{priced[i].get('time','')}~{priced[j-1].get('time','')}"
+                               f" 连续{window_len}分钟主买 净买{cum_buy_in_window:.0f}万"
+                               f" 但股价{'下跌' if price_change_pct < -0.05 else '持平'}"
+                               f"({price_change_pct:+.2f}%)，疑似大量压单吸收",
+                }
+                if best is None or window_len > best['duration_min']:
+                    best = candidate
+
+        i = j  # 跳到窗口结束
+
+    return best
+
+
 def _compute_flow_summary(timeline: list) -> dict:
     """从时间线数据计算资金流动能摘要"""
     if not timeline or len(timeline) < 3:
@@ -92,6 +162,7 @@ def _compute_flow_summary(timeline: list) -> dict:
         'recent_net': round(recent_net, 1),
         'first_half_net': round(first_half_net, 1),
         'second_half_net': round(second_half_net, 1),
+        'absorption': _detect_absorption(timeline),
     }
 
 # ==================== 日内资金动能扫描 ====================

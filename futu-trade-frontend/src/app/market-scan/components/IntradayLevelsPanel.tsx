@@ -13,6 +13,7 @@ import {
   type BrokerAnalysis,
   type CapitalFlowTimelinePoint,
   type FlowSummary,
+  type AbsorptionAlert,
   type CCASHoldingsData,
 } from "@/lib/api/enhanced-heat";
 import dynamic from "next/dynamic";
@@ -315,6 +316,45 @@ function FlowMomentumBadge({ summary }: { summary: FlowSummary | null }) {
   );
 }
 
+// ==================== 买入吸收预警横幅 ====================
+
+function AbsorptionWarningBanner({ absorption }: { absorption: AbsorptionAlert | null | undefined }) {
+  if (!absorption || !absorption.detected) return null;
+
+  const isHigh = absorption.severity === 'high';
+  const bgColor = isHigh ? 'bg-red-50' : 'bg-orange-50';
+  const borderColor = isHigh ? 'border-red-300' : 'border-orange-300';
+  const textColor = isHigh ? 'text-red-800' : 'text-orange-800';
+  const subTextColor = isHigh ? 'text-red-600' : 'text-orange-600';
+
+  return (
+    <div className={`${bgColor} ${borderColor} border rounded-lg px-3 py-2.5 transition-all`}>
+      <div className="flex items-center gap-2">
+        <span className="text-base animate-pulse">{isHigh ? '🚨' : '⚠️'}</span>
+        <div className="flex-1">
+          <div className={`text-xs font-bold ${textColor} flex items-center gap-2`}>
+            <span>买入吸收预警</span>
+            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${
+              isHigh ? 'bg-red-200 text-red-700' : 'bg-orange-200 text-orange-700'
+            }`}>
+              {isHigh ? '高危' : '注意'}
+            </span>
+          </div>
+          <div className={`text-[11px] ${subTextColor} mt-0.5`}>
+            {absorption.start_time}~{absorption.end_time} 连续{absorption.duration_min}分钟主买，
+            净买入{absorption.cum_net_buy > 0 ? '+' : ''}{absorption.cum_net_buy.toFixed(0)}万，
+            但股价{absorption.price_change_pct < -0.05 ? '反跌' : '持平'}
+            {absorption.price_change_pct < -0.05 ? `${absorption.price_change_pct.toFixed(2)}%` : ''}
+          </div>
+          <div className="text-[10px] text-gray-500 mt-0.5">
+            💡 大量隐性卖单正在吸收买盘，价格被压制，需警惕主力出货
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ==================== 主组件 ====================
 
 interface IntradayLevelsPanelProps {
@@ -436,6 +476,9 @@ export function IntradayLevelsPanel({
           <div className="space-y-3">
             {/* 动能信号条 */}
             <FlowMomentumBadge summary={flowSummary} />
+
+            {/* 买入吸收预警 */}
+            <AbsorptionWarningBanner absorption={flowSummary?.absorption} />
 
             {/* 上部：主力 vs 散户资金流走势图（全宽） */}
             <div className="bg-gray-50/50 rounded-lg border border-gray-100">
