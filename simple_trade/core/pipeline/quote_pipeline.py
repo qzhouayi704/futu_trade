@@ -9,6 +9,7 @@
 
 import logging
 import asyncio
+from datetime import datetime
 from typing import List, Dict, Tuple
 from ...utils.logger import get_flow_logger
 
@@ -139,13 +140,16 @@ class QuotePipeline:
 
         # 资金流向信号检查（与策略检测同频，每60s）
         flow_signals = []
+        absorption_alerts = []
         if self._should_run_strategy():
             flow_signals = await self._check_capital_flow_signals(quotes)
+            absorption_alerts = await self._check_absorption(quotes)
 
         trade_actions: List[Dict] = []
         trade_actions.extend(intraday_signals)
         trade_actions.extend(risk_actions)
         trade_actions.extend(flow_signals)
+        trade_actions.extend(absorption_alerts)
         conditions: List[Dict] = []
         conditions_updated = False
         if self._should_run_strategy():
@@ -343,6 +347,50 @@ class QuotePipeline:
             logging.error(f"日内自动化风控检查异常: {e}")
             
         return actions
+
+    async def _check_absorption(self, quotes: List[Dict]) -> List[Dict]:
+        """检查买入吸收异常（持续主买但价格不涨）"""
+        try:
+            # 延迟初始化
+            if not hasattr(self, '_absorption_scanner'):
+                db = getattr(self.container, 'db_manager', None)
+                if db:
+                    from ...services.analysis.absorption_scanner import AbsorptionScanner
+                    self._absorption_scanner = AbsorptionScanner(db)
+                else:
+                    self._absorption_scanner = None
+
+            if not self._absorption_scanner:
+                return []
+
+            # 使用已订阅的股票代码
+            stock_codes = [q.get('code') for q in quotes if q.get('code')]
+            if not stock_codes:
+                return []
+
+            alerts = await self._run_in_executor(
+                self._absorption_scanner.scan_all, stock_codes
+            )
+
+            # 转换为 strategy_signal 格式（复用前端 Toast 展示）
+            actions = []
+            for alert in alerts:
+                emoji = '🚨' if alert['severity'] == 'high' else '⚠️'
+                actions.append({
+                    'stock_code': alert['stock_code'],
+                    'stock_name': alert.get('stock_name', ''),
+                    'signal_type': 'ALERT',
+                    'price': alert.get('end_price', 0),
+                    'reason': f"{emoji} 买入吸收预警: {alert['message']}",
+                    'message': alert['message'],
+                    'timestamp': datetime.now().isoformat(),
+                    'strategy_id': 'absorption_scanner',
+                })
+
+            return actions
+        except Exception as e:
+            logging.debug(f"买入吸收检查异常: {e}")
+            return []
 
     async def _check_capital_flow_signals(self, quotes: List[Dict]) -> List[Dict]:
         """检查资金流向信号（基于操盘规则）"""
