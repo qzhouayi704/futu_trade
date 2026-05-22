@@ -30,7 +30,8 @@ export function AlertsCard() {
 
   const loadAlerts = useCallback(async () => {
     try {
-      const res = await apiClient.get("/enhanced-heat/volume-price-alerts");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const res: any = await apiClient.get("/enhanced-heat/volume-price-alerts");
       if (res.success && Array.isArray(res.data)) {
         setAlerts(res.data);
       }
