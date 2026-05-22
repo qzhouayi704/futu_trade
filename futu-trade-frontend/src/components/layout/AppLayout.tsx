@@ -4,6 +4,7 @@
 
 import { useState, useEffect } from "react";
 import { Sidebar } from "./Sidebar";
+import { GlobalSignalListener } from "./GlobalSignalListener";
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -63,6 +64,9 @@ export function AppLayout({ children }: AppLayoutProps) {
       >
         <Sidebar onNavigate={() => setMobileOpen(false)} />
       </div>
+
+      {/* 全局 WebSocket 信号监听（Toast 预警） */}
+      <GlobalSignalListener />
 
       {/* 主内容区 — 移动端自动留出汉堡按钮空间 */}
       <main className="flex-1 overflow-auto min-w-0 pt-12 md:pt-0">

@@ -314,41 +314,11 @@ export default function MarketScanPanel() {
     };
     socket.on("refilter_complete", handleRefilterComplete);
 
-    // 监听自动卖出、经纪商陷阱、交易信号等
-    const handleStrategySignal = (data: unknown) => {
-      const signal = data as Record<string, unknown>;
-      if (!signal || !signal.stock_code) return;
-      
-      const sigType = String(signal.signal_type).toUpperCase();
-      const reason = String(signal.reason || '策略触发');
-      const isBrokerTrap = reason.includes('机构出货陷阱') || reason.includes('禁止建仓');
-      
-      let title: string;
-      let type: 'error' | 'warning' | 'info' | 'success';
-      
-      if (sigType === 'SELL') {
-        title = '🚨 自动防守触发';
-        type = 'error';
-      } else if (sigType === 'ALERT' || sigType === 'DANGER') {
-        title = isBrokerTrap ? '⛔ 经纪商陷阱识别' : '⚠️ 风险警告';
-        type = 'warning';
-      } else if (sigType === 'BUY') {
-        title = '💰 买入机会';
-        type = 'info';
-      } else {
-        title = 'ℹ️ 交易信号';
-        type = 'info';
-      }
-      
-      const msg = `[${signal.stock_code}] ${signal.stock_name || ''} — ${reason.slice(0, 80)}`;
-      showToast(type, title, msg);
-    };
-    socket.on("strategy_signal", handleStrategySignal);
+    // strategy_signal 由全局 GlobalSignalListener 统一处理，此处不再重复监听
 
     return () => {
       socket.off("quotes_update", handleQuotes);
       socket.off("refilter_complete", handleRefilterComplete);
-      socket.off("strategy_signal", handleStrategySignal);
     };
   }, [socket, loadData, showToast]);
 
