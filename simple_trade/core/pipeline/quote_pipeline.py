@@ -349,7 +349,7 @@ class QuotePipeline:
         return actions
 
     async def _check_absorption(self, quotes: List[Dict]) -> List[Dict]:
-        """检查买入吸收异常（持续主买但价格不涨）"""
+        """检查量价异常（吸收压单 + 真正拉升）"""
         try:
             # 延迟初始化
             if not hasattr(self, '_absorption_scanner'):
@@ -375,13 +375,24 @@ class QuotePipeline:
             # 转换为 strategy_signal 格式（复用前端 Toast 展示）
             actions = []
             for alert in alerts:
-                emoji = '🚨' if alert['severity'] == 'high' else '⚠️'
+                alert_type = alert.get('alert_type', 'absorption')
+                if alert_type == 'rally':
+                    # 拉升 → 机会提醒
+                    emoji = '🚀' if alert['severity'] == 'high' else '📈'
+                    signal_type = 'BUY'
+                    reason = f"{emoji} 量价齐升: {alert['message']}"
+                else:
+                    # 吸收 → 风险预警
+                    emoji = '🚨' if alert['severity'] == 'high' else '⚠️'
+                    signal_type = 'ALERT'
+                    reason = f"{emoji} 买入吸收预警: {alert['message']}"
+
                 actions.append({
                     'stock_code': alert['stock_code'],
                     'stock_name': alert.get('stock_name', ''),
-                    'signal_type': 'ALERT',
+                    'signal_type': signal_type,
                     'price': alert.get('end_price', 0),
-                    'reason': f"{emoji} 买入吸收预警: {alert['message']}",
+                    'reason': reason,
                     'message': alert['message'],
                     'timestamp': datetime.now().isoformat(),
                     'strategy_id': 'absorption_scanner',
@@ -389,7 +400,7 @@ class QuotePipeline:
 
             return actions
         except Exception as e:
-            logging.debug(f"买入吸收检查异常: {e}")
+            logging.debug(f"量价异常检查异常: {e}")
             return []
 
     async def _check_capital_flow_signals(self, quotes: List[Dict]) -> List[Dict]:
