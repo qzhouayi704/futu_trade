@@ -829,4 +829,157 @@ async def get_volume_price_alerts(container=Depends(get_container)):
     )
 
 
+# ==================== Delta 量价背离扫描 ====================
+
+@router.get("/delta-divergence-alerts")
+async def get_delta_divergence_alerts(container=Depends(get_container)):
+    """5分钟K线量价背离扫描
+
+    检测两种模式:
+    1. 跌势量缩(看涨): 价格下跌但成交量在萎缩 → 抛压衰竭，可能反弹
+    2. 涨势量缩(看跌): 价格上涨但成交量在萎缩 → 动能不足，可能回调
+    """
+    from collections import defaultdict
+    from datetime import date as _date, datetime as _dt, timezone, timedelta
+
+    db = getattr(container, 'db_manager', None)
+    if not db:
+        return APIResponse(success=True, data=[], message="数据库不可用")
+
+    sub_mgr = getattr(container, 'subscription_manager', None)
+    codes = list(sub_mgr.subscribed_stocks) if sub_mgr and hasattr(sub_mgr, 'subscribed_stocks') else []
+    if not codes:
+        return APIResponse(success=True, data=[], message="无已订阅股票")
+
+    today_str = _date.today().isoformat()
+    placeholders = ','.join(['?' for _ in codes])
+
+    try:
+        rows = db.execute_query(f"""
+            SELECT
+                stock_code,
+                CAST(timestamp / 300000 AS INTEGER) * 300000 as bar_ts,
+                SUM(CASE WHEN direction='BUY' THEN volume ELSE 0 END) as buy_vol,
+                SUM(CASE WHEN direction='SELL' THEN volume ELSE 0 END) as sell_vol,
+                SUM(volume) as total_vol,
+                AVG(price) as avg_price
+            FROM ticker_data
+            WHERE stock_code IN ({placeholders}) AND trade_date = ?
+            GROUP BY stock_code, bar_ts
+            ORDER BY stock_code, bar_ts
+        """, (*codes, today_str))
+    except Exception as e:
+        logging.debug(f"[Delta背离] 查询失败: {e}")
+        return APIResponse(success=True, data=[], message="查询失败")
+
+    if not rows:
+        return APIResponse(success=True, data=[], message="今日无逐笔数据")
+
+    # 按股票分组
+    stock_bars = defaultdict(list)
+    for row in rows:
+        code, bar_ts, buy_vol, sell_vol, total_vol, avg_price = row
+        stock_bars[code].append({
+            'bar_ts': bar_ts,
+            'total_vol': total_vol or 0,
+            'delta': (buy_vol or 0) - (sell_vol or 0),
+            'avg_price': float(avg_price) if avg_price else 0,
+        })
+
+    # 股票名称
+    name_map = {}
+    try:
+        name_rows = db.execute_query(
+            f"SELECT code, name FROM stocks WHERE code IN ({placeholders})",
+            tuple(codes)
+        )
+        if name_rows:
+            name_map = {r[0]: r[1] for r in name_rows}
+    except Exception:
+        pass
+
+    tz8 = timezone(timedelta(hours=8))
+    now = _dt.now()
+    alerts = []
+
+    for code, bars in stock_bars.items():
+        if len(bars) < 6:
+            continue
+
+        recent = bars[-6:]  # 最近6根5分钟K线 (30分钟)
+
+        prices = [b['avg_price'] for b in recent if b['avg_price'] > 0]
+        if len(prices) < 4:
+            continue
+        price_change = (prices[-1] - prices[0]) / prices[0] * 100
+
+        # 成交量趋势: 后3根 vs 前3根
+        first_vol = sum(b['total_vol'] for b in recent[:3])
+        second_vol = sum(b['total_vol'] for b in recent[3:])
+        if first_vol <= 0:
+            continue
+        vol_ratio = second_vol / first_vol
+
+        # Delta趋势
+        first_delta = sum(b['delta'] for b in recent[:3])
+        second_delta = sum(b['delta'] for b in recent[3:])
+
+        # 时间
+        start_t = _dt.fromtimestamp(recent[0]['bar_ts'] / 1000, tz=tz8).strftime('%H:%M')
+        end_t = _dt.fromtimestamp(recent[-1]['bar_ts'] / 1000, tz=tz8).strftime('%H:%M')
+
+        # 新鲜度检查: end_time 距当前不超过30分钟
+        try:
+            eh, em = int(end_t[:2]), int(end_t[3:5])
+            diff = (now.hour * 60 + now.minute) - (eh * 60 + em)
+            if diff > 30:
+                continue
+        except (ValueError, IndexError):
+            pass
+
+        divergence = None
+
+        # 1. 跌势量缩 → 看涨背离: 价格跌 + 量缩
+        if price_change < -0.3 and vol_ratio < 0.7:
+            delta_improving = second_delta > first_delta
+            severity = 'high' if (vol_ratio < 0.5 and delta_improving) else 'medium'
+            divergence = {
+                'div_type': 'bullish',
+                'label': '跌势量缩',
+                'hint': '抛压衰竭，关注反弹',
+                'severity': severity,
+            }
+
+        # 2. 涨势量缩 → 看跌背离: 价格涨 + 量缩
+        elif price_change > 0.3 and vol_ratio < 0.7:
+            delta_weakening = second_delta < first_delta
+            severity = 'high' if (vol_ratio < 0.5 and delta_weakening) else 'medium'
+            divergence = {
+                'div_type': 'bearish',
+                'label': '涨势量缩',
+                'hint': '动能不足，警惕回调',
+                'severity': severity,
+            }
+
+        if divergence:
+            alerts.append({
+                'stock_code': code,
+                'stock_name': name_map.get(code, ''),
+                'start_time': start_t,
+                'end_time': end_t,
+                'price_change_pct': round(price_change, 2),
+                'vol_ratio': round(vol_ratio, 2),
+                'last_price': round(prices[-1], 3),
+                **divergence,
+            })
+
+    alerts.sort(key=lambda x: (0 if x['severity'] == 'high' else 1, x['vol_ratio']))
+
+    return APIResponse(
+        success=True,
+        data=alerts,
+        message=f"量价背离扫描: {len(alerts)} 条, 共扫描 {len(stock_bars)} 只"
+    )
+
+
 logging.info("增强热度分析路由已注册")
