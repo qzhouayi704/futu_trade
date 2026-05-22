@@ -91,19 +91,19 @@ export default function PlatesPage() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-6 max-w-7xl">
+    <div className="container mx-auto px-3 md:px-4 py-4 md:py-6 max-w-7xl">
       {/* 页面标题 */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+      <div className="mb-4 md:mb-6">
+        <h1 className="text-xl md:text-2xl font-bold text-gray-900 flex items-center gap-2">
           <i className="fas fa-fire text-orange-600"></i>
           板块热度排行
         </h1>
-        <p className="text-gray-600 mt-1">实时板块强势度分析与龙头股票追踪</p>
+        <p className="text-sm md:text-base text-gray-600 mt-1">实时板块强势度分析</p>
       </div>
 
       {/* 筛选和排序 */}
-      <Card className="mb-6">
-        <div className="flex flex-wrap items-center gap-4">
+      <Card className="mb-4 md:mb-6">
+        <div className="flex flex-wrap items-center gap-3 md:gap-4">
           {/* 市场筛选 */}
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-gray-700">市场：</span>

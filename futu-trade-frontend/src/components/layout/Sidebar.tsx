@@ -114,7 +114,11 @@ const navGroups: NavGroup[] = [
 // 收集所有路径（用于 active 匹配）
 const allItems = navGroups.flatMap((g) => g.items);
 
-export function Sidebar() {
+interface SidebarProps {
+  onNavigate?: () => void;
+}
+
+export function Sidebar({ onNavigate }: SidebarProps) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const { theme, setTheme } = useTheme();
@@ -130,7 +134,17 @@ export function Sidebar() {
     });
 
   return (
-    <aside className="w-[220px] min-h-screen flex flex-col border-r border-sidebar-border bg-sidebar">
+    <aside className="w-[260px] md:w-[220px] min-h-screen flex flex-col border-r border-sidebar-border bg-sidebar">
+      {/* 移动端关闭按钮 */}
+      <button
+        onClick={onNavigate}
+        className="absolute top-3 right-3 z-10 md:hidden flex items-center justify-center w-8 h-8 rounded-lg hover:bg-sidebar-accent transition-colors"
+        aria-label="关闭菜单"
+      >
+        <svg className="w-5 h-5 text-sidebar-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
       {/* Logo */}
       <div className="px-4 py-4 border-b border-sidebar-border">
         <Link href="/" className="flex items-center space-x-2.5 group">
@@ -190,7 +204,8 @@ export function Sidebar() {
                       <li key={item.path}>
                         <Link
                           href={item.path}
-                          className={`flex items-center gap-2.5 px-2.5 py-[7px] rounded-lg text-[13px] transition-all duration-200 ${
+                          onClick={onNavigate}
+                          className={`flex items-center gap-2.5 px-2.5 py-[9px] md:py-[7px] rounded-lg text-[14px] md:text-[13px] transition-all duration-200 ${
                             isActive
                               ? "bg-primary text-primary-foreground font-semibold shadow-sm shadow-primary/20"
                               : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground font-medium"

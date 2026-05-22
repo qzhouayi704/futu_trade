@@ -32,14 +32,14 @@ export default function StockPickerPage() {
   return (
     <div className="min-h-screen">
       <div className="sticky top-0 z-10 bg-card/80 glass border-b border-border">
-        <div className="flex items-center px-5">
-          <h1 className="text-base font-semibold text-foreground mr-6 py-3 tracking-tight">选股工作台</h1>
-          <div className="flex space-x-1">
+        <div className="flex items-center px-3 md:px-5">
+          <h1 className="text-sm md:text-base font-semibold text-foreground mr-4 md:mr-6 py-3 tracking-tight whitespace-nowrap">选股工作台</h1>
+          <div className="flex space-x-0.5 md:space-x-1 overflow-x-auto no-scrollbar">
             {TABS.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-all border-b-2 ${
+                className={`flex items-center gap-1.5 md:gap-2 px-3 md:px-4 py-3 text-xs md:text-sm font-medium transition-all border-b-2 whitespace-nowrap ${
                   activeTab === tab.id
                     ? "border-primary text-primary bg-primary/10"
                     : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/50"

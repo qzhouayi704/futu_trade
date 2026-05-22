@@ -237,7 +237,7 @@ export default function Dashboard() {
   }, [socket, refetchPositions, refetchSystemStatus]);
 
   return (
-    <div className="container mx-auto px-4 py-6 max-w-7xl">
+    <div className="container mx-auto px-3 md:px-4 py-4 md:py-6 max-w-7xl">
       {/* 启动监控 Modal */}
       <MonitorStartModal
         isOpen={startModalOpen}
@@ -246,20 +246,20 @@ export default function Dashboard() {
       />
 
       {/* 页面标题 */}
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <svg className="w-6 h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4 md:mb-6">
+        <h1 className="text-xl md:text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <svg className="w-5 h-5 md:w-6 md:h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
           </svg>
           系统概览
         </h1>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-500">
-            最后更新: {lastUpdate ? lastUpdate.toLocaleTimeString("zh-CN") : "--:--:--"}
+        <div className="flex items-center gap-2 md:gap-4">
+          <span className="text-xs md:text-sm text-gray-500">
+            {lastUpdate ? lastUpdate.toLocaleTimeString("zh-CN") : "--:--:--"}
           </span>
           <button
             onClick={handleRefreshAll}
-            className="px-3 py-1 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1"
+            className="px-2.5 md:px-3 py-1 text-xs md:text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -270,7 +270,7 @@ export default function Dashboard() {
       </div>
 
       {/* 系统状态 + 核心指标 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 mb-4 md:mb-6">
         <SystemStatusCard
           status={systemStatus ?? null}
           isConnected={isConnected}
@@ -282,33 +282,33 @@ export default function Dashboard() {
       </div>
 
       {/* 策略面板 */}
-      <div className="mb-6">
+      <div className="mb-4 md:mb-6">
         <StrategyPanel />
       </div>
 
       {/* 5分钟预警 */}
-      <div className="mb-6">
+      <div className="mb-4 md:mb-6">
         <AlertsCard alerts={alerts} loading={alertsLoading} />
       </div>
 
       {/* 板块热度 + 热门股票 + 活跃个股 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
         <PlateHeatCard plates={plates} loading={platesLoading} />
         <HotStocksCard stocks={hotStocks} loading={hotStocksLoading} />
       </div>
 
       {/* 活跃个股 */}
-      <div className="mb-6">
+      <div className="mb-4 md:mb-6">
         <HighTurnoverCard stocks={highTurnoverStocks} loading={highTurnoverLoading} />
       </div>
 
       {/* 交易信号 */}
-      <div className="mb-6">
+      <div className="mb-4 md:mb-6">
         <SignalsCard signals={tradeSignals} loading={signalsLoading} />
       </div>
 
       {/* 信号分组 + 持仓摘要 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
         <SignalTabs />
         <PositionsCard positions={positions} loading={positionsLoading} />
       </div>

@@ -222,4 +222,41 @@
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
+
+  /* ── Mobile responsive overrides ── */
+  @media (max-width: 767px) {
+    /* 所有 container 元素减小水平内边距 */
+    .container {
+      padding-left: 0.75rem;
+      padding-right: 0.75rem;
+    }
+
+    /* 表格横向滚动 */
+    table {
+      display: block;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* 移动端滚动条更细 */
+    ::-webkit-scrollbar {
+      height: 3px;
+    }
+  }
+
+  /* 隐藏滚动条（用于横向可滚动的 tab 栏等） */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* iPhone safe area */
+  @supports (padding-bottom: env(safe-area-inset-bottom)) {
+    .safe-area-bottom {
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+  }
 }

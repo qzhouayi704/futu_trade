@@ -43,13 +43,13 @@ export default function PositionsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
+    <div className="min-h-screen bg-gray-50 p-3 md:p-6">
       {/* 页面标题 */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold text-gray-800">📊 持仓监控</h1>
-          <span className="text-sm text-gray-400">
-            {positions.length} 只持仓 · 每分钟刷新
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4 md:mb-6">
+        <div className="flex items-center gap-2 md:gap-3">
+          <h1 className="text-lg md:text-xl font-bold text-gray-800">📊 持仓监控</h1>
+          <span className="text-xs md:text-sm text-gray-400">
+            {positions.length} 只持仓
           </span>
         </div>
         <button
@@ -62,7 +62,7 @@ export default function PositionsPage() {
 
       {/* 持仓汇总 */}
       {positions.length > 0 && (
-        <div className="grid grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-4 md:mb-6">
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <div className="text-xs text-gray-400 mb-1">总市值</div>
             <div className="text-lg font-bold text-gray-800">
@@ -119,15 +119,15 @@ export default function PositionsPage() {
           {positions.map((pos) => (
             <div key={pos.stock_code} className="relative">
               {/* 持仓信息条 */}
-              <div className="bg-white border border-gray-200 rounded-t-lg px-4 py-2 flex items-center justify-between">
-                <div className="flex items-center gap-3">
+              <div className="bg-white border border-gray-200 rounded-t-lg px-3 md:px-4 py-2 flex flex-col md:flex-row md:items-center justify-between gap-1 md:gap-0">
+                <div className="flex items-center gap-2 md:gap-3 flex-wrap">
                   <span className="font-bold text-gray-800">{pos.stock_name}</span>
                   <span className="text-xs text-gray-400">{pos.stock_code}</span>
                   <span className="text-xs text-gray-500">
                     {pos.qty}股 · 成本 {pos.cost_price.toFixed(3)}
                   </span>
                 </div>
-                <div className="flex items-center gap-3 text-sm">
+                <div className="flex items-center gap-2 md:gap-3 text-sm">
                   <span className="text-gray-500">
                     现价 <span className="font-medium text-gray-800">{pos.nominal_price.toFixed(3)}</span>
                   </span>

@@ -305,7 +305,7 @@ export default function PreTradeCheckPage() {
       {/* === Premium Header with gradient === */}
       <header className="relative overflow-hidden border-b border-gray-200/80 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm">
         <div className="absolute inset-0 bg-gradient-to-r from-blue-50/50 via-purple-50/30 to-emerald-50/50 dark:from-blue-900/10 dark:via-purple-900/10 dark:to-emerald-900/10" />
-        <div className="relative max-w-7xl mx-auto px-6 py-5 flex items-center justify-between">
+        <div className="relative max-w-7xl mx-auto px-3 md:px-6 py-4 md:py-5 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600
                           flex items-center justify-center shadow-lg shadow-blue-500/20">
@@ -332,33 +332,33 @@ export default function PreTradeCheckPage() {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+      <div className="max-w-7xl mx-auto px-3 md:px-6 py-4 md:py-8 space-y-4 md:space-y-8">
         {/* ===== KPI 概览卡片 ===== */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 shadow-sm">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-5">
+          <div className="bg-white dark:bg-gray-900 rounded-xl md:rounded-2xl border border-gray-200 dark:border-gray-800 p-3 md:p-5 shadow-sm">
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">买入推荐</p>
-            <p className="text-3xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+            <p className="text-2xl md:text-3xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
               {recs?.buy_recommendations.length ?? "—"}
             </p>
             <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">实时信号</p>
           </div>
-          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 shadow-sm">
+          <div className="bg-white dark:bg-gray-900 rounded-xl md:rounded-2xl border border-gray-200 dark:border-gray-800 p-3 md:p-5 shadow-sm">
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">卖出推荐</p>
-            <p className="text-3xl font-bold text-red-600 dark:text-red-400 tabular-nums">
+            <p className="text-2xl md:text-3xl font-bold text-red-600 dark:text-red-400 tabular-nums">
               {recs?.sell_recommendations.length ?? "—"}
             </p>
             <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">持仓预警</p>
           </div>
-          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 shadow-sm">
+          <div className="bg-white dark:bg-gray-900 rounded-xl md:rounded-2xl border border-gray-200 dark:border-gray-800 p-3 md:p-5 shadow-sm">
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">模式匹配</p>
-            <p className="text-3xl font-bold text-blue-600 dark:text-blue-400 tabular-nums">
+            <p className="text-2xl md:text-3xl font-bold text-blue-600 dark:text-blue-400 tabular-nums">
               {patterns?.similar_stocks.length ?? "—"}
             </p>
             <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">符合历史模式</p>
           </div>
-          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 shadow-sm">
+          <div className="bg-white dark:bg-gray-900 rounded-xl md:rounded-2xl border border-gray-200 dark:border-gray-800 p-3 md:p-5 shadow-sm">
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">参考案例</p>
-            <p className="text-3xl font-bold text-gray-900 dark:text-white tabular-nums">
+            <p className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white tabular-nums">
               {patterns?.trade_patterns.length ?? "—"}
             </p>
             <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">历史成功记录</p>
@@ -366,7 +366,7 @@ export default function PreTradeCheckPage() {
         </div>
 
         {/* ===== 上半部分：实时推荐 ===== */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           {/* BUY 推荐 */}
           <Card className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
             <CardHeader className="pb-3 pt-5 px-5">
@@ -633,7 +633,7 @@ export default function PreTradeCheckPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="px-5 pb-5">
-          <form onSubmit={handleSubmit} className="flex gap-3 mb-4">
+          <form onSubmit={handleSubmit} className="flex flex-col md:flex-row gap-2 md:gap-3 mb-4">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
               <input
