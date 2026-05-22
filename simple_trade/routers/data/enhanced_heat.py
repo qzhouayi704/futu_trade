@@ -902,7 +902,15 @@ async def get_delta_divergence_alerts(container=Depends(get_container)):
     now = _dt.now()
     alerts = []
 
-    for code, bars in stock_bars.items():
+    for code, all_bars in stock_bars.items():
+        # 过滤午休时段 (12:00~13:00) 的 bar，避免假信号
+        bars = []
+        for b in all_bars:
+            bar_hhmm = _dt.fromtimestamp(b['bar_ts'] / 1000, tz=tz8).strftime('%H:%M')
+            if '12:00' <= bar_hhmm < '13:00':
+                continue
+            bars.append(b)
+
         if len(bars) < 6:
             continue
 
