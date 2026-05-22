@@ -75,9 +75,9 @@ export default function StockDetailPage() {
         setStock(res.data.stocks[0]);
       } else {
         // 股票不在热门池中，构建最小对象以保证头部（含自选按钮）正常渲染
-        setStock({ code, name: code, stock_code: code } as TopHotStock);
+        setStock({ code, name: code, stock_code: code } as unknown as TopHotStock);
       }
-    } catch { setStock({ code, name: code, stock_code: code } as TopHotStock); }
+    } catch { setStock({ code, name: code, stock_code: code } as unknown as TopHotStock); }
     setLoading(false);
   }, []);
 
