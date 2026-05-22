@@ -117,18 +117,12 @@ class IntradayLevelsService:
                 deviation = (result.current_price - vwap) / vwap * 100 if vwap > 0 else 0
                 result.vwap = {"price": round(vwap, 3), "deviation_pct": round(deviation, 2)}
 
-        # ② 盘口挂单墙
+        # ② 盘口挂单墙 — 仅用于补充当前价，不纳入支撑/阻力位
+        # 挂单随时可撤销，变动频繁，不可作为判断依据
         order_book = await self._order_book_service.get_order_book(stock_code)
         if order_book:
             if result.current_price == 0 and order_book.bid_levels:
                 result.current_price = order_book.bid_levels[0].price
-
-            ob_levels = self._calc_order_book_walls(order_book, result.current_price)
-            for level in ob_levels:
-                if level.type == "order_book_bid":
-                    candidates_support.append(level)
-                else:
-                    candidates_resistance.append(level)
 
         # ③ 合并去重 + 排序
         result.support_levels = self._merge_and_rank(
