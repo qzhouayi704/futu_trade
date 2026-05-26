@@ -15,6 +15,8 @@ import {
   HighTurnoverCard,
   SignalsCard,
   PositionsCard,
+  PlateAlertsCard,
+  SniperCard,
 } from "./components/dashboard";
 import { AlertsCard } from "./components/dashboard/AlertsCard";
 import {
@@ -223,12 +225,18 @@ export default function Dashboard() {
         <StrategyPanel />
       </div>
 
-      {/* 量价预警 */}
-      <div className="mb-4 md:mb-6">
+      {/* 盘中狙击 + 量价预警 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
+        <SniperCard />
         <AlertsCard />
       </div>
 
-      {/* 板块热度 + 热门股票 + 活跃个股 */}
+      {/* 板块预警 */}
+      <div className="mb-4 md:mb-6">
+        <PlateAlertsCard />
+      </div>
+
+      {/* 板块热度 + 热门股票 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
         <PlateHeatCard plates={plates} loading={platesLoading} />
         <HotStocksCard stocks={hotStocks} loading={hotStocksLoading} />
