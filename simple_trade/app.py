@@ -238,6 +238,19 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning(f"动量引擎启动失败: {e}")
 
+            # 启动盘中狙击手引擎（IntradaySniper）
+            try:
+                from .services.sniper.intraday_sniper import IntradaySniper
+                sniper = IntradaySniper(container)
+                container.intraday_sniper = sniper
+                async def _start_sniper():
+                    await asyncio.sleep(90)  # 等待逐笔数据积累
+                    await sniper.start()
+                _track(_start_sniper(), name="intraday_sniper")
+                logging.info("IntradaySniper 将在 90 秒后启动")
+            except Exception as e:
+                logging.warning(f"IntradaySniper 启动失败: {e}")
+
             # 注入容器到 Ticker 推送处理器（使推送数据能驱动动量引擎）
             try:
                 container.futu_client.set_container_for_push(container)
