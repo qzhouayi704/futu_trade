@@ -22,24 +22,63 @@ logger = logging.getLogger("broker_consistency")
 
 
 # ============================================================
-# 券商画像分类
+# 券商画像分类（5层分类）
 # ============================================================
 
-# 散户/游资通道 — 以互联网券商和中小券商为主
+# 散户/游资通道 — 互联网券商和中小券商，客户几乎全是散户
 RETAIL_BROKER_KEYWORDS = [
+    # 互联网券商
     '富途', '华盛', '长桥', '盈立', '尊嘉', '微牛',
     '老虎', '雪盈', '艾德', '利弗莫尔',
-    '耀才', '致富', '信诚',
+    # 香港本地中小券商
+    '耀才', '致富', '信诚', '亨达', '恒盛',
+    '时富', '辉立', '国元', '英皇',
+    # 互联网/零售券商（海外）
+    '盈透',  # Interactive Brokers，偏专业散户
 ]
 
-# 机构/主力通道 — 以大型中资、外资投行为主
+# 机构/投行通道 — 大型中资、外资投行，代客+自营
 INSTITUTIONAL_BROKER_KEYWORDS = [
-    '银河', '华泰', '中金', '中信', '摩根', '瑞银',
-    '巴克莱', '高盛', '麦格理', '花旗', '美林',
-    '汇丰', '渣打', '法兴', '德银', '野村',
+    # 外资大行
+    '高盛', '摩根', '瑞银', '巴克莱', '花旗', '美林',
+    '麦格理', '渣打', '法兴', '德银', '野村',
+    '法国巴黎',  # BNP Paribas
+    '星展',      # DBS
+    '大和',      # Daiwa
+    'Jefferies', 'CLSA',
+    # 中资大券商
+    '中金', '中信', '华泰', '银河',
     '招银', '国泰君安', '海通', '广发',
-    '荷银', '凯基', '交银', '中银国际',
+    '凯基', '交银', '中银国际',
     '建银', '工银', '光大', '申万',
+    # 银行系（注意：汇丰在港有大量零售客户，但券商部门偏机构）
+    '汇丰',
+    # 其他机构券商
+    '复星', '恒生证券', '东方证券',
+    '国信', '兴证', '安信', '方正',
+]
+
+# 清算通道 — 对冲基金和专业机构的清算代理
+# 这些券商本身不做方向性交易，但背后客户是对冲基金/专业资金
+# 出现在卖方时信号最强（代表专业资金在出货）
+CLEARING_BROKER_KEYWORDS = [
+    '荷银',       # ABN AMRO Clearing，港股最大清算通道
+    'Pershing',   # BNY Mellon旗下清算
+    'Nomura',     # 野村清算部分客户
+]
+
+# 做市商/量化通道 — 高频交易和量化基金
+# 通常双向操作提供流动性，方向性信号较弱
+MARKET_MAKER_KEYWORDS = [
+    'Eclipse',    # Eclipse Options
+    'Jump',       # Jump Trading
+    '万邦',       # 万邦亚太，做市商
+    'Optiver',    # 量化做市商
+    'Susquehanna', 'SIG',  # Susquehanna
+    'Citadel',    # Citadel Securities
+    'Flow Traders',
+    'IMC',
+    'Virtu',
 ]
 
 # 港股通/沪深港通道 — 代表内地资金(北水)
@@ -131,34 +170,46 @@ class BrokerConsistencyFilter:
             retail_buy = sum(1 for b in top_buyers if b['tag'] == '散户')
             inst_sell = sum(1 for s in top_sellers if s['tag'] == '机构')
             connect_sell = sum(1 for s in top_sellers if s['tag'] == '北水')
+            clearing_sell = sum(1 for s in top_sellers if s['tag'] == '清算通道')
+            mm_sell = sum(1 for s in top_sellers if s['tag'] == '做市商')
 
             result.retail_buy_count = retail_buy
-            result.institutional_sell_count = inst_sell
+            result.institutional_sell_count = inst_sell + clearing_sell  # 清算通道也算专业卖方
 
             # ========== 诱多陷阱判定 ==========
-            # 条件：卖方有 ≥2 家机构/港股通 且 买方散户占比高
             if len(top_sellers) > 0 and len(top_buyers) > 0:
-                inst_sell_total = inst_sell + connect_sell
+                # 专业资金卖方 = 机构 + 清算通道 + 北水（做市商不算，因为双向操作）
+                smart_sell = inst_sell + clearing_sell + connect_sell
                 retail_buy_ratio = retail_buy / len(top_buyers) if top_buyers else 0
 
-                # 判定条件
                 trap_score = 0.0
 
-                # 机构卖方密度越高，越可能是出货
-                if inst_sell_total >= 3:
-                    trap_score += 0.4
-                elif inst_sell_total >= 2:
-                    trap_score += 0.25
-                elif inst_sell_total >= 1:
+                # --- 卖方专业资金密度 ---
+                # 清算通道（荷银等）权重最高：背后是对冲基金
+                if clearing_sell >= 2:
+                    trap_score += 0.35
+                elif clearing_sell >= 1:
+                    trap_score += 0.2
+
+                # 机构卖方
+                if inst_sell >= 3:
+                    trap_score += 0.3
+                elif inst_sell >= 2:
+                    trap_score += 0.2
+                elif inst_sell >= 1:
                     trap_score += 0.1
 
-                # 散户买方密度越高，越确认是接盘
+                # 北水卖出也是专业资金信号
+                if connect_sell >= 1:
+                    trap_score += 0.1
+
+                # --- 买方散户密度 ---
                 if retail_buy_ratio >= 0.5:
                     trap_score += 0.3
                 elif retail_buy_ratio >= 0.3:
                     trap_score += 0.15
 
-                # 涨幅加成：高位出货比低位更危险
+                # --- 涨幅加成 ---
                 if change_pct > 10:
                     trap_score += 0.2
                 elif change_pct > 5:
@@ -169,12 +220,19 @@ class BrokerConsistencyFilter:
                 result.is_trap = result.trap_confidence >= 0.5
 
                 if result.is_trap:
-                    inst_names = [s['name'] for s in top_sellers if s['tag'] in ('机构', '北水')][:3]
+                    # 构建更详细的原因描述
+                    smart_names = []
+                    for s in top_sellers:
+                        if s['tag'] in ('机构', '清算通道', '北水'):
+                            label = f"{s['name']}({s['tag']})"
+                            smart_names.append(label)
+                            if len(smart_names) >= 3:
+                                break
                     retail_names = [b['name'] for b in top_buyers if b['tag'] == '散户'][:3]
                     result.reason = (
-                        f"机构出货陷阱(置信度{result.trap_confidence:.0%})："
-                        f"卖方机构席位[{','.join(inst_names[:3])}]，"
-                        f"买方散户席位[{','.join(retail_names[:3])}]"
+                        f"出货陷阱(置信度{result.trap_confidence:.0%})："
+                        f"卖方专业资金[{','.join(smart_names)}]，"
+                        f"买方散户[{','.join(retail_names)}]"
                     )
                     logger.warning(f"[{stock_code}] ⚠️ {result.reason}")
 
@@ -212,13 +270,7 @@ class BrokerConsistencyFilter:
                 if name and name != 'N/A' and name not in seen:
                     seen.add(name)
                     pos = int(row.get(pos_col, 0))
-                    tag = '未知'
-                    if any(kw in name for kw in RETAIL_BROKER_KEYWORDS):
-                        tag = '散户'
-                    elif any(kw in name for kw in INSTITUTIONAL_BROKER_KEYWORDS):
-                        tag = '机构'
-                    elif any(kw in name for kw in CONNECT_BROKER_KEYWORDS):
-                        tag = '北水'
+                    tag = _classify_broker(name)
                     brokers.append({'name': name, 'pos': pos, 'tag': tag})
                     if len(brokers) >= top_n:
                         break
@@ -240,3 +292,28 @@ class BrokerConsistencyFilter:
     def _is_connect(broker_name: str) -> bool:
         """判断是否为港股通/沪深港通道"""
         return any(kw in broker_name for kw in CONNECT_BROKER_KEYWORDS)
+
+
+def _classify_broker(name: str) -> str:
+    """对券商名称进行5层分类
+
+    优先级：北水 > 清算通道 > 做市商 > 散户 > 机构 > 未知
+    北水和清算通道优先匹配，因为它们的信号意义最明确。
+    """
+    # 1. 北水（最高优先级，席位固定）
+    if any(kw in name for kw in CONNECT_BROKER_KEYWORDS):
+        return '北水'
+    # 2. 清算通道（对冲基金代理）
+    if any(kw in name for kw in CLEARING_BROKER_KEYWORDS):
+        return '清算通道'
+    # 3. 做市商/量化
+    if any(kw in name for kw in MARKET_MAKER_KEYWORDS):
+        return '做市商'
+    # 4. 散户券商
+    if any(kw in name for kw in RETAIL_BROKER_KEYWORDS):
+        return '散户'
+    # 5. 机构券商
+    if any(kw in name for kw in INSTITUTIONAL_BROKER_KEYWORDS):
+        return '机构'
+    return '未知'
+
