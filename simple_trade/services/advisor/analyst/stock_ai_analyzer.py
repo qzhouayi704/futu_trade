@@ -105,6 +105,7 @@ class StockAIAnalyzer:
         flow_data: Optional[Dict] = None,
         capital_flow_summary: Optional[Dict] = None,
         intraday_levels_data: Optional[Dict] = None,
+        sniper_data: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """对单只股票执行 AI 分析
 
@@ -138,7 +139,7 @@ class StockAIAnalyzer:
             prompt = self._build_analysis_prompt(
                 stock_code, stock_name, quote, klines,
                 score_result, plate_info, position_info, news_data, flow_data,
-                capital_flow_summary, intraday_levels_data,
+                capital_flow_summary, intraday_levels_data, sniper_data,
             )
             logger.info(f"[AI分析] {stock_code} Prompt 构建完成，长度: {len(prompt)} 字符，K线: {len(klines) if klines else 0} 条")
 
@@ -186,6 +187,7 @@ class StockAIAnalyzer:
         flow_data: Optional[Dict] = None,
         capital_flow_summary: Optional[Dict] = None,
         intraday_levels_data: Optional[Dict] = None,
+        sniper_data: Optional[Dict] = None,
     ) -> str:
         """构建完整的分析 Prompt"""
 
@@ -524,6 +526,51 @@ class StockAIAnalyzer:
 }
 ```
 """
+
+        # 13. 盘中狙击手数据（Sniper 排行 + 信号）
+        if sniper_data:
+            prompt += "\n## 盘中狙击手实时排行（双窗口评分: 3分钟+30分钟）\n"
+
+            # 该股在排行中的位置
+            pos = sniper_data.get('stock_position')
+            if pos:
+                pos_type = '🟢机会' if pos['type'] == 'opportunity' else '🔴风险'
+                prompt += f"- **该股状态**: {pos_type} TOP {pos['rank']}\uff08得分: {pos['score']}\uff09\n"
+                detail = pos.get('detail', {})
+                if detail:
+                    prompt += f"  - 触发窗口: {detail.get('window', '?')}分钟\n"
+                    prompt += f"  - 窗口净流入: {detail.get('w_net', 0)}万\n"
+                    prompt += f"  - 窗口涨跌: {detail.get('w_chg', 0):+.2f}%\n"
+            else:
+                prompt += "- **该股状态**: 未进入 TOP 3 排行\n"
+
+            # 当前 TOP 3 排行（帮助 AI 了解市场全局）
+            ranking = sniper_data.get('ranking', {})
+            opp_top = ranking.get('opportunity', [])
+            risk_top = ranking.get('risk', [])
+            if opp_top:
+                prompt += "\n### 当前机会 TOP 3\n"
+                for item in opp_top:
+                    prompt += f"- {item['stock_name']}\uff1a得分 {item['score']}, 涨跌 {item['chg']:+.2f}%\n"
+            if risk_top:
+                prompt += "\n### 当前风险 TOP 3\n"
+                for item in risk_top:
+                    prompt += f"- {item['stock_name']}\uff1a得分 {item['score']}, 涨跌 {item['chg']:+.2f}%\n"
+
+            # 该股今日 sniper 信号
+            signals = sniper_data.get('signals', [])
+            if signals:
+                prompt += f"\n### 该股今日狙击手信号\uff08{len(signals)}条\uff09\n"
+                type_labels = {
+                    'mega_sell': '巨量砸盘', 'mega_buy': '巨量抢筹',
+                    'reversal_bear': '资金转负', 'reversal_bull': '资金转正',
+                    'accel_in': '资金加速', 'sustained_out': '持续流出',
+                }
+                for sig in signals[-5:]:
+                    label = type_labels.get(sig.get('signal_type', ''), sig.get('signal_type', ''))
+                    prompt += f"- {sig.get('emoji', '')} [{sig.get('time', '')}] {label}: {sig.get('detail', '')}\n"
+            prompt += "\n"
+
         return prompt
 
 

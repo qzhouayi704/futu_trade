@@ -69,6 +69,9 @@ async def analyze_stock(
         # 8. 获取日内支撑/阻力位 + 经纪商席位分析
         intraday_levels_data = await _get_intraday_levels_data(container, stock_code)
 
+        # 9. 获取盘中狙击手排行数据（Sniper TOP排行 + 该股信号）
+        sniper_data = _get_sniper_data(container, stock_code)
+
         logger.info(
             f"[AI分析API] {stock_code} 数据聚合完成 | "
             f"行情: {'\u2713' if quote else '\u2717'} | "
@@ -78,10 +81,11 @@ async def analyze_stock(
             f"消息面: {len(news_data.get('news', [])) if news_data else 0}条 | "
             f"资金流: {'\u2713' if flow_data else '\u2717'} | "
             f"时间线摘要: {'\u2713' if capital_flow_summary else '\u2717'} | "
-            f"支撑阻力: {'\u2713' if intraday_levels_data else '\u2717'}"
+            f"支撑阻力: {'\u2713' if intraday_levels_data else '\u2717'} | "
+            f"狙击手: {'\u2713' if sniper_data else '\u2717'}"
         )
 
-        # 9. 执行 AI 分析
+        # 10. 执行 AI 分析
         result = await analyzer.analyze_stock(
             stock_code=stock_code,
             stock_name=stock_name,
@@ -94,6 +98,7 @@ async def analyze_stock(
             flow_data=flow_data,
             capital_flow_summary=capital_flow_summary,
             intraday_levels_data=intraday_levels_data,
+            sniper_data=sniper_data,
         )
 
         if result.get('success'):
@@ -608,3 +613,53 @@ async def _get_intraday_levels_data(container, stock_code: str) -> dict:
     except Exception as e:
         logger.debug(f"获取 {stock_code} 日内支撑/阻力位失败: {e}")
         return {}
+
+
+def _get_sniper_data(container, stock_code: str) -> dict:
+    """获取盘中狙击手排行和信号数据
+
+    返回：
+    - ranking: 当前 TOP 3 机会/风险排行
+    - stock_position: 该股在排行中的位置（机会/风险/无）
+    - signals: 该股今日所有 sniper 信号
+    """
+    sniper = getattr(container, 'intraday_sniper', None)
+    if not sniper:
+        return {}
+
+    result = {}
+    try:
+        # 排行榜
+        ranking = sniper.get_top_ranking()
+        if ranking and ranking.get('updated_at'):
+            result['ranking'] = ranking
+
+            # 该股在排行中的位置
+            for item in ranking.get('opportunity', []):
+                if item['stock_code'] == stock_code:
+                    result['stock_position'] = {
+                        'type': 'opportunity',
+                        'rank': ranking['opportunity'].index(item) + 1,
+                        'score': item['score'],
+                        'detail': item.get('detail', {}),
+                    }
+                    break
+            for item in ranking.get('risk', []):
+                if item['stock_code'] == stock_code:
+                    result['stock_position'] = {
+                        'type': 'risk',
+                        'rank': ranking['risk'].index(item) + 1,
+                        'score': item['score'],
+                        'detail': item.get('detail', {}),
+                    }
+                    break
+
+        # 该股今日信号
+        all_signals = sniper.get_today_signals()
+        stock_signals = [s for s in all_signals if s.get('stock_code') == stock_code]
+        if stock_signals:
+            result['signals'] = stock_signals[-10:]  # 最近10条
+    except Exception as e:
+        logger.debug(f"获取 {stock_code} 狙击手数据失败: {e}")
+
+    return result
