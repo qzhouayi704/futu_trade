@@ -87,6 +87,15 @@ SUSTAINED_MINUTES = 20         # 持续流出检查窗口
 COOLDOWN_MINUTES = 15          # 同类信号冷却期
 CONFLICT_WINDOW_MINUTES = 15   # 红绿互斥窗口
 
+# 双窗口评分参数（经回测最优: 短3分钟+长30分钟）
+SCORE_SHORT_WINDOW = 3         # 短窗口(分钟): 捕捉突发异动
+SCORE_LONG_WINDOW = 30         # 长窗口(分钟): 捕捉趋势建仓
+SCORE_SHORT_FLOW_THRESH = 60   # 短窗口资金阈值(万)
+SCORE_LONG_FLOW_THRESH = 300   # 长窗口资金阈值(万)
+SCORE_SHORT_CHG_THRESH = 0.2   # 短窗口价格变化阈值(%)
+SCORE_LONG_CHG_THRESH = 0.3    # 长窗口价格变化阈值(%)
+SCORE_SIGNAL_WEIGHT = 3        # 信号分权重
+
 # 按日成交额分档的动态阈值 (万元)
 TIER_THRESHOLDS = {
     # (日成交额下限万, accel_min万, mega_min万, reversal_min万)
@@ -114,6 +123,8 @@ class IntradaySniper:
         self._today_signals: List[SniperSignal] = []
         # 上次扫描时间
         self._last_scan: Optional[datetime] = None
+        # TOP 排行榜（每次扫描更新）
+        self._top_ranking: dict = {'opportunity': [], 'risk': [], 'updated_at': None}
 
     # ==================== 公共接口 ====================
 
@@ -142,6 +153,10 @@ class IntradaySniper:
             cutoff_m += 60
         cutoff = f"{cutoff_h:02d}:{cutoff_m:02d}"
         return [s.to_dict() for s in self._today_signals if s.time >= cutoff]
+
+    def get_top_ranking(self) -> dict:
+        """获取当前 TOP 排行榜"""
+        return self._top_ranking
 
     # ==================== 扫描循环 ====================
 
@@ -233,6 +248,9 @@ class IntradaySniper:
 
             if new_signals:
                 logger.info(f"本次扫描产生 {len(new_signals)} 条新信号 (监控 {len(watch_codes)} 只股票)")
+
+            # 更新 TOP 排行榜
+            self._update_ranking(conn, watch_codes, today)
 
         except Exception as e:
             logger.error(f"扫描执行异常: {e}", exc_info=True)
@@ -483,3 +501,128 @@ class IntradaySniper:
                 )
         except Exception as e:
             logger.debug(f"企业微信推送失败: {e}")
+
+    # ==================== 双窗口评分排行 ====================
+
+    def _update_ranking(self, conn, watch_codes: list, today: str):
+        """每次扫描后更新 TOP 排行榜（双窗口: 3m+30m）"""
+        now_str = datetime.now().strftime("%H:%M")
+        SIGNAL_WEIGHTS = {
+            'mega_sell': 5, 'mega_buy': 5,
+            'reversal_bear': 4, 'reversal_bull': 4,
+            'accel_in': 3, 'sustained_out': 3,
+        }
+
+        opp_scores = []
+        risk_scores = []
+
+        for code in watch_codes:
+            tl, avg_tv, day_total = self._load_minute_data(conn, code, today)
+            if len(tl) < 5 or day_total < MIN_DAILY_TURNOVER:
+                continue
+
+            open_price = tl[0]['price']
+            cur_price = tl[-1]['price']
+            if open_price <= 0 or cur_price <= 0:
+                continue
+
+            chg_now = round((cur_price - open_price) / open_price * 100, 2)
+            stock_name = self._get_stock_name(conn, code)
+
+            # 获取该股票的今日信号
+            stock_sigs = [s for s in self._today_signals if s.stock_code == code]
+
+            # 对两个窗口分别计算，取 max
+            best_opp = 0.0
+            best_risk = 0.0
+            best_opp_detail = {}
+            best_risk_detail = {}
+
+            for w_size, f_thresh, c_thresh in [
+                (SCORE_SHORT_WINDOW, SCORE_SHORT_FLOW_THRESH, SCORE_SHORT_CHG_THRESH),
+                (SCORE_LONG_WINDOW, SCORE_LONG_FLOW_THRESH, SCORE_LONG_CHG_THRESH),
+            ]:
+                # 窗口数据
+                window = [p for p in tl if p['time'] > self._sub_minutes(now_str, w_size)]
+                if len(window) < 2:
+                    continue
+
+                w_net = sum(p['net'] for p in window)
+                w_chg = round(
+                    (window[-1]['price'] - window[0]['price']) / window[0]['price'] * 100, 2
+                ) if window[0]['price'] > 0 else 0.0
+
+                # 窗口内信号
+                w_cutoff = self._sub_minutes(now_str, w_size)
+                green_score = sum(
+                    SIGNAL_WEIGHTS.get(s.signal_type, 1)
+                    for s in stock_sigs if not s.is_red and s.time > w_cutoff
+                )
+                red_score = sum(
+                    SIGNAL_WEIGHTS.get(s.signal_type, 1)
+                    for s in stock_sigs if s.is_red and s.time > w_cutoff
+                )
+
+                avg_w_tv = sum(p['turnover'] for p in window) / len(window) if window else 1
+
+                # 🟢 机会分
+                if w_net > f_thresh or w_chg > c_thresh or green_score > 0:
+                    opp_flow = min((max(w_net, 0) / avg_w_tv) * 5, 50) if avg_w_tv > 0 else 0
+                    opp_mom = min(max(w_chg, 0) * 3, 40)
+                    opp_total = green_score * SCORE_SIGNAL_WEIGHT + opp_flow + opp_mom
+                    if opp_total > best_opp:
+                        best_opp = opp_total
+                        best_opp_detail = {
+                            'window': w_size, 'flow': round(opp_flow, 1),
+                            'momentum': round(opp_mom, 1), 'signal': green_score,
+                            'w_net': round(w_net), 'w_chg': round(w_chg, 2),
+                        }
+
+                # 🔴 风险分
+                if w_net < -f_thresh or w_chg < -c_thresh or red_score > 0:
+                    risk_flow = min((max(-w_net, 0) / avg_w_tv) * 5, 50) if avg_w_tv > 0 else 0
+                    risk_mom = min(max(-w_chg, 0) * 3, 40)
+                    risk_total = red_score * SCORE_SIGNAL_WEIGHT + risk_flow + risk_mom
+                    if risk_total > best_risk:
+                        best_risk = risk_total
+                        best_risk_detail = {
+                            'window': w_size, 'flow': round(risk_flow, 1),
+                            'momentum': round(risk_mom, 1), 'signal': red_score,
+                            'w_net': round(w_net), 'w_chg': round(w_chg, 2),
+                        }
+
+            if best_opp > 5:
+                opp_scores.append({
+                    'stock_code': code, 'stock_name': stock_name,
+                    'score': round(best_opp, 1), 'chg': chg_now,
+                    'detail': best_opp_detail,
+                })
+            if best_risk > 5:
+                risk_scores.append({
+                    'stock_code': code, 'stock_name': stock_name,
+                    'score': round(best_risk, 1), 'chg': chg_now,
+                    'detail': best_risk_detail,
+                })
+
+        opp_scores.sort(key=lambda x: -x['score'])
+        risk_scores.sort(key=lambda x: -x['score'])
+
+        self._top_ranking = {
+            'opportunity': opp_scores[:3],
+            'risk': risk_scores[:3],
+            'updated_at': now_str,
+        }
+
+        if opp_scores or risk_scores:
+            opp_names = ', '.join(f"{s['stock_name']}({s['score']})" for s in opp_scores[:3])
+            risk_names = ', '.join(f"{s['stock_name']}({s['score']})" for s in risk_scores[:3])
+            logger.info(f"排行更新 🟢机会[{opp_names}] 🔴风险[{risk_names}]")
+
+    @staticmethod
+    def _sub_minutes(hhmm: str, mins: int) -> str:
+        """时间减去N分钟"""
+        h, m = int(hhmm[:2]), int(hhmm[3:])
+        total = h * 60 + m - mins
+        if total < 0:
+            total = 0
+        return f"{total // 60:02d}:{total % 60:02d}"

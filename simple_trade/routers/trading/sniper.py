@@ -38,3 +38,18 @@ async def get_recent_signals(minutes: int = 30):
         "message": f"最近{minutes}分钟内 {len(signals)} 条信号",
         "data": signals,
     }
+
+
+@router.get("/ranking")
+async def get_ranking():
+    """获取 TOP 3 机会/风险排行榜"""
+    container = get_container()
+    sniper = getattr(container, 'intraday_sniper', None)
+    if not sniper:
+        return {"success": False, "message": "IntradaySniper 未初始化", "data": {}}
+
+    ranking = sniper.get_top_ranking()
+    return {
+        "success": True,
+        "data": ranking,
+    }

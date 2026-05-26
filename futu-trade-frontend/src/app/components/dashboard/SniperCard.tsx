@@ -1,5 +1,5 @@
-// 盘中狙击手 — 实时信号卡片
-// 通过 WebSocket 接收实时信号 + API 轮询兜底
+// 盘中狙击手 — 实时信号卡片 + TOP 排行榜
+// WebSocket 接收实时信号 + API 轮询兜底 + 双窗口评分排行
 
 "use client";
 
@@ -21,23 +21,51 @@ interface SniperSignal {
   severity: string;
 }
 
+interface RankItem {
+  stock_code: string;
+  stock_name: string;
+  score: number;
+  chg: number;
+  detail: {
+    window: number;
+    flow: number;
+    momentum: number;
+    signal: number;
+    w_net: number;
+    w_chg: number;
+  };
+}
+
+interface Ranking {
+  opportunity: RankItem[];
+  risk: RankItem[];
+  updated_at: string | null;
+}
+
 export function SniperCard() {
   const { socket } = useSocket();
   const [signals, setSignals] = useState<SniperSignal[]>([]);
+  const [ranking, setRanking] = useState<Ranking>({ opportunity: [], risk: [], updated_at: null });
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  // API 加载信号
-  const loadSignals = useCallback(async () => {
+  // 加载信号 + 排行
+  const loadData = useCallback(async () => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const res: any = await apiClient.get("/sniper/signals");
-      if (res.success && Array.isArray(res.data)) {
-        setSignals(res.data);
-        setLastUpdate(new Date());
+      const [sigRes, rankRes]: any[] = await Promise.all([
+        apiClient.get("/sniper/signals"),
+        apiClient.get("/sniper/ranking"),
+      ]);
+      if (sigRes.success && Array.isArray(sigRes.data)) {
+        setSignals(sigRes.data);
       }
+      if (rankRes.success && rankRes.data) {
+        setRanking(rankRes.data);
+      }
+      setLastUpdate(new Date());
     } catch (e) {
-      console.error("加载狙击手信号失败:", e);
+      console.error("加载狙击手数据失败:", e);
     } finally {
       setLoading(false);
     }
@@ -45,10 +73,10 @@ export function SniperCard() {
 
   // 初始加载 + 3分钟轮询
   useEffect(() => {
-    loadSignals();
-    const timer = setInterval(loadSignals, 180000);
+    loadData();
+    const timer = setInterval(loadData, 180000);
     return () => clearInterval(timer);
-  }, [loadSignals]);
+  }, [loadData]);
 
   // WebSocket 实时信号
   useEffect(() => {
@@ -56,7 +84,6 @@ export function SniperCard() {
     const handler = (data: SniperSignal) => {
       setSignals((prev) => {
         const updated = [data, ...prev];
-        // 去重：同股票同类信号保留最新
         const seen = new Set<string>();
         return updated.filter((s) => {
           const key = `${s.stock_code}:${s.signal_type}:${s.time}`;
@@ -71,14 +98,8 @@ export function SniperCard() {
     return () => { socket.off("sniper_signal", handler); };
   }, [socket]);
 
-  // 统计
-  const reds = signals.filter((s) => s.is_red);
-  const greens = signals.filter((s) => !s.is_red);
-
-  // 只展示最近 10 条
-  const recent = [...signals]
-    .sort((a, b) => b.time.localeCompare(a.time))
-    .slice(0, 10);
+  const hasRanking = ranking.opportunity.length > 0 || ranking.risk.length > 0;
+  const recent = [...signals].sort((a, b) => b.time.localeCompare(a.time)).slice(0, 6);
 
   return (
     <Card>
@@ -88,16 +109,6 @@ export function SniperCard() {
           <h3 className="text-base font-semibold text-gray-900 flex items-center gap-1.5">
             <span className="text-base">🎯</span>
             盘中狙击
-            {reds.length > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 font-medium animate-pulse">
-                {reds.length} 风险
-              </span>
-            )}
-            {greens.length > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-medium">
-                {greens.length} 机会
-              </span>
-            )}
           </h3>
           <span className="text-[10px] text-gray-400">
             {lastUpdate ? `${lastUpdate.toLocaleTimeString("zh-CN")} 更新` : ""}
@@ -106,70 +117,120 @@ export function SniperCard() {
 
         {loading ? (
           <div className="text-center py-6 text-gray-400 text-sm">扫描中...</div>
-        ) : signals.length === 0 ? (
-          <div className="text-center py-6 text-gray-400 text-sm">
-            暂无信号 — 引擎每3分钟扫描一次
-          </div>
         ) : (
-          <div className="space-y-1.5">
-            {recent.map((sig, idx) => {
-              const bgColor = sig.is_red
-                ? sig.severity === "high"
-                  ? "bg-red-50/80 border-red-200/60"
-                  : "bg-orange-50/80 border-orange-200/60"
-                : sig.severity === "high"
-                  ? "bg-emerald-50/80 border-emerald-200/60"
-                  : "bg-blue-50/80 border-blue-200/60";
-
-              const textColor = sig.is_red
-                ? "text-red-600"
-                : "text-emerald-600";
-
-              const badgeColor = sig.is_red
-                ? "bg-red-200/80 text-red-700"
-                : "bg-emerald-200/80 text-emerald-700";
-
-              const typeLabels: Record<string, string> = {
-                mega_sell: "巨量砸盘",
-                mega_buy: "巨量抢筹",
-                reversal_bear: "资金转负",
-                reversal_bull: "资金转正",
-                accel_in: "资金加速",
-                sustained_out: "持续流出",
-              };
-
-              return (
-                <div
-                  key={`${sig.stock_code}-${sig.signal_type}-${sig.time}-${idx}`}
-                  className={`px-2.5 py-2 rounded-lg border ${bgColor} transition-all hover:shadow-sm`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className={`text-xs font-mono tabular-nums text-gray-400 shrink-0`}>
-                        {sig.time}
-                      </span>
-                      <span className={`text-xs ${sig.is_red ? "animate-pulse" : ""}`}>
-                        {sig.emoji}
-                      </span>
-                      <span className={`font-bold text-xs ${textColor} truncate`}>
-                        {sig.stock_name}
-                      </span>
-                      <span className={`text-[9px] px-1 py-px rounded font-medium shrink-0 ${badgeColor}`}>
-                        {typeLabels[sig.signal_type] || sig.signal_type}
-                      </span>
+          <>
+            {/* TOP 排行榜 */}
+            {hasRanking && (
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                {/* 机会 TOP */}
+                <div className="rounded-lg bg-gradient-to-br from-emerald-50/80 to-green-50/50 border border-emerald-100/60 p-2">
+                  <div className="text-[10px] font-bold text-emerald-700 mb-1.5 flex items-center gap-1">
+                    <span>🟢</span> 机会 TOP 3
+                  </div>
+                  {ranking.opportunity.length === 0 ? (
+                    <div className="text-[10px] text-gray-400 py-1">暂无</div>
+                  ) : (
+                    <div className="space-y-1">
+                      {ranking.opportunity.map((item, idx) => (
+                        <div key={item.stock_code} className="flex items-center justify-between">
+                          <div className="flex items-center gap-1 min-w-0">
+                            <span className="text-[10px] font-bold text-emerald-600 w-3">{idx + 1}</span>
+                            <span className="text-[11px] font-medium text-gray-800 truncate">
+                              {item.stock_name}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className={`text-[10px] font-bold tabular-nums ${item.chg >= 0 ? "text-red-500" : "text-green-600"}`}>
+                              {item.chg >= 0 ? "+" : ""}{item.chg}%
+                            </span>
+                            <span className="text-[9px] px-1 py-px rounded bg-emerald-200/60 text-emerald-700 font-medium">
+                              {item.score}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <span className="text-xs font-bold tabular-nums text-gray-600 shrink-0 ml-2">
-                      {sig.price.toFixed(3)}
-                    </span>
-                  </div>
-                  <div className={`text-[10px] ${textColor} opacity-75 mt-0.5 flex items-center justify-between`}>
-                    <span className="truncate">{sig.detail}</span>
-                    <span className="text-gray-400 shrink-0 ml-2">{sig.action}</span>
-                  </div>
+                  )}
                 </div>
-              );
-            })}
-          </div>
+
+                {/* 风险 TOP */}
+                <div className="rounded-lg bg-gradient-to-br from-red-50/80 to-orange-50/50 border border-red-100/60 p-2">
+                  <div className="text-[10px] font-bold text-red-700 mb-1.5 flex items-center gap-1">
+                    <span>🔴</span> 风险 TOP 3
+                  </div>
+                  {ranking.risk.length === 0 ? (
+                    <div className="text-[10px] text-gray-400 py-1">暂无</div>
+                  ) : (
+                    <div className="space-y-1">
+                      {ranking.risk.map((item, idx) => (
+                        <div key={item.stock_code} className="flex items-center justify-between">
+                          <div className="flex items-center gap-1 min-w-0">
+                            <span className="text-[10px] font-bold text-red-600 w-3">{idx + 1}</span>
+                            <span className="text-[11px] font-medium text-gray-800 truncate">
+                              {item.stock_name}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className={`text-[10px] font-bold tabular-nums ${item.chg >= 0 ? "text-red-500" : "text-green-600"}`}>
+                              {item.chg >= 0 ? "+" : ""}{item.chg}%
+                            </span>
+                            <span className="text-[9px] px-1 py-px rounded bg-red-200/60 text-red-700 font-medium">
+                              {item.score}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* 信号列表 */}
+            {signals.length === 0 && !hasRanking ? (
+              <div className="text-center py-4 text-gray-400 text-sm">
+                暂无信号 — 引擎每3分钟扫描一次
+              </div>
+            ) : recent.length > 0 ? (
+              <div className="space-y-1">
+                {recent.map((sig, idx) => {
+                  const bgColor = sig.is_red
+                    ? "bg-red-50/60 border-red-200/50"
+                    : "bg-emerald-50/60 border-emerald-200/50";
+                  const textColor = sig.is_red ? "text-red-600" : "text-emerald-600";
+                  const badgeColor = sig.is_red
+                    ? "bg-red-200/70 text-red-700"
+                    : "bg-emerald-200/70 text-emerald-700";
+                  const typeLabels: Record<string, string> = {
+                    mega_sell: "巨量砸盘", mega_buy: "巨量抢筹",
+                    reversal_bear: "资金转负", reversal_bull: "资金转正",
+                    accel_in: "资金加速", sustained_out: "持续流出",
+                  };
+                  return (
+                    <div
+                      key={`${sig.stock_code}-${sig.signal_type}-${sig.time}-${idx}`}
+                      className={`px-2 py-1.5 rounded-lg border ${bgColor}`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1 min-w-0">
+                          <span className="text-[10px] font-mono tabular-nums text-gray-400 shrink-0">{sig.time}</span>
+                          <span className={`text-xs ${sig.is_red ? "animate-pulse" : ""}`}>{sig.emoji}</span>
+                          <span className={`font-bold text-xs ${textColor} truncate`}>{sig.stock_name}</span>
+                          <span className={`text-[9px] px-1 py-px rounded font-medium shrink-0 ${badgeColor}`}>
+                            {typeLabels[sig.signal_type] || sig.signal_type}
+                          </span>
+                        </div>
+                        <span className="text-xs font-bold tabular-nums text-gray-600 shrink-0 ml-2">
+                          {sig.price.toFixed(3)}
+                        </span>
+                      </div>
+                      <div className={`text-[10px] ${textColor} opacity-70 mt-0.5 truncate`}>{sig.detail}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </>
         )}
       </div>
     </Card>
