@@ -63,6 +63,12 @@ async def analyze_stock(
         # 6.5 获取实时逐笔成交 / 资金流信号
         flow_data = _get_intraday_flow_data(container, stock_code)
 
+        # 7. 获取逐笔资金流时间线摘要（动能标签、买卖比、前后半段对比）
+        capital_flow_summary = await _get_capital_flow_summary(container, stock_code)
+
+        # 8. 获取日内支撑/阻力位 + 经纪商席位分析
+        intraday_levels_data = await _get_intraday_levels_data(container, stock_code)
+
         logger.info(
             f"[AI分析API] {stock_code} 数据聚合完成 | "
             f"行情: {'\u2713' if quote else '\u2717'} | "
@@ -70,10 +76,12 @@ async def analyze_stock(
             f"板块: {'\u2713' if plate_info else '\u2717'} | "
             f"持仓: {'\u2713' if position_info else '\u2717'} | "
             f"消息面: {len(news_data.get('news', [])) if news_data else 0}条 | "
-            f"资金流: {'\u2713' if flow_data else '\u2717'}"
+            f"资金流: {'\u2713' if flow_data else '\u2717'} | "
+            f"时间线摘要: {'\u2713' if capital_flow_summary else '\u2717'} | "
+            f"支撑阻力: {'\u2713' if intraday_levels_data else '\u2717'}"
         )
 
-        # 7. 执行 AI 分析
+        # 9. 执行 AI 分析
         result = await analyzer.analyze_stock(
             stock_code=stock_code,
             stock_name=stock_name,
@@ -84,6 +92,8 @@ async def analyze_stock(
             position_info=position_info,
             news_data=news_data,
             flow_data=flow_data,
+            capital_flow_summary=capital_flow_summary,
+            intraday_levels_data=intraday_levels_data,
         )
 
         if result.get('success'):
@@ -444,3 +454,157 @@ def _get_intraday_flow_data(container, stock_code: str) -> dict:
         pass
 
     return result
+
+
+async def _get_capital_flow_summary(container, stock_code: str) -> dict:
+    """获取逐笔资金流时间线的摘要数据
+
+    复用 enhanced_heat 路由中的 _compute_flow_summary 逻辑，
+    返回动能标签、买卖比、前后半段净流入对比等关键指标。
+    """
+    try:
+        from datetime import date as _date
+        db = getattr(container, 'db_manager', None)
+        if not db:
+            return {}
+
+        today_str = _date.today().isoformat()
+
+        # 查询 ticker_data 逐分钟聚合
+        rows = db.execute_query("""
+            SELECT
+                substr(datetime(timestamp/1000, 'unixepoch', '+8 hours'), 12, 5) as minute,
+                direction,
+                SUM(turnover) as total_turnover,
+                SUM(volume) as total_volume,
+                AVG(price) as avg_price
+            FROM ticker_data
+            WHERE stock_code = ? AND trade_date = ?
+            GROUP BY minute, direction
+            ORDER BY minute
+        """, (stock_code, today_str))
+
+        if not rows or len(rows) < 5:
+            return {}
+
+        # 按分钟聚合
+        minute_data = {}
+        for row in rows:
+            minute, direction, turnover, volume, avg_price = row
+            if not ('09:15' <= minute <= '16:10'):
+                continue
+            if minute not in minute_data:
+                minute_data[minute] = {'buy': 0.0, 'sell': 0.0, 'vol': 0, 'price_sum': 0.0, 'price_n': 0}
+            entry = minute_data[minute]
+            tv = float(turnover or 0)
+            if direction == 'BUY':
+                entry['buy'] += tv
+            elif direction == 'SELL':
+                entry['sell'] += tv
+            entry['vol'] += int(volume or 0)
+            if avg_price and float(avg_price) > 0:
+                entry['price_sum'] += float(avg_price)
+                entry['price_n'] += 1
+
+        if len(minute_data) < 3:
+            return {}
+
+        # 构建时间线
+        timeline = []
+        cum_buy = 0.0
+        cum_sell = 0.0
+        for minute in sorted(minute_data.keys()):
+            e = minute_data[minute]
+            buy_t = e['buy']
+            sell_t = e['sell']
+            cum_buy += buy_t
+            cum_sell += sell_t
+            net = buy_t - sell_t
+            cum_net = cum_buy - cum_sell
+            point = {
+                'time': minute,
+                'buy_in': round(buy_t / 10000, 1),
+                'sell_in': round(-sell_t / 10000, 1),
+                'net_buy': round(net / 10000, 1),
+                'cum_net': round(cum_net / 10000, 1),
+            }
+            if e['price_n'] > 0:
+                point['price'] = round(e['price_sum'] / e['price_n'], 3)
+            timeline.append(point)
+
+        # 复用 enhanced_heat 的摘要计算
+        from ..data.enhanced_heat import _compute_flow_summary
+        summary = _compute_flow_summary(timeline)
+
+        # 附加时间线的首尾价格用于判断走势
+        first_price = next((p.get('price', 0) for p in timeline if p.get('price', 0) > 0), 0)
+        last_price = next((p.get('price', 0) for p in reversed(timeline) if p.get('price', 0) > 0), 0)
+
+        return {
+            'summary': summary,
+            'data_points': len(timeline),
+            'first_price': first_price,
+            'last_price': last_price,
+            # 附加最近5个数据点，让AI看到最新趋势
+            'recent_points': timeline[-5:] if len(timeline) >= 5 else timeline,
+        }
+    except Exception as e:
+        logger.debug(f"获取 {stock_code} 资金流时间线摘要失败: {e}")
+        return {}
+
+
+async def _get_intraday_levels_data(container, stock_code: str) -> dict:
+    """获取日内支撑/阻力位 + 经纪商席位分析
+
+    直接调用 IntradayLevelsService + BrokerConsistencyFilter，
+    返回支撑位、阻力位、VWAP、POC、经纪商买卖席位。
+    """
+    try:
+        from ...services.analysis.intraday_levels_service import IntradayLevelsService
+        from ..data.ticker.helpers import get_ticker_service, get_order_book_service
+
+        ticker_svc = get_ticker_service(container)
+        ob_svc = get_order_book_service(container)
+        service = IntradayLevelsService(
+            ticker_service=ticker_svc,
+            order_book_service=ob_svc,
+        )
+
+        result = await service.get_levels(stock_code)
+        data = result.to_dict()
+
+        # 附加经纪商席位分析
+        try:
+            futu_client = getattr(container, 'futu_client', None)
+            if futu_client and result.current_price > 0:
+                from ...services.analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
+                change_pct = 0.0
+                try:
+                    quote_cache = getattr(container, 'quote_cache', None)
+                    if quote_cache:
+                        quotes_map = quote_cache.get_quotes_for_codes([stock_code])
+                        cached = quotes_map.get(stock_code)
+                        if cached:
+                            change_pct = abs(float(cached.get('change_rate', 0)))
+                except Exception:
+                    pass
+                bf = BrokerConsistencyFilter(futu_client)
+                broker_result = bf.check_distribution_trap(stock_code, change_pct=change_pct)
+                data['broker_analysis'] = {
+                    'is_trap': broker_result.is_trap,
+                    'trap_confidence': broker_result.trap_confidence,
+                    'reason': broker_result.reason,
+                    'top_buyers': broker_result.top_buyers[:5],
+                    'top_sellers': broker_result.top_sellers[:5],
+                    'buyer_details': broker_result.buyer_details,
+                    'seller_details': broker_result.seller_details,
+                    'institutional_sell_count': broker_result.institutional_sell_count,
+                    'retail_buy_count': broker_result.retail_buy_count,
+                }
+        except Exception as e:
+            logger.debug(f"经纪商分析附加失败: {e}")
+
+        return data
+    except Exception as e:
+        logger.debug(f"获取 {stock_code} 日内支撑/阻力位失败: {e}")
+        return {}

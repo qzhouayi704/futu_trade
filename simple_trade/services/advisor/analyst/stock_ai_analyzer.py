@@ -103,6 +103,8 @@ class StockAIAnalyzer:
         position_info: Optional[Dict] = None,
         news_data: Optional[Dict] = None,
         flow_data: Optional[Dict] = None,
+        capital_flow_summary: Optional[Dict] = None,
+        intraday_levels_data: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """对单只股票执行 AI 分析
 
@@ -136,6 +138,7 @@ class StockAIAnalyzer:
             prompt = self._build_analysis_prompt(
                 stock_code, stock_name, quote, klines,
                 score_result, plate_info, position_info, news_data, flow_data,
+                capital_flow_summary, intraday_levels_data,
             )
             logger.info(f"[AI分析] {stock_code} Prompt 构建完成，长度: {len(prompt)} 字符，K线: {len(klines) if klines else 0} 条")
 
@@ -181,6 +184,8 @@ class StockAIAnalyzer:
         position_info: Optional[Dict],
         news_data: Optional[Dict] = None,
         flow_data: Optional[Dict] = None,
+        capital_flow_summary: Optional[Dict] = None,
+        intraday_levels_data: Optional[Dict] = None,
     ) -> str:
         """构建完整的分析 Prompt"""
 
@@ -393,26 +398,135 @@ class StockAIAnalyzer:
                     prompt += f"| {s['time'][-8:]} | {s['buy_amt']} | {s['sell_amt']} | {s['ratio']} | {s['strength']:+.2f} |\n"
                 prompt += "\n"
 
-        # 9. 输出格式要求
+        # 10. 逐笔资金流时间线摘要（动能+买卖比+前后半段对比）
+        if capital_flow_summary and capital_flow_summary.get('summary'):
+            s = capital_flow_summary['summary']
+            prompt += f"""
+## 日内资金流动能分析（逐笔成交时间线）
+| 指标 | 数值 |
+|------|------|
+| **动能标签** | {s.get('momentum_label', '未知')} |
+| **信号** | {s.get('signal', 'neutral')} |
+| **买卖力量比** | {s.get('buy_sell_ratio', 'N/A')} |
+| **累计净流入** | {s.get('cum_net', 0):.1f}万 |
+| **最近净流入** | {s.get('recent_net', 0):.1f}万 |
+| **前半段净流入** | {s.get('first_half_net', 0):.1f}万 |
+| **后半段净流入** | {s.get('second_half_net', 0):.1f}万 |
+| **数据点数** | {capital_flow_summary.get('data_points', 0)} |
+"""
+            first_half = s.get('first_half_net', 0)
+            second_half = s.get('second_half_net', 0)
+            if first_half != 0 or second_half != 0:
+                if second_half > first_half > 0:
+                    prompt += "- **特征**: 后半段加速流入（买方力量增强）\n"
+                elif first_half > 0 > second_half:
+                    prompt += "- **特征**: 前半段流入后半段流出（冲高出货嫌疑）\n"
+                elif first_half < 0 and second_half > abs(first_half):
+                    prompt += "- **特征**: 先杀后拉（洗盘或抄底）\n"
+                elif second_half < first_half < 0:
+                    prompt += "- **特征**: 后半段加速流出（恐慌性抛售）\n"
+
+            absorption = s.get('absorption')
+            if absorption:
+                prompt += f"- **吸筹信号**: {absorption}\n"
+
+            recent_pts = capital_flow_summary.get('recent_points', [])
+            if recent_pts:
+                prompt += "\n### 最近资金流快照\n"
+                prompt += "| 时间 | 买入(万) | 卖出(万) | 净买入(万) | 累计净(万) | 价格 |\n"
+                prompt += "|------|----------|----------|------------|------------|------|\n"
+                for p in recent_pts:
+                    prompt += f"| {p['time']} | {p['buy_in']} | {p['sell_in']} | {p['net_buy']} | {p['cum_net']} | {p.get('price', 'N/A')} |\n"
+                prompt += "\n"
+
+        # 11. 日内支撑/阻力位 + VWAP/POC + 经纪商席位
+        if intraday_levels_data:
+            prompt += "\n## 日内关键价位分析\n"
+
+            supports = intraday_levels_data.get('support_levels', [])
+            if supports:
+                prompt += "### 支撑位\n"
+                prompt += "| 价位 | 强度 | 类型 | 成交量 |\n"
+                prompt += "|------|------|------|--------|\n"
+                for lv in supports:
+                    prompt += f"| {lv.get('price', 0)} | {lv.get('strength', 0)}/100 | {lv.get('label', '')} | {lv.get('volume', 0):,} |\n"
+            else:
+                prompt += "- **支撑位**: 无明确大单支撑（下方无托底，风险较高）\n"
+
+            resistances = intraday_levels_data.get('resistance_levels', [])
+            if resistances:
+                prompt += "### 阻力位\n"
+                prompt += "| 价位 | 强度 | 类型 | 成交量 |\n"
+                prompt += "|------|------|------|--------|\n"
+                for lv in resistances:
+                    prompt += f"| {lv.get('price', 0)} | {lv.get('strength', 0)}/100 | {lv.get('label', '')} | {lv.get('volume', 0):,} |\n"
+
+            vwap = intraday_levels_data.get('vwap', {})
+            poc = intraday_levels_data.get('poc', {})
+            current_price = intraday_levels_data.get('current_price', 0)
+            if vwap or poc:
+                prompt += "\n### 关键参考价位\n"
+                if vwap:
+                    prompt += f"- **VWAP**: {vwap.get('price', 0):.3f} (当前偏离: {vwap.get('deviation_pct', 0):+.2f}%)\n"
+                if poc:
+                    prompt += f"- **POC(最大成交密集区)**: {poc.get('price', 0):.3f}\n"
+                if current_price:
+                    prompt += f"- **当前价**: {current_price:.3f}\n"
+
+            broker = intraday_levels_data.get('broker_analysis', {})
+            if broker:
+                prompt += "\n### 经纪商席位分析（庄家动向）\n"
+
+                buyer_details = broker.get('buyer_details', [])
+                if buyer_details:
+                    prompt += "**买方席位:**\n"
+                    for b in buyer_details[:6]:
+                        tag = b.get('tag', '未知')
+                        tag_icon = {'机构': '🏦', '散户': '👤', '北水': '🔴'}.get(tag, '❓')
+                        prompt += f"- {tag_icon} {b.get('name', '')} ({tag})\n"
+
+                seller_details = broker.get('seller_details', [])
+                if seller_details:
+                    prompt += "**卖方席位:**\n"
+                    for sd in seller_details[:6]:
+                        tag = sd.get('tag', '未知')
+                        tag_icon = {'机构': '🏦', '散户': '👤', '北水': '🔴'}.get(tag, '❓')
+                        prompt += f"- {tag_icon} {sd.get('name', '')} ({tag})\n"
+
+                inst_sell = broker.get('institutional_sell_count', 0)
+                retail_buy = broker.get('retail_buy_count', 0)
+                is_trap = broker.get('is_trap', False)
+                trap_conf = broker.get('trap_confidence', 0)
+                prompt += f"\n- 机构卖出席位数: {inst_sell}\n"
+                prompt += f"- 散户买入席位数: {retail_buy}\n"
+                if is_trap:
+                    prompt += f"- ⚠️ **出货陷阱警告**: 置信度 {trap_conf:.0%}，{broker.get('reason', '')}\n"
+                elif retail_buy >= 3 and inst_sell >= 2:
+                    prompt += "- ⚠️ **风险提示**: 散户接盘+机构出货的格局，需警惕\n"
+                prompt += "\n"
+
+        # 12. 输出格式要求
         prompt += """
 ## 输出格式（严格JSON）
-请输出以下 JSON 格式，不要包含其他文字���
+请输出以下 JSON 格式，不要包含其他文字：
 
 ```json
 {
   "action": "STRONG_BUY" | "BUY" | "HOLD" | "REDUCE" | "SELL" | "STRONG_SELL",
   "confidence": 0-100,
-  "reasoning": "用不超过200字的简体中文，综合分析为什么给出此建议",
-  "key_factors": ["因素1", "因素2", "因素3"],
-  "risk_warning": "主要风险提示（简体中文），无风险则为null",
-  "target_price": 目标价(数字)或null,
-  "stop_loss_price": 止损价(数字)或null,
+  "reasoning": "用不超过300字的简体中文，综合分析资金流动能、支撑阻力位、经纪商动向和技术面，解释为什么给出此建议",
+  "key_factors": ["因素1", "因素2", "因素3", "因素4"],
+  "risk_warning": "主要风险提示（简体中文），包含经纪商异常和支撑缺失等风险，无风险则为null",
+  "target_price": 目标价(数字，参考阻力位)或null,
+  "stop_loss_price": 止损价(数字，参考支撑位或VWAP)或null,
   "score_assessment": "对系统评分的简短评价（中文）",
   "time_horizon": "SHORT_TERM(1-3天)" | "MEDIUM_TERM(3-10天)"
 }
 ```
 """
         return prompt
+
+
 
     async def _call_gemini(self, prompt: str) -> Optional[str]:
         """调用 Gemini API"""
