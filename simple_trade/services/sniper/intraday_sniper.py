@@ -171,7 +171,7 @@ class IntradaySniper:
                 await asyncio.sleep(60)
 
     async def _do_scan(self):
-        """执行一次扫描"""
+        """执行一次扫描（只扫描用户股票池中的股票）"""
         db = getattr(self.container, 'db_manager', None)
         if not db:
             return
@@ -180,16 +180,26 @@ class IntradaySniper:
         self._last_scan = datetime.now()
 
         try:
-            # 获取所有有今日逐笔数据的股票
-            conn = db.get_connection()
-            stocks = conn.execute(
-                "SELECT DISTINCT stock_code FROM ticker_data WHERE trade_date = ?",
-                (today,)
-            ).fetchall()
+            # 获取用户股票池（已订阅的股票）
+            sub_mgr = getattr(self.container, 'subscription_manager', None)
+            if sub_mgr and hasattr(sub_mgr, 'subscribed_stocks'):
+                watch_codes = list(sub_mgr.subscribed_stocks)
+            else:
+                # fallback: 从 ticker_data 获取全部（不推荐）
+                conn = db.get_connection()
+                rows = conn.execute(
+                    "SELECT DISTINCT stock_code FROM ticker_data WHERE trade_date = ?",
+                    (today,)
+                ).fetchall()
+                watch_codes = [r[0] for r in rows]
 
+            if not watch_codes:
+                return
+
+            conn = db.get_connection()
             new_signals = []
 
-            for (stock_code,) in stocks:
+            for stock_code in watch_codes:
                 # 加载分钟级数据
                 timeline, avg_turnover, day_total = self._load_minute_data(
                     conn, stock_code, today
@@ -222,7 +232,7 @@ class IntradaySniper:
                 await self._push_signal(sig)
 
             if new_signals:
-                logger.info(f"本次扫描产生 {len(new_signals)} 条新信号")
+                logger.info(f"本次扫描产生 {len(new_signals)} 条新信号 (监控 {len(watch_codes)} 只股票)")
 
         except Exception as e:
             logger.error(f"扫描执行异常: {e}", exc_info=True)
