@@ -211,46 +211,46 @@ class IntradaySniper:
             if not watch_codes:
                 return
 
-            conn = db.get_connection()
-            new_signals = []
+            with db.get_connection() as conn:
+                new_signals = []
 
-            for stock_code in watch_codes:
-                # 加载分钟级数据
-                timeline, avg_turnover, day_total = self._load_minute_data(
-                    conn, stock_code, today
-                )
+                for stock_code in watch_codes:
+                    # 加载分钟级数据
+                    timeline, avg_turnover, day_total = self._load_minute_data(
+                        conn, stock_code, today
+                    )
 
-                if len(timeline) < 10 or avg_turnover <= 0:
-                    continue
+                    if len(timeline) < 10 or avg_turnover <= 0:
+                        continue
 
-                # 跳过微盘股
-                if day_total < MIN_DAILY_TURNOVER:
-                    continue
+                    # 跳过微盘股
+                    if day_total < MIN_DAILY_TURNOVER:
+                        continue
 
-                # 获取股票名称
-                stock_name = self._get_stock_name(conn, stock_code)
+                    # 获取股票名称
+                    stock_name = self._get_stock_name(conn, stock_code)
 
-                # 确定阈值档位
-                accel_min, mega_min, reversal_min = self._get_tier_thresholds(day_total)
+                    # 确定阈值档位
+                    accel_min, mega_min, reversal_min = self._get_tier_thresholds(day_total)
 
-                # 运行信号检测
-                signals = self._detect_signals(
-                    stock_code, stock_name, timeline,
-                    avg_turnover, day_total,
-                    accel_min, mega_min, reversal_min,
-                )
-                new_signals.extend(signals)
+                    # 运行信号检测
+                    signals = self._detect_signals(
+                        stock_code, stock_name, timeline,
+                        avg_turnover, day_total,
+                        accel_min, mega_min, reversal_min,
+                    )
+                    new_signals.extend(signals)
 
-            # 推送新信号
-            for sig in new_signals:
-                self._today_signals.append(sig)
-                await self._push_signal(sig)
+                # 推送新信号
+                for sig in new_signals:
+                    self._today_signals.append(sig)
+                    await self._push_signal(sig)
 
-            if new_signals:
-                logger.info(f"本次扫描产生 {len(new_signals)} 条新信号 (监控 {len(watch_codes)} 只股票)")
+                if new_signals:
+                    logger.info(f"本次扫描产生 {len(new_signals)} 条新信号 (监控 {len(watch_codes)} 只股票)")
 
-            # 更新 TOP 排行榜
-            self._update_ranking(conn, watch_codes, today)
+                # 更新 TOP 排行榜
+                self._update_ranking(conn, watch_codes, today)
 
         except Exception as e:
             logger.error(f"扫描执行异常: {e}", exc_info=True)
