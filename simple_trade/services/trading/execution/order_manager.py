@@ -86,6 +86,28 @@ class OrderManager:
                 ON trade_records(created_at)
             ''')
 
+            # 模拟交易记录表
+            self.db_manager.execute_update('''
+                CREATE TABLE IF NOT EXISTS simulated_trade_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stock_code TEXT NOT NULL,
+                    stock_name TEXT,
+                    direction TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    amount REAL,
+                    resonance_type TEXT,
+                    reason TEXT,
+                    sources TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            self.db_manager.execute_update('''
+                CREATE INDEX IF NOT EXISTS idx_sim_records_created_at
+                ON simulated_trade_records(created_at)
+            ''')
+
             logging.info("订单数据库表初始化完成")
 
         except Exception as e:
@@ -279,6 +301,47 @@ class OrderManager:
 
         except Exception as e:
             logging.error(f"获取交易记录失败: {e}")
+            return []
+
+    def create_simulated_record(self, stock_code: str, stock_name: str,
+                                direction: str, price: float, quantity: int,
+                                resonance_type: str = '', reason: str = '',
+                                sources: str = '') -> int:
+        """创建模拟交易记录"""
+        try:
+            amount = round(price * quantity, 2)
+            record_id = self.db_manager.execute_insert('''
+                INSERT INTO simulated_trade_records
+                (stock_code, stock_name, direction, price, quantity, amount,
+                 resonance_type, reason, sources)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (stock_code, stock_name, direction, price, quantity, amount,
+                  resonance_type, reason, sources))
+            return record_id
+        except Exception as e:
+            logging.error(f"创建模拟交易记录失败: {e}")
+            return -1
+
+    def get_simulated_records(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """获取模拟交易记录"""
+        try:
+            records = self.db_manager.execute_query('''
+                SELECT id, stock_code, stock_name, direction, price, quantity,
+                       amount, resonance_type, reason, sources, created_at
+                FROM simulated_trade_records
+                ORDER BY created_at DESC LIMIT ?
+            ''', [limit])
+            return [
+                {
+                    'id': r[0], 'stock_code': r[1], 'stock_name': r[2],
+                    'direction': r[3], 'price': r[4], 'quantity': r[5],
+                    'amount': r[6], 'resonance_type': r[7], 'reason': r[8],
+                    'sources': r[9], 'created_at': r[10],
+                }
+                for r in records
+            ]
+        except Exception as e:
+            logging.error(f"获取模拟交易记录失败: {e}")
             return []
 
     def get_orders(self, status_filter_list: Optional[List] = None) -> Dict[str, Any]:

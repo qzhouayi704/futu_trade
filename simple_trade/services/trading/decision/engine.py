@@ -447,6 +447,23 @@ class UnifiedTradeDecisionEngine:
         )
 
         if decision.simulated:
+            # 保存模拟交易记录到数据库
+            try:
+                futu_svc = getattr(self.container, 'futu_trade_service', None)
+                if futu_svc and hasattr(futu_svc, 'order_manager'):
+                    futu_svc.order_manager.create_simulated_record(
+                        stock_code=decision.stock_code,
+                        stock_name=decision.stock_name,
+                        direction=decision.direction,
+                        price=decision.price,
+                        quantity=decision.quantity,
+                        resonance_type=decision.resonance_type,
+                        reason=decision.reason,
+                        sources=','.join(decision.sources),
+                    )
+                    logger.info(f"[DecisionEngine] 💾 模拟记录已保存到数据库")
+            except Exception as e:
+                logger.warning(f"[DecisionEngine] 模拟记录保存失败: {e}")
             await self._push_trade_notification(decision)
             return
 
