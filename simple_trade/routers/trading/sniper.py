@@ -5,7 +5,7 @@
 from fastapi import APIRouter
 from ...dependencies import get_container
 
-router = APIRouter(prefix="/sniper", tags=["盘中狙击手"])
+router = APIRouter(prefix="/api/sniper", tags=["盘中狙击手"])
 
 
 @router.get("/signals")
