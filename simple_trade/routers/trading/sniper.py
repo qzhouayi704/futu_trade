@@ -53,3 +53,32 @@ async def get_ranking():
         "success": True,
         "data": ranking,
     }
+
+
+@router.get("/simulated-trades")
+async def get_simulated_trades(limit: int = 30):
+    """获取模拟交易记录（数据库持久化 + 内存中的今日决策）"""
+    container = get_container()
+
+    records = []
+
+    # 1. 从数据库获取持久化记录
+    try:
+        futu_svc = getattr(container, 'futu_trade_service', None)
+        if futu_svc and hasattr(futu_svc, 'order_manager'):
+            records = futu_svc.order_manager.get_simulated_records(limit)
+    except Exception:
+        pass
+
+    # 2. 从决策引擎获取今日内存中的决策
+    engine = getattr(container, 'trade_decision_engine', None)
+    today_decisions = engine.get_today_decisions() if engine else []
+
+    return {
+        "success": True,
+        "message": f"共 {len(records)} 条持久化记录, {len(today_decisions)} 条今日决策",
+        "data": {
+            "records": records,
+            "today_decisions": today_decisions,
+        },
+    }

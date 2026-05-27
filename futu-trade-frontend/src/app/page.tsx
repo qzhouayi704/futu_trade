@@ -17,6 +17,7 @@ import {
   PositionsCard,
   PlateAlertsCard,
   SniperCard,
+  SimulatedTradeCard,
 } from "./components/dashboard";
 import { AlertsCard } from "./components/dashboard/AlertsCard";
 import {
@@ -229,6 +230,11 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
         <SniperCard />
         <AlertsCard />
+      </div>
+
+      {/* 模拟交易记录 */}
+      <div className="mb-4 md:mb-6">
+        <SimulatedTradeCard />
       </div>
 
       {/* 板块预警 */}

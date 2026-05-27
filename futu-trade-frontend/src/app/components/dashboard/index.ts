@@ -9,4 +9,5 @@ export { SignalsCard } from "./SignalsCard";
 export { PositionsCard } from "./PositionsCard";
 export { PlateAlertsCard } from "./PlateAlertsCard";
 export { SniperCard } from "./SniperCard";
+export { SimulatedTradeCard } from "./SimulatedTradeCard";
 
