@@ -37,6 +37,8 @@ from .aggressive import (
     AutoTradeTask,
     MarketContext,
 )
+# 决策引擎
+from .decision import UnifiedTradeDecisionEngine, TradeSignalEvent, TradeDecision
 # 协调服务
 from .futu_trade_service import FutuTradeService
 from .trade_service import TradeService
@@ -68,6 +70,10 @@ __all__ = [
     'AutoTradeService',
     'AutoTradeTask',
     'MarketContext',
+    # decision
+    'UnifiedTradeDecisionEngine',
+    'TradeSignalEvent',
+    'TradeDecision',
     # coordination
     'FutuTradeService',
     'TradeService',

@@ -511,10 +511,9 @@ class StockScorer:
         return TradeParams(
             trade_type='DAILY',
             buy_dip_pct=1.0,              # 阶梯: 先挂前收-1%, 未成交则前收
-            take_profit_pct=10.0,         # 追踪���盈激活点
-            stop_loss_pct=8.0,            # 止损8%
+            take_profit_pct=5.0,          # 回测最优: 5%（原10%）
+            stop_loss_pct=3.0,            # 回测最优: 3%（原8%）
             max_hold_days=3,              # 持仓3天
             confidence=confidence,
             reason=reason
         )
-

@@ -150,6 +150,13 @@ class QuotePipeline:
         trade_actions.extend(risk_actions)
         trade_actions.extend(flow_signals)
         trade_actions.extend(absorption_alerts)
+
+        # 日内波段卖后跟踪买回检查（每轮都检查，不受 strategy_check_interval 限制）
+        swing_signals = await self._check_swing_buyback(quotes)
+        trade_actions.extend(swing_signals)
+
+        # 将 R13 卖出信号送入卖后跟踪器
+        self._feed_sell_signals_to_swing_tracker(flow_signals + intraday_signals)
         conditions: List[Dict] = []
         conditions_updated = False
         if self._should_run_strategy():
@@ -416,6 +423,64 @@ class QuotePipeline:
         except Exception as e:
             logging.debug(f"资金流向信号检查异常: {e}")
             return []
+
+    async def _check_swing_buyback(self, quotes: List[Dict]) -> List[Dict]:
+        """检查日内波段卖后跟踪的买回条件"""
+        try:
+            if not hasattr(self, '_swing_tracker'):
+                self._swing_tracker = None
+                try:
+                    from ...services.trading.intraday import IntradaySwingTracker
+                    self._swing_tracker = IntradaySwingTracker()
+                    logging.info("【行情管道】日内波段跟踪器已初始化")
+                except Exception as e:
+                    logging.debug(f"日内波段跟踪器初始化失败: {e}")
+
+            if not self._swing_tracker:
+                return []
+
+            watching_codes = self._swing_tracker.get_watching_codes()
+            if not watching_codes:
+                return []
+
+            # 获取资金流数据
+            capital_flows = {}
+            engine = getattr(self.container, 'capital_flow_signal_engine', None)
+            if engine:
+                analyzer = getattr(engine, '_analyzer', None)
+                if analyzer:
+                    capital_flows = analyzer.batch_read_cache_only(watching_codes)
+
+            # 获取5分钟动量数据
+            momentum_map = {}
+            if engine:
+                momentum_analyzer = getattr(engine, '_momentum_analyzer', None)
+                if momentum_analyzer:
+                    momentum_map = momentum_analyzer.analyze_batch(watching_codes)
+
+            return self._swing_tracker.check_buyback(
+                quotes, capital_flows, momentum_map
+            )
+        except Exception as e:
+            logging.debug(f"日内波段买回检查异常: {e}")
+            return []
+
+    def _feed_sell_signals_to_swing_tracker(self, signals: List[Dict]):
+        """将卖出信号送入卖后跟踪器"""
+        tracker = getattr(self, '_swing_tracker', None)
+        if not tracker:
+            return
+        for sig in signals:
+            if sig.get('signal_type') == 'SELL':
+                source = sig.get('source', '') or sig.get('action', '')
+                # R13 波段高抛信号 或 IntradayProfitTaker 信号
+                if 'swing' in source or 'R13' in sig.get('reason', '') or 'intraday' in source:
+                    tracker.on_sell_signal(
+                        stock_code=sig.get('stock_code', ''),
+                        stock_name=sig.get('stock_name', ''),
+                        sell_price=sig.get('price', 0),
+                        reason=sig.get('reason', ''),
+                    )
 
     async def _run_strategy_detection(self, quotes: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
         """执行策略检测（自动交易 + 多策略信号），返回 (trade_actions, conditions)"""

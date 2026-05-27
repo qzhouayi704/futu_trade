@@ -10,6 +10,8 @@
 import asyncio
 import json
 import logging
+import urllib.request
+import urllib.error
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -47,6 +49,7 @@ class GeminiAnalyst:
         technical_service=None,
         config: Optional[dict] = None,
         proxy: Optional[str] = None,
+        claude_config: Optional[dict] = None,
     ):
         self.api_key = api_key
         self.model_name = model
@@ -54,18 +57,26 @@ class GeminiAnalyst:
         self._technical = technical_service
         self._config = config or {}
 
-        # 初始化 Gemini 客户端
-        if GEMINI_AVAILABLE and api_key:
+        # Claude 配置（优先使用）
+        self._claude_config = claude_config
+        self._use_claude = False
+        if claude_config and claude_config.get('enabled') and claude_config.get('api_key'):
+            self._use_claude = True
+            logger.info(
+                f"AI 分析师使用 Claude: {claude_config.get('model', 'claude-sonnet-4-20250514')} "
+                f"via {claude_config.get('base_url', 'https://vtok.ai')}"
+            )
+
+        # Gemini 客户端（备用）
+        if not self._use_claude and GEMINI_AVAILABLE and api_key:
             try:
-                # 设置代理
                 if proxy:
                     import os
                     os.environ['https_proxy'] = proxy
                     os.environ['http_proxy'] = proxy
                     logger.info(f"Gemini 使用代理: {proxy}")
-
                 self.client = genai.Client(api_key=api_key)
-                logger.info(f"Gemini 量化分析师初始化成功，模型: {model}")
+                logger.info(f"Gemini 分析师初始化成功，模型: {model}")
             except Exception as e:
                 logger.error(f"Gemini 分析师初始化失败: {e}")
 
@@ -78,6 +89,8 @@ class GeminiAnalyst:
 
     def is_available(self) -> bool:
         """检查服务是否可用"""
+        if self._use_claude:
+            return True
         return GEMINI_AVAILABLE and self.client is not None
 
     async def analyze(
@@ -142,8 +155,11 @@ class GeminiAnalyst:
             # 6. 构建 Prompt
             prompt = AnalystPromptBuilder.build_prompt(input_data)
 
-            # 7. 调用 Gemini API
-            response = await self._call_gemini(prompt)
+            # 7. 调用 AI API（优先 Claude）
+            if self._use_claude:
+                response = await self._call_claude(prompt)
+            else:
+                response = await self._call_gemini(prompt)
             if not response:
                 return None
 
@@ -196,6 +212,90 @@ class GeminiAnalyst:
                     await asyncio.sleep(wait)
                     continue
                 logger.error(f"调用 Gemini API 失败: {e}")
+                return None
+
+    async def _call_claude(self, prompt: str) -> Optional[str]:
+        """调用 Claude API（通过第三方中转，OpenAI 兼容格式）"""
+        import time
+        cfg = self._claude_config
+        base_url = cfg.get('base_url', 'https://vtok.ai').rstrip('/')
+        api_key = cfg['api_key']
+        model = cfg.get('model', 'claude-sonnet-4-20250514')
+        timeout = cfg.get('timeout', 60)
+        max_retries = cfg.get('max_retries', 3)
+        api_format = cfg.get('api_format', 'openai')
+
+        for attempt in range(max_retries):
+            try:
+                if api_format == 'anthropic':
+                    # Anthropic 原生格式
+                    url = f"{base_url}/v1/messages"
+                    payload = {
+                        "model": model,
+                        "max_tokens": 4096,
+                        "system": SYSTEM_PROMPT,
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ]
+                    }
+                    headers = {
+                        "Content-Type": "application/json",
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                    }
+                else:
+                    # OpenAI 兼容格式
+                    url = f"{base_url}/v1/chat/completions"
+                    payload = {
+                        "model": model,
+                        "max_tokens": 4096,
+                        "messages": [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt}
+                        ]
+                    }
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}",
+                    }
+
+                data = json.dumps(payload).encode('utf-8')
+                req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: urllib.request.urlopen(req, timeout=timeout)
+                )
+                result = json.loads(response.read().decode('utf-8'))
+
+                # 解析响应
+                if api_format == 'anthropic':
+                    content = result.get('content', [])
+                    if content and isinstance(content, list):
+                        return content[0].get('text', '').strip()
+                else:
+                    choices = result.get('choices', [])
+                    if choices:
+                        return choices[0].get('message', {}).get('content', '').strip()
+
+                return None
+
+            except (urllib.error.HTTPError, urllib.error.URLError) as e:
+                err_str = str(e)
+                status = getattr(e, 'code', 0)
+                if status in (429, 503, 529) and attempt < max_retries - 1:
+                    wait = 2 ** (attempt + 1)
+                    logger.warning(
+                        f"Claude API 暂时不可用 (attempt {attempt+1}/{max_retries})，"
+                        f"{wait}s 后重试: {err_str[:100]}"
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                logger.error(f"调用 Claude API 失败: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"调用 Claude API 异常: {e}")
                 return None
 
     def _parse_response(

@@ -90,6 +90,20 @@ class GeminiConfig(_ConfigMixin):
 
 
 @dataclass
+class ClaudeConfig(_ConfigMixin):
+    """Claude AI 配置（通过第三方中转）"""
+    api_key: str = ""
+    base_url: str = "https://vtok.ai"
+    model: str = "claude-sonnet-4-20250514"
+    enabled: bool = False
+    timeout: int = 60
+    max_retries: int = 3
+    # openai 兼容格式: /v1/chat/completions
+    # anthropic 原生格式: /v1/messages
+    api_format: str = "openai"  # "openai" | "anthropic"
+
+
+@dataclass
 class GeminiAnalystConfig(_ConfigMixin):
     """Gemini 量化分析师配置"""
     enabled: bool = False
@@ -213,6 +227,9 @@ class Config:
     # ==================== Gemini AI 配置 ====================
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
 
+    # ==================== Claude AI 配置 ====================
+    claude: ClaudeConfig = field(default_factory=ClaudeConfig)
+
     # ==================== Gemini 量化分析师配置 ====================
     gemini_analyst: GeminiAnalystConfig = field(default_factory=GeminiAnalystConfig)
 
@@ -236,6 +253,7 @@ class Config:
             'realtime_activity_filter': RealtimeActivityFilterConfig,
             'realtime_hot_filter': RealtimeHotFilterConfig,
             'gemini': GeminiConfig,
+            'claude': ClaudeConfig,
             'gemini_analyst': GeminiAnalystConfig,
             'logging': LoggingConfig,
             'subscription_config': SubscriptionConfig,
@@ -486,6 +504,26 @@ class ConfigManager:
         if gemini.get('api_key'):
             config_data['gemini'] = gemini
             logging.info("Gemini 配置已从环境变量加载")
+
+        # Claude 配置
+        claude = config_data.get('claude', {})
+        claude_key = os.environ.get('CLAUDE_API_KEY')
+        if claude_key:
+            claude['api_key'] = claude_key
+        claude_url = os.environ.get('CLAUDE_BASE_URL')
+        if claude_url:
+            claude['base_url'] = claude_url
+        claude_model = os.environ.get('CLAUDE_MODEL')
+        if claude_model:
+            claude['model'] = claude_model
+        claude_enabled = os.environ.get('CLAUDE_ENABLED')
+        if claude_enabled is not None:
+            claude['enabled'] = claude_enabled.lower() in ('true', '1', 'yes')
+        elif claude_key and 'enabled' not in claude:
+            claude['enabled'] = True
+        if claude.get('api_key'):
+            config_data['claude'] = claude
+            logging.info("Claude 配置已从环境变量加载")
 
     @classmethod
     def save_config(cls, config: Config, config_path: str = None) -> bool:

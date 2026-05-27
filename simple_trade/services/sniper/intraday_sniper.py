@@ -80,8 +80,8 @@ class SniperSignal:
 
 # 通用参数
 SCAN_INTERVAL_MINUTES = 3      # 扫描间隔
-ACCEL_THRESHOLD = 8.0          # 加速倍数阈值
-MEGA_MULTIPLIER = 15           # 巨量砸盘/抢筹倍数阈值
+ACCEL_THRESHOLD = 3.0          # 加速倍数阈值（基于avg_abs_net, 原8.0→6.0→3.0）
+MEGA_MULTIPLIER = 3            # 巨量倍数阈值（基于avg_abs_net, 原15×avg_tv→3×avg_net）
 SUSTAINED_RATIO = 0.35         # 持续流出强度比例
 SUSTAINED_MINUTES = 20         # 持续流出检查窗口
 COOLDOWN_MINUTES = 15          # 同类信号冷却期
@@ -241,16 +241,23 @@ class IntradaySniper:
                     )
                     new_signals.extend(signals)
 
-                # 推送新信号
+                # 先更新 TOP 排行榜（用于过滤信号）
+                self._update_ranking(conn, watch_codes, today)
+
+                # 只推送排行榜前5的股票的信号
+                top_codes = {s['stock_code'] for s in self._top_ranking.get('opportunity', [])}
+                pushed = 0
                 for sig in new_signals:
                     self._today_signals.append(sig)
-                    await self._push_signal(sig)
+                    if sig.stock_code in top_codes:
+                        await self._push_signal(sig)
+                        pushed += 1
 
                 if new_signals:
-                    logger.info(f"本次扫描产生 {len(new_signals)} 条新信号 (监控 {len(watch_codes)} 只股票)")
-
-                # 更新 TOP 排行榜
-                self._update_ranking(conn, watch_codes, today)
+                    logger.info(
+                        f"本次扫描产生 {len(new_signals)} 条信号, "
+                        f"推送 {pushed} 条(TOP5: {[s['stock_name'] for s in self._top_ranking.get('opportunity', [])]})"
+                    )
 
         except Exception as e:
             logger.error(f"扫描执行异常: {e}", exc_info=True)
@@ -285,8 +292,11 @@ class IntradaySniper:
         # 只处理上次扫描以后的新数据点
         start_idx = max(state['last_processed_index'] + 1, 0)
 
-        # 动态巨量阈值
-        dynamic_mega = max(mega_min, avg_turnover * MEGA_MULTIPLIER)
+        # 动态巨量阈值 — 基于每分钟平均净流入绝对值(而非总成交额)
+        # 不同市值股票的net/turnover比差异大, 用avg_abs_net更公平
+        abs_nets = [abs(p['net']) for p in timeline if p['net'] != 0]
+        avg_abs_net = sum(abs_nets) / len(abs_nets) if abs_nets else avg_turnover
+        dynamic_mega = max(mega_min, avg_abs_net * MEGA_MULTIPLIER)
         # 动态持续流出阈值
         dynamic_sustained = max(
             SUSTAINED_RATIO * avg_turnover * SUSTAINED_MINUTES,
@@ -502,6 +512,14 @@ class IntradaySniper:
         except Exception as e:
             logger.debug(f"企业微信推送失败: {e}")
 
+        # 3. 通知统一决策引擎
+        try:
+            engine = getattr(self.container, 'trade_decision_engine', None)
+            if engine:
+                await engine.on_sniper_signal(signal)
+        except Exception as e:
+            logger.debug(f"决策引擎通知失败: {e}")
+
     # ==================== 双窗口评分排行 ====================
 
     def _update_ranking(self, conn, watch_codes: list, today: str):
@@ -608,14 +626,14 @@ class IntradaySniper:
         risk_scores.sort(key=lambda x: -x['score'])
 
         self._top_ranking = {
-            'opportunity': opp_scores[:3],
-            'risk': risk_scores[:3],
+            'opportunity': opp_scores[:5],
+            'risk': risk_scores[:5],
             'updated_at': now_str,
         }
 
         if opp_scores or risk_scores:
-            opp_names = ', '.join(f"{s['stock_name']}({s['score']})" for s in opp_scores[:3])
-            risk_names = ', '.join(f"{s['stock_name']}({s['score']})" for s in risk_scores[:3])
+            opp_names = ', '.join(f"{s['stock_name']}({s['score']})" for s in opp_scores[:5])
+            risk_names = ', '.join(f"{s['stock_name']}({s['score']})" for s in risk_scores[:5])
             logger.info(f"排行更新 🟢机会[{opp_names}] 🔴风险[{risk_names}]")
 
     @staticmethod

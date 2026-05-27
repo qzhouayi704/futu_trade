@@ -518,6 +518,196 @@ class FlowTrendReversalRule(BaseFlowRule):
 
 
 # ============================================================
+# R13: 日内波段卖出 — 动量减弱 + 资金流转向 + 高位
+# ============================================================
+class IntradaySwingSellRule(BaseFlowRule):
+    """R13: 日内波段卖出
+
+    组合判断（至少2/3满足）：
+    - 5分钟动量减弱/转向（顶分型、上影线、动量方向转负）
+    - 资金流出或流入减速（净流入为负 或 inflow_change < 0）
+    - 处于日内高位（涨幅≥2%或偏离VWAP≥1.5%）
+
+    前提条件：
+    - 有持仓
+    - 流动性足够（spread_pct < 1%）
+    - 非开盘前10分钟（phase2_observe 以后）
+    """
+
+    rule_id = "R13"
+    rule_name = "日内波段高抛"
+    cooldown = 600  # 10分钟冷却
+
+    def evaluate(self, ctx: RuleContext) -> Optional[FlowSignal]:
+        # 前提：有持仓
+        if not ctx.has_position:
+            return None
+
+        # 流动性门槛：spread > 1% 的不做日内波段
+        if ctx.spread_pct > 1.0:
+            return None
+
+        # 时段过滤：开盘前10分钟和午休不触发
+        if ctx.trading_phase in ('pre_market', 'phase1_opening', 'lunch_break', 'after_hours'):
+            return None
+
+        conditions_met = 0
+        reasons = []
+
+        # 条件1：5分钟动量减弱
+        momentum_weak = False
+        if ctx.has_top_pattern:
+            momentum_weak = True
+            reasons.append("5分钟顶分型")
+        elif ctx.upper_shadow_warning:
+            momentum_weak = True
+            reasons.append("上影线过长(冲高被砸)")
+        elif ctx.momentum_direction < -0.2 and ctx.momentum_trend in ("decelerating", "reversing"):
+            momentum_weak = True
+            reasons.append(f"动量转弱({ctx.momentum_direction:.2f},{ctx.momentum_trend})")
+
+        if momentum_weak:
+            conditions_met += 1
+
+        # 条件2：资金流出/减速
+        flow_weak = False
+        if ctx.capital_flow:
+            net_inflow = ctx.main_net_inflow
+            inflow_change = ctx.capital_flow.get('inflow_change', 0)
+            if net_inflow < 0:
+                flow_weak = True
+                reasons.append(f"主力净流出{net_inflow/10000:.0f}万")
+            elif inflow_change < 0 and abs(inflow_change) > abs(net_inflow) * 0.3:
+                flow_weak = True
+                reasons.append(f"资金流入减速(变化{inflow_change/10000:.0f}万)")
+
+        if flow_weak:
+            conditions_met += 1
+
+        # 条件3：日内高位
+        high_position = False
+        if ctx.change_pct >= 2.0:
+            high_position = True
+            reasons.append(f"日内涨{ctx.change_pct:.1f}%")
+        elif ctx.vwap and ctx.vwap > 0:
+            vwap_deviation = (ctx.current_price - ctx.vwap) / ctx.vwap * 100
+            if vwap_deviation >= 1.5:
+                high_position = True
+                reasons.append(f"偏离VWAP +{vwap_deviation:.1f}%")
+
+        if high_position:
+            conditions_met += 1
+
+        # 至少2/3条件
+        if conditions_met < 2:
+            return None
+
+        confidence = min(0.5 + conditions_met * 0.1, 0.85)
+        reason_text = " + ".join(reasons)
+
+        return self._make_signal(
+            ctx, "SELL",
+            reason=f"日内波段高抛({conditions_met}/3): {reason_text}",
+            suggestion="日内波段卖出，系统将持续追踪买回时机",
+            confidence=confidence,
+            priority="high" if conditions_met >= 3 else "medium",
+        )
+
+
+# ============================================================
+# R14: 日内波段买回 — 动量恢复 + 资金回流 + 回撤到位
+# ============================================================
+class IntradaySwingBuybackRule(BaseFlowRule):
+    """R14: 日内波段买回
+
+    组合判断（至少2/3满足）：
+    - 5分钟动量恢复（底分型、下影支撑、动量方向转正）
+    - 资金流回正（主力净流入 > 0 且 inflow_change > 0）
+    - 价格回撤到位（跌幅≥-1% 或 回到VWAP附近）
+
+    前提条件：
+    - 无持仓（已卖出）
+    - 流动性足够
+    - 不在开盘最初10分钟
+    """
+
+    rule_id = "R14"
+    rule_name = "日内波段低吸"
+    cooldown = 600
+
+    def evaluate(self, ctx: RuleContext) -> Optional[FlowSignal]:
+        # 前提：无持仓（因为我们要买回）
+        if ctx.has_position:
+            return None
+
+        # 流动性门槛
+        if ctx.spread_pct > 1.0:
+            return None
+
+        # 时段过滤
+        if ctx.trading_phase in ('pre_market', 'phase1_opening', 'lunch_break', 'after_hours'):
+            return None
+
+        conditions_met = 0
+        reasons = []
+
+        # 条件1：5分钟动量恢复
+        momentum_recover = False
+        if ctx.has_bottom_pattern:
+            momentum_recover = True
+            reasons.append("5分钟底分型")
+        elif ctx.lower_shadow_support:
+            momentum_recover = True
+            reasons.append("下影线支撑")
+        elif ctx.momentum_direction > 0.2 and ctx.momentum_trend in ("accelerating", "stable"):
+            momentum_recover = True
+            reasons.append(f"动量转正({ctx.momentum_direction:.2f})")
+
+        if momentum_recover:
+            conditions_met += 1
+
+        # 条件2：资金流回正
+        flow_positive = False
+        if ctx.capital_flow:
+            net_inflow = ctx.main_net_inflow
+            inflow_change = ctx.capital_flow.get('inflow_change', 0)
+            if net_inflow > 0 and inflow_change > 0:
+                flow_positive = True
+                reasons.append(f"资金回流(净流入{net_inflow/10000:.0f}万,+{inflow_change/10000:.0f}万)")
+
+        if flow_positive:
+            conditions_met += 1
+
+        # 条件3：价格回撤到位
+        price_retreated = False
+        if ctx.change_pct <= -1.0:
+            price_retreated = True
+            reasons.append(f"日内跌{ctx.change_pct:.1f}%")
+        elif ctx.vwap and ctx.vwap > 0:
+            vwap_deviation = (ctx.current_price - ctx.vwap) / ctx.vwap * 100
+            if abs(vwap_deviation) <= 0.5:
+                price_retreated = True
+                reasons.append(f"回到VWAP附近({vwap_deviation:+.1f}%)")
+
+        if price_retreated:
+            conditions_met += 1
+
+        if conditions_met < 2:
+            return None
+
+        confidence = min(0.5 + conditions_met * 0.1, 0.85)
+        reason_text = " + ".join(reasons)
+
+        return self._make_signal(
+            ctx, "BUY",
+            reason=f"日内波段低吸({conditions_met}/3): {reason_text}",
+            suggestion="日内波段买回，建议使用卖出时的同等仓位",
+            confidence=confidence,
+            priority="high" if conditions_met >= 3 else "medium",
+        )
+
+
+# ============================================================
 # 规则注册表
 # ============================================================
 ALL_RULES = [
@@ -530,4 +720,7 @@ ALL_RULES = [
     VolumePriceDivergenceRule,
     FlowContinuityRule,
     FlowTrendReversalRule,
+    IntradaySwingSellRule,
+    IntradaySwingBuybackRule,
 ]
+

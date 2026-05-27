@@ -990,4 +990,137 @@ async def get_delta_divergence_alerts(container=Depends(get_container)):
     )
 
 
+# ==================== 板块预警（全量扫描） ====================
+
+@router.get("/plate-alerts", response_model=APIResponse)
+async def get_plate_alerts(container=Depends(get_container)):
+    """扫描所有板块，生成板块级异动预警
+
+    预警类型:
+    - surge: 板块大涨（平均涨幅 >= 2%）
+    - plunge: 板块大跌（平均跌幅 <= -2%）
+    - concentration: 板块内 >= 70% 个股同向（齐涨/齐跌）
+    - divergence: 板块热度高但涨幅为负（资金异动）
+    """
+    try:
+        monitor = container.market_heat_monitor
+        _, quotes_map, plates_monitor, _, _ = _get_realtime_data(
+            container=container, heat_quote_svc=container.heat_quote_service
+        )
+
+        if not plates_monitor or not quotes_map:
+            return APIResponse(success=True, data=[], message="暂无板块数据")
+
+        # 计算所有板块信息
+        all_plates = []
+        for plate in plates_monitor:
+            info = monitor._calculate_plate_info(plate, quotes_map)
+            info['stock_codes'] = plate.get('stocks', [])
+            all_plates.append(info)
+
+        alerts = []
+
+        for p in all_plates:
+            avg_chg = p.get('avg_change_pct', 0)
+            up_ratio = p.get('up_ratio', 0)
+            heat = p.get('heat_score', 0)
+            stock_count = p.get('stock_count', 0)
+            hot_count = p.get('hot_stock_count', 0)
+            leader = p.get('leading_stock_name', '')
+
+            # 收集板块内个股涨跌细节
+            codes = p.get('stock_codes', [])
+            plate_quotes = [quotes_map[c] for c in codes if c in quotes_map]
+            n = len(plate_quotes)
+            if n < 3:
+                continue
+
+            changes = [q.get('change_pct', 0) for q in plate_quotes]
+            down_ratio = sum(1 for c in changes if c < 0) / n
+
+            # 领涨/领跌股
+            top_stock = max(plate_quotes, key=lambda q: q.get('change_pct', 0))
+            bot_stock = min(plate_quotes, key=lambda q: q.get('change_pct', 0))
+
+            base = {
+                'plate_code': p['plate_code'],
+                'plate_name': p['plate_name'],
+                'avg_change_pct': round(avg_chg, 2),
+                'up_ratio': round(up_ratio, 4),
+                'heat_score': round(heat, 1),
+                'stock_count': stock_count,
+                'hot_stock_count': hot_count,
+                'leader': leader,
+            }
+
+            # --- 板块大涨 ---
+            if avg_chg >= 2.0:
+                severity = 'high' if avg_chg >= 4.0 else 'medium'
+                alerts.append({
+                    **base,
+                    'alert_type': 'surge',
+                    'severity': severity,
+                    'top_stock_name': top_stock.get('stock_name', ''),
+                    'top_stock_change': round(top_stock.get('change_pct', 0), 2),
+                    'message': f"板块整体大涨{avg_chg:+.1f}%，{hot_count}只涨超3%，领涨{leader}",
+                })
+
+            # --- 板块大跌 ---
+            if avg_chg <= -2.0:
+                severity = 'high' if avg_chg <= -4.0 else 'medium'
+                alerts.append({
+                    **base,
+                    'alert_type': 'plunge',
+                    'severity': severity,
+                    'bot_stock_name': bot_stock.get('stock_name', ''),
+                    'bot_stock_change': round(bot_stock.get('change_pct', 0), 2),
+                    'message': f"板块整体大跌{avg_chg:+.1f}%，{int(down_ratio*100)}%个股下跌",
+                })
+
+            # --- 齐涨/齐跌集中度 ---
+            if up_ratio >= 0.75 and avg_chg >= 1.0:
+                alerts.append({
+                    **base,
+                    'alert_type': 'concentration',
+                    'direction': 'up',
+                    'severity': 'medium',
+                    'concentration_pct': round(up_ratio * 100, 0),
+                    'message': f"{int(up_ratio*100)}%个股上涨，板块齐升{avg_chg:+.1f}%",
+                })
+            elif down_ratio >= 0.75 and avg_chg <= -1.0:
+                alerts.append({
+                    **base,
+                    'alert_type': 'concentration',
+                    'direction': 'down',
+                    'severity': 'medium',
+                    'concentration_pct': round(down_ratio * 100, 0),
+                    'message': f"{int(down_ratio*100)}%个股下跌，板块齐跌{avg_chg:+.1f}%",
+                })
+
+            # --- 热度-涨幅背离（板块高热度但涨幅为负，可能轮动） ---
+            if heat >= 60 and avg_chg < -0.5:
+                alerts.append({
+                    **base,
+                    'alert_type': 'divergence',
+                    'severity': 'medium',
+                    'message': f"热度{heat:.0f}但跌{avg_chg:+.1f}%，资金异动或轮动",
+                })
+
+        # 排序：高危优先，然后按涨幅绝对值
+        alerts.sort(key=lambda x: (
+            0 if x['severity'] == 'high' else 1,
+            -abs(x.get('avg_change_pct', 0)),
+        ))
+
+        return APIResponse(
+            success=True,
+            data=alerts,
+            message=f"板块预警: {len(alerts)} 条, 扫描 {len(all_plates)} 个板块"
+        )
+    except Exception as e:
+        logging.error(f"板块预警扫描失败: {e}")
+        raise BusinessError(f"板块预警扫描失败: {str(e)}")
+
+
 logging.info("增强热度分析路由已注册")
+

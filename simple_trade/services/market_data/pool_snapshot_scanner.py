@@ -42,6 +42,7 @@ class PoolSnapshotScanner:
     # 第一层：快照异动阈值
     SURGE_CHANGE_PCT = 7.0       # 放量异动最低涨幅 %
     SURGE_VOLUME_RATIO = 3.0     # 放量异动最低量比
+    STRONG_SURGE_CHANGE_PCT = 10.0  # 强势异动涨幅(不要求量比)
     EXTREME_VOLUME_RATIO = 5.0   # 极端放量量比（不论涨幅）
     LIMIT_UP_CHANGE_PCT = 15.0   # 涨停级涨幅 %
 
@@ -190,6 +191,8 @@ class PoolSnapshotScanner:
             anomaly_type = None
             if chg >= self.LIMIT_UP_CHANGE_PCT:
                 anomaly_type = "limit_up"
+            elif chg >= self.STRONG_SURGE_CHANGE_PCT:
+                anomaly_type = "strong_surge"  # 涨幅≥10%无需量比
             elif chg >= self.SURGE_CHANGE_PCT and vr >= self.SURGE_VOLUME_RATIO:
                 anomaly_type = "breakout_surge"
             elif vr >= self.EXTREME_VOLUME_RATIO and chg > 0:
@@ -213,7 +216,7 @@ class PoolSnapshotScanner:
         return filtered
 
     def _validate_with_kline(self, candidates: List[Dict]) -> List[AnomalyStock]:
-        """第二层：用历史K线验证缩量蓄势形态"""
+        """第二层：用历史K线补充形态标签（不再作为过滤条件）"""
         confirmed = []
         db = self._container.db_manager
 
@@ -253,41 +256,37 @@ class PoolSnapshotScanner:
                     max_recent_high = max(recent_highs) if recent_highs else 0
                     breaking_high = stock['last_price'] > max_recent_high if max_recent_high > 0 else False
 
-                    # 缩量蓄势判定
+                    # 缩量蓄势标注（仅作为信息，不再阻止通过）
                     if (avg_tr <= self.SHRINKAGE_TR_MAX and
                             price_range <= self.SHRINKAGE_RANGE_MAX):
                         has_shrinkage = True
                         detail = (
-                            f"前3日均TR={avg_tr:.2f}%, "
+                            f"缩量蓄势: 前3日均TR={avg_tr:.2f}%, "
                             f"5日振幅={price_range:.1f}%, "
                             f"破新高={'✓' if breaking_high else '✗'}"
                         )
                     else:
-                        detail = f"前3日均TR={avg_tr:.2f}%, 5日振幅={price_range:.1f}%"
+                        detail = f"放量趋势: 前3日均TR={avg_tr:.2f}%, 5日振幅={price_range:.1f}%"
 
                 elif not rows:
                     detail = "无K线历史"
-                    # 无K线也标记为异动（可能是新进池的股票）
-                    if stock['anomaly_type'] == 'limit_up':
-                        has_shrinkage = True  # 涨停级别直接通过
 
             except Exception as e:
                 logger.debug(f"[异动扫描] {code} K线验证失败: {e}")
                 detail = f"验证异常: {e}"
 
-            # 涨停级别即使没有缩量也保留
-            if has_shrinkage or stock['anomaly_type'] == 'limit_up':
-                confirmed.append(AnomalyStock(
-                    code=code,
-                    name=stock.get('name', ''),
-                    change_rate=stock['change_rate'],
-                    volume_ratio=stock['volume_ratio'],
-                    turnover_rate=stock['turnover_rate'],
-                    price=stock['last_price'],
-                    anomaly_type=stock['anomaly_type'],
-                    has_shrinkage=has_shrinkage,
-                    detected_at=datetime.now().strftime('%H:%M:%S'),
-                    detail=detail,
-                ))
+            # 所有通过第一层筛选的异动股都保留，缩量仅作为标签
+            confirmed.append(AnomalyStock(
+                code=code,
+                name=stock.get('name', ''),
+                change_rate=stock['change_rate'],
+                volume_ratio=stock['volume_ratio'],
+                turnover_rate=stock['turnover_rate'],
+                price=stock['last_price'],
+                anomaly_type=stock['anomaly_type'],
+                has_shrinkage=has_shrinkage,
+                detected_at=datetime.now().strftime('%H:%M:%S'),
+                detail=detail,
+            ))
 
         return confirmed

@@ -28,6 +28,7 @@ class CapitalFlowSignalEngine:
         db_manager=None,
         vwap_service=None,
         futu_client=None,
+        momentum_analyzer=None,
     ):
         """
         初始化信号引擎
@@ -36,10 +37,12 @@ class CapitalFlowSignalEngine:
             capital_flow_analyzer: 资金流向分析器(CapitalFlowAnalyzer)
             db_manager: 数据库管理器
             vwap_service: VWAP服务(可选，用于均价线规则)
+            momentum_analyzer: 5分钟动量分析器(Momentum5MinAnalyzer，可选)
         """
         self._analyzer = capital_flow_analyzer
         self._db = db_manager
         self._vwap_service = vwap_service
+        self._momentum_analyzer = momentum_analyzer
 
 
         # 实例化所有规则
@@ -87,6 +90,14 @@ class CapitalFlowSignalEngine:
         stock_codes = [q.get('code', '') for q in quotes if q.get('code')]
         capital_flows = self._fetch_capital_flows(stock_codes)
 
+        # 批量获取5分钟动量数据
+        momentum_map = {}
+        if self._momentum_analyzer:
+            try:
+                momentum_map = self._momentum_analyzer.analyze_batch(stock_codes)
+            except Exception as e:
+                logger.debug(f"[信号引擎] 动量分析批量失败: {e}")
+
         results: List[Dict[str, Any]] = []
         seen_codes: set = set()
 
@@ -97,7 +108,7 @@ class CapitalFlowSignalEngine:
             seen_codes.add(code)
 
             try:
-                ctx = self._build_context(quote, positions, capital_flows)
+                ctx = self._build_context(quote, positions, capital_flows, momentum_map)
                 if ctx is None:
                     continue
 
@@ -122,6 +133,7 @@ class CapitalFlowSignalEngine:
         quote: Dict[str, Any],
         positions: Dict[str, Any],
         capital_flows: Dict[str, dict],
+        momentum_map: Dict = None,
     ) -> Optional[RuleContext]:
         """构建规则评估上下文"""
         code = quote.get('code', '')
@@ -170,6 +182,28 @@ class CapitalFlowSignalEngine:
         pos = positions.get(code)
         has_position = pos is not None and pos.get('qty', 0) > 0
 
+        # 5分钟动量（新增）
+        momentum_kwargs = {}
+        if momentum_map:
+            snap = momentum_map.get(code)
+            if snap:
+                momentum_kwargs = {
+                    'momentum_direction': snap.momentum_direction,
+                    'momentum_strength': snap.momentum_strength,
+                    'momentum_acceleration': snap.momentum_acceleration,
+                    'momentum_trend': snap.momentum_trend,
+                    'has_top_pattern': snap.has_top_pattern,
+                    'has_bottom_pattern': snap.has_bottom_pattern,
+                    'upper_shadow_warning': snap.upper_shadow_warning,
+                    'lower_shadow_support': snap.lower_shadow_support,
+                }
+
+        # 流动性：从 quote 中获取 spread_pct
+        spread_pct = quote.get('spread_pct', 0.0) or 0.0
+
+        # 交易阶段
+        trading_phase = self._get_trading_phase()
+
         return RuleContext(
             stock_code=code,
             stock_name=quote.get('name', code),
@@ -192,9 +226,31 @@ class CapitalFlowSignalEngine:
             kline_position=kline_position,
             has_position=has_position,
             position_qty=pos.get('qty', 0) if pos else 0,
+            spread_pct=spread_pct,
+            trading_phase=trading_phase,
+            **momentum_kwargs,
         )
 
 
+    @staticmethod
+    def _get_trading_phase() -> str:
+        """获取当前交易阶段（轻量版，不依赖 TradingPhaseManager）"""
+        from datetime import datetime
+        t = datetime.now().strftime('%H:%M')
+        if t < '09:30':
+            return 'pre_market'
+        elif t < '09:40':
+            return 'phase1_opening'
+        elif t < '10:00':
+            return 'phase2_observe'
+        elif t < '12:00':
+            return 'phase3_rotate'
+        elif t < '13:00':
+            return 'lunch_break'
+        elif t < '16:00':
+            return 'phase3_rotate'
+        else:
+            return 'after_hours'
 
     # ========== 数据获取 ==========
 

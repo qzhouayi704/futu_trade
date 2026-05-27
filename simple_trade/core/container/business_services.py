@@ -81,6 +81,7 @@ class BusinessServices:
         self._capital_flow_rotator = None
         self._smart_position_manager = None
         self._stock_ai_analyzer = None
+        self._trade_decision_engine = None
 
     def initialize(self):
         """初始化业务服务（仅核心服务即时创建）"""
@@ -328,10 +329,21 @@ class BusinessServices:
         if self._capital_flow_signal_engine is None:
             try:
                 from ...services.analysis.flow import CapitalFlowSignalEngine
+
+                # 初始化5分钟动量分析器
+                momentum_analyzer = None
+                try:
+                    from ...services.analysis.momentum import Momentum5MinAnalyzer
+                    momentum_analyzer = Momentum5MinAnalyzer(self.core.db_manager)
+                    logging.info("5分钟动量分析器初始化完成")
+                except Exception as e:
+                    logging.warning(f"5分钟动量分析器初始化失败（信号引擎将不含动量数据）: {e}")
+
                 self._capital_flow_signal_engine = CapitalFlowSignalEngine(
                     capital_flow_analyzer=self.capital_analyzer,
                     db_manager=self.core.db_manager,
                     futu_client=self.core.futu_client,
+                    momentum_analyzer=momentum_analyzer,
                 )
                 logging.info("资金流向信号引擎懒加载完成")
             except Exception as e:
@@ -394,8 +406,9 @@ class BusinessServices:
                 technical_service=tech_svc,
                 config=analyst_cfg,
                 proxy=gemini_cfg.get('proxy'),
+                claude_config=self.core.config.claude,
             )
-            logging.info("Gemini 量化分析师初始化完成")
+            logging.info("AI 量化分析师初始化完成")
 
         return DecisionAdvisor(
             health_evaluator=health_evaluator,
@@ -533,4 +546,18 @@ class BusinessServices:
             except Exception as e:
                 logging.warning(f"AI 股票分析器初始化失败: {e}")
         return self._stock_ai_analyzer
+
+    @property
+    def trade_decision_engine(self):
+        """统一交易决策引擎（懒加载）"""
+        if self._trade_decision_engine is None:
+            try:
+                from ...services.trading.decision import UnifiedTradeDecisionEngine
+                self._trade_decision_engine = UnifiedTradeDecisionEngine(
+                    container=self, simulate=True  # 初期模拟模式
+                )
+                logging.info("统一交易决策引擎懒加载完成 (模拟模式)")
+            except Exception as e:
+                logging.warning(f"统一交易决策引擎初始化失败: {e}")
+        return self._trade_decision_engine
 

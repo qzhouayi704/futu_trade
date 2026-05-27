@@ -52,6 +52,26 @@ class RuleContext:
     has_position: bool = False
     position_qty: int = 0
 
+    # 5分钟动量数据（由 Momentum5MinAnalyzer 填充）
+    momentum_direction: float = 0.0     # -1~+1，最近3根5分钟K线方向
+    momentum_strength: float = 0.0      # 0~1，动量强度
+    momentum_acceleration: float = 0.0  # >0加速, <0减速
+    momentum_trend: str = "unknown"     # accelerating/stable/decelerating/reversing
+    has_top_pattern: bool = False       # 5分钟顶分型
+    has_bottom_pattern: bool = False    # 5分钟底分型
+    upper_shadow_warning: bool = False  # 上影线过长（冲高被砸）
+    lower_shadow_support: bool = False  # 下影线支撑
+
+    # 流动性（由盘口数据填充）
+    spread_pct: float = 0.0            # 买卖价差百分比
+
+    # 交易时段
+    trading_phase: str = ""            # phase1_opening / phase2_observe / phase3_rotate / lunch_break
+
+    # 大盘/板块环境
+    market_change_pct: float = 0.0     # 大盘涨跌幅
+    sector_change_pct: float = 0.0     # 所属板块涨跌幅
+
     # 经纪商一致性数据（由 BrokerConsistencyFilter 填充）
     broker_trap_detected: bool = False          # 是否检测到诱多陷阱
     broker_trap_confidence: float = 0.0         # 陷阱置信度 (0-1)

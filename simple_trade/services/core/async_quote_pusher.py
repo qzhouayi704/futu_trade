@@ -382,8 +382,9 @@ class AsyncQuotePusher:
                         if cap_rows and cap_rows[0][0] is not None:
                             indicators['ticker_power'] = cap_rows[0][0]
 
-                    # 评分
-                    result = scorer.score_stock(code, anomaly.name, indicators)
+                    # 评分：使用全策略评分（TREND + BREAKOUT + MOMENTUM）
+                    all_scores = scorer.score_all_strategies(code, anomaly.name, indicators)
+                    result = all_scores['best']
 
                     if result.passed:
                         scored_alerts.append({
@@ -435,51 +436,17 @@ class AsyncQuotePusher:
             logging.warning(f"【异动评分】评分流程失败: {e}")
 
     def _try_create_anomaly_trades(self, scored_alerts):
-        """为评分通过的异动股创建交易任务（仅当auto_trade开启时）"""
+        """将评分通过的异动股信号发送到统一决策引擎"""
         try:
-            auto_trade_svc = getattr(self.container, 'auto_trade_service', None)
-            if not auto_trade_svc:
+            engine = getattr(self.container, 'trade_decision_engine', None)
+            if not engine:
                 return
 
-            # 检查auto_trade总开关
-            config = getattr(self.container, 'config', None)
-            if config and not getattr(config, 'auto_trade_enabled', False):
-                return
-
-            created = 0
-            for alert in sorted(scored_alerts, key=lambda x: x['score'], reverse=True):
-                if created >= 3:  # 每轮最多创建3个
-                    break
-
-                code = alert['code']
-                price = alert['price']
-                params = alert.get('trade_params', {})
-
-                buy_dip_pct = params.get('buy_dip_pct', 1.0)
-                sell_rise_pct = params.get('take_profit_pct', 10.0)
-                stop_loss_pct = params.get('stop_loss_pct', 5.0)
-
-                result = auto_trade_svc.start_auto_trade(
-                    stock_code=code,
-                    quantity=100,
-                    zone='anomaly',
-                    buy_dip_pct=buy_dip_pct,
-                    sell_rise_pct=sell_rise_pct,
-                    stop_loss_pct=stop_loss_pct,
-                    prev_close=price,
-                )
-                if result.get('success'):
-                    created += 1
-                    logging.info(
-                        f"【异动交易】已创建: {code} {alert['name']} "
-                        f"评分{alert['score']} 入场价{price * (1 - buy_dip_pct/100):.2f}"
-                    )
-
-            if created > 0:
-                logging.info(f"【异动交易】本轮创建 {created} 个交易任务")
+            for alert in sorted(scored_alerts, key=lambda x: x['score'], reverse=True)[:5]:
+                asyncio.ensure_future(engine.on_anomaly_signal(alert))
 
         except Exception as e:
-            logging.warning(f"【异动交易】创建失败: {e}")
+            logging.warning(f"【异动交易】发送信号失败: {e}")
 
     async def _broadcast_anomalies(self, anomalies):
         """通过WebSocket推送异动通知"""
