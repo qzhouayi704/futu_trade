@@ -82,3 +82,78 @@ async def get_simulated_trades(limit: int = 30):
             "today_decisions": today_decisions,
         },
     }
+
+
+@router.get("/simulated-trades/daily")
+async def get_simulated_trades_daily(date: str = "", limit: int = 100):
+    """按日期获取模拟交易记录 + 每日汇总统计
+
+    Args:
+        date: 日期筛选 (YYYY-MM-DD)，空则返回所有日期的汇总
+        limit: 记录数量上限
+    """
+    container = get_container()
+
+    try:
+        futu_svc = getattr(container, 'futu_trade_service', None)
+        if not futu_svc or not hasattr(futu_svc, 'order_manager'):
+            return {"success": False, "message": "交易服务未初始化", "data": {}}
+
+        db = futu_svc.order_manager.db_manager
+
+        # 按日期分组统计
+        daily_stats = db.execute_query('''
+            SELECT
+                DATE(created_at) as trade_date,
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN direction = 'BUY' THEN 1 ELSE 0 END) as buy_count,
+                SUM(CASE WHEN direction = 'SELL' THEN 1 ELSE 0 END) as sell_count,
+                ROUND(SUM(amount), 2) as total_amount,
+                COUNT(DISTINCT stock_code) as stock_count
+            FROM simulated_trade_records
+            GROUP BY DATE(created_at)
+            ORDER BY trade_date DESC
+            LIMIT 30
+        ''', [])
+
+        stats_list = [
+            {
+                'date': row[0], 'total_trades': row[1],
+                'buy_count': row[2], 'sell_count': row[3],
+                'total_amount': row[4], 'stock_count': row[5],
+            }
+            for row in daily_stats
+        ]
+
+        # 获取指定日期的详细记录
+        records = []
+        if date:
+            rows = db.execute_query('''
+                SELECT id, stock_code, stock_name, direction, price, quantity,
+                       amount, resonance_type, reason, sources, created_at
+                FROM simulated_trade_records
+                WHERE DATE(created_at) = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            ''', [date, limit])
+            records = [
+                {
+                    'id': r[0], 'stock_code': r[1], 'stock_name': r[2],
+                    'direction': r[3], 'price': r[4], 'quantity': r[5],
+                    'amount': r[6], 'resonance_type': r[7], 'reason': r[8],
+                    'sources': r[9], 'created_at': r[10],
+                }
+                for r in rows
+            ]
+
+        return {
+            "success": True,
+            "data": {
+                "daily_stats": stats_list,
+                "records": records,
+                "selected_date": date,
+            },
+        }
+
+    except Exception as e:
+        return {"success": False, "message": str(e), "data": {}}
