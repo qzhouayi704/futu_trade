@@ -5,8 +5,20 @@ import { io, Socket } from "socket.io-client";
 let socket: Socket | null = null;
 let isInitializing = false;
 
-// Socket.IO 必须直连后端（Next.js rewrites 不支持 WebSocket）
-const socketUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001";
+// Socket.IO 连接地址：
+// - 远程访问（通过公网 IP/域名）：使用页面 origin，由 Nginx 代理 /socket.io/
+// - 本地开发：使用 NEXT_PUBLIC_API_URL 直连后端（端口不同，无法走同源）
+function getSocketUrl(): string {
+  if (typeof window !== "undefined") {
+    const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+    if (!isLocal) {
+      return window.location.origin;
+    }
+  }
+  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001";
+}
+
+const socketUrl = getSocketUrl();
 
 /**
  * 健康检查：轮询后端直到就绪
