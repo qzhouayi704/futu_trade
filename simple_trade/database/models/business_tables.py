@@ -237,6 +237,21 @@ class BusinessTables:
         )
     '''
 
+    # 每日大单累计表（按天汇总超大单/大单买卖金额）
+    DAILY_ORDER_ACCUMULATOR_TABLE = '''
+        CREATE TABLE IF NOT EXISTS daily_order_accumulator (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_code VARCHAR(20) NOT NULL,
+            trade_date TEXT NOT NULL,
+            super_large_buy_amt DECIMAL(15,2) DEFAULT 0,
+            super_large_sell_amt DECIMAL(15,2) DEFAULT 0,
+            large_buy_amt DECIMAL(15,2) DEFAULT 0,
+            large_sell_amt DECIMAL(15,2) DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(stock_code, trade_date)
+        )
+    '''
+
     # 自动交易任务表
     AUTO_TRADE_TASKS_TABLE = '''
         CREATE TABLE IF NOT EXISTS auto_trade_tasks (

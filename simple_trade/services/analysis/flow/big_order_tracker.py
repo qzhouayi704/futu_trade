@@ -44,6 +44,7 @@ class BigOrderTracker:
         self.enabled = self.big_order_config.get('enabled', True)
         self.track_top_n = self.big_order_config.get('track_top_n', 20)
         self.min_order_amount = self.big_order_config.get('min_order_amount', 100000)
+        self.super_large_threshold = self.big_order_config.get('super_large_threshold', 1000000)  # 超大单 >= 100万
         self.update_interval = self.big_order_config.get('update_interval', 60)
 
         # 已订阅 Ticker 的股票集合，避免重复订阅
@@ -126,6 +127,12 @@ class BigOrderTracker:
             big_buy_amount = sum(order['turnover'] for order in big_orders if order['direction'] == 'BUY')
             big_sell_amount = sum(order['turnover'] for order in big_orders if order['direction'] == 'SELL')
 
+            # 按金额分级：超大单(>=100万) vs 大单(>=阈值)
+            super_large_buy = sum(o['turnover'] for o in big_orders if o['direction'] == 'BUY' and o['turnover'] >= self.super_large_threshold)
+            super_large_sell = sum(o['turnover'] for o in big_orders if o['direction'] == 'SELL' and o['turnover'] >= self.super_large_threshold)
+            large_buy = float(big_buy_amount) - super_large_buy
+            large_sell = float(big_sell_amount) - super_large_sell
+
             # 计算买卖比
             buy_sell_ratio = self.calculate_buy_sell_ratio(big_orders)
 
@@ -149,6 +156,9 @@ class BigOrderTracker:
 
             # 保存到数据库
             self._save_to_db(big_order_data)
+
+            # 写入日累计表
+            self._accumulate_daily(stock_code, super_large_buy, super_large_sell, large_buy, large_sell)
 
             return big_order_data
 
@@ -339,6 +349,27 @@ class BigOrderTracker:
 
         except Exception as e:
             logging.error(f"保存大单数据失败: {big_order_data['stock_code']}, {e}")
+
+    def _accumulate_daily(self, stock_code: str, super_large_buy: float,
+                         super_large_sell: float, large_buy: float, large_sell: float):
+        """将本轮大单数据覆盖写入 daily_order_accumulator（每次全量快照）"""
+        try:
+            trade_date = datetime.now().strftime("%Y-%m-%d")
+            self.db_manager.execute_update("""
+                INSERT INTO daily_order_accumulator
+                    (stock_code, trade_date, super_large_buy_amt, super_large_sell_amt,
+                     large_buy_amt, large_sell_amt, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(stock_code, trade_date) DO UPDATE SET
+                    super_large_buy_amt = excluded.super_large_buy_amt,
+                    super_large_sell_amt = excluded.super_large_sell_amt,
+                    large_buy_amt = excluded.large_buy_amt,
+                    large_sell_amt = excluded.large_sell_amt,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (stock_code, trade_date, super_large_buy, super_large_sell,
+                  large_buy, large_sell))
+        except Exception as e:
+            logging.error(f"日累计大单写入失败: {stock_code}, {e}")
 
     def get_cached_big_order_data(self, stock_code: str) -> Optional[dict]:
         """从数据库获取最近的大单数据"""
