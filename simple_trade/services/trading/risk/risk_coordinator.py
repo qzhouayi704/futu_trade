@@ -70,6 +70,11 @@ class RiskCoordinator:
         # 频率控制：stock_code -> 上次检查时间戳（仅用于非价格监控模块）
         self._last_check_time: Dict[str, float] = {}
 
+        # 移动止盈：追踪每只持仓股的峰值价格
+        self._peak_prices: Dict[str, float] = {}  # stock_code -> peak_price
+        self._TRAILING_ACTIVATE_PCT = 5.0   # 涨超5%后激活移动止盈
+        self._TRAILING_STOP_PCT = 3.0       # 从峰值回撤3%卖出
+
         # 已触发订单成交确认的频率控制（30秒间隔 + 启动冷却）
         self._TRIGGERED_ORDER_CHECK_INTERVAL: float = 30.0
         # 初始化为当前时间：首次检查需等待一个完整间隔（启动冷却期）
@@ -113,6 +118,9 @@ class RiskCoordinator:
 
         # 2.5 智能持仓管理（分批止盈 + ATR止损 + 趋势保护）
         self._check_smart_position(quotes, decisions, triggered_stocks)
+
+        # 2.8 移动止盈（Trailing Stop）
+        self._check_trailing_stop(quotes, positions, decisions, triggered_stocks)
 
         # 3. 分仓止盈
         self._check_lot_take_profit(quotes, decisions, triggered_stocks)
@@ -330,6 +338,75 @@ class RiskCoordinator:
                     ))
         except Exception as e:
             self.logger.error(f"【风险协调】策略趋势止损检查异常: {e}", exc_info=True)
+
+    def _check_trailing_stop(
+        self,
+        quotes: List[Dict[str, Any]],
+        positions: Optional[Dict[str, Dict[str, Any]]],
+        decisions: List[RiskDecision],
+        triggered_stocks: set,
+    ):
+        """移动止盈检查：涨超激活阈值后，从峰值回撤X%卖出"""
+        if not positions:
+            return
+        try:
+            # 清理不再持仓的峰值记录
+            held_codes = set(positions.keys())
+            for code in list(self._peak_prices.keys()):
+                if code not in held_codes:
+                    del self._peak_prices[code]
+
+            for quote in quotes:
+                code = quote.get('code', '')
+                if not code or code in triggered_stocks or code not in positions:
+                    continue
+
+                pos = positions[code]
+                cost_price = pos.get('cost_price', 0)
+                current_price = quote.get('last_price', 0)
+                if cost_price <= 0 or current_price <= 0:
+                    continue
+
+                # 更新峰值
+                prev_peak = self._peak_prices.get(code, cost_price)
+                if current_price > prev_peak:
+                    self._peak_prices[code] = current_price
+                    prev_peak = current_price
+
+                # 计算收益率和回撤
+                peak_gain = (prev_peak / cost_price - 1) * 100
+                drawdown = (1 - current_price / prev_peak) * 100 if prev_peak > 0 else 0
+                current_gain = (current_price / cost_price - 1) * 100
+
+                # 激活条件: 峰值涨幅 >= 5% 且 从峰值回撤 >= 3%
+                if peak_gain >= self._TRAILING_ACTIVATE_PCT and drawdown >= self._TRAILING_STOP_PCT:
+                    triggered_stocks.add(code)
+                    decisions.append(RiskDecision(
+                        stock_code=code,
+                        action='TRAILING_STOP',
+                        source='RiskCoordinator.TrailingStop',
+                        urgency=7,
+                        details={
+                            'stock_code': code,
+                            'cost_price': cost_price,
+                            'peak_price': round(prev_peak, 3),
+                            'current_price': current_price,
+                            'peak_gain_pct': round(peak_gain, 1),
+                            'drawdown_pct': round(drawdown, 1),
+                            'current_gain_pct': round(current_gain, 1),
+                            'reason': (
+                                f"移动止盈: 峰值+{peak_gain:.1f}% "
+                                f"回撤{drawdown:.1f}% (当前+{current_gain:.1f}%)"
+                            ),
+                        },
+                    ))
+                    self.logger.info(
+                        f"【移动止盈】{code} 峰值+{peak_gain:.1f}% "
+                        f"回撤{drawdown:.1f}% → 触发卖出"
+                    )
+
+        except Exception as e:
+            self.logger.error(f"【风险协调】移动止盈检查异常: {e}", exc_info=True)
 
     def _check_smart_position(
         self,

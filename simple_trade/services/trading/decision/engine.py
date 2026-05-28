@@ -380,13 +380,13 @@ class UnifiedTradeDecisionEngine:
     # ==================== 仓位计算 ====================
 
     def _calculate_position(self, decision: TradeDecision) -> int:
-        """全局仓位计算"""
+        """全局仓位计算 — 按资金百分比动态计算，不限固定股数"""
         try:
             cfg = POSITION_CONFIG
             futu_svc = getattr(self.container, 'futu_trade_service', None)
 
             if not futu_svc:
-                return cfg['default_quantity']
+                return 100  # 无交易服务时返回最小单位
 
             # 1. 检查持仓数量
             positions = futu_svc.get_positions()
@@ -398,11 +398,11 @@ class UnifiedTradeDecisionEngine:
             # 2. 检查可用资金
             account = futu_svc.get_account_info()
             if not account.get('success'):
-                return cfg['default_quantity']
+                return 100
 
             accounts = account.get('accounts', [])
             if not accounts:
-                return cfg['default_quantity']
+                return 100
 
             available_cash = float(accounts[0].get('available_funds', 0))
             if available_cash <= 0:
@@ -413,24 +413,17 @@ class UnifiedTradeDecisionEngine:
             if investable <= 0:
                 return 0
 
-            # 3. 单只上限
+            # 3. 按百分比计算（不再用固定股数上限）
             max_amount = investable * cfg['max_single_position_pct']
             if decision.price <= 0:
-                return cfg['default_quantity']
+                return 100
 
             quantity = int(max_amount / decision.price / 100) * 100
-
-            # 4. 按共振类型调整上限
-            if decision.resonance_type == 'dual_source':
-                quantity = min(quantity, cfg['strong_signal_quantity'])
-            else:
-                quantity = min(quantity, cfg['default_quantity'])
-
             return max(quantity, 0)
 
         except Exception as e:
-            logger.warning(f"[DecisionEngine] 仓位计算异常(使用默认): {e}")
-            return POSITION_CONFIG['default_quantity']
+            logger.warning(f"[DecisionEngine] 仓位计算异常(使用最小单位): {e}")
+            return 100
 
     # ==================== 执行 ====================
 

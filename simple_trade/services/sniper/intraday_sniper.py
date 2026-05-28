@@ -96,14 +96,10 @@ SCORE_SHORT_CHG_THRESH = 0.2   # 短窗口价格变化阈值(%)
 SCORE_LONG_CHG_THRESH = 0.3    # 长窗口价格变化阈值(%)
 SCORE_SIGNAL_WEIGHT = 3        # 信号分权重
 
-# 按日成交额分档的动态阈值 (万元)
-TIER_THRESHOLDS = {
-    # (日成交额下限万, accel_min万, mega_min万, reversal_min万)
-    'large':  (50000, 3000, 5000, 5000),   # 大盘 >5亿
-    'mid':    (10000, 1500, 2000, 2000),    # 中盘 1-5亿
-    'small':  (1000,  500,  800,  500),     # 小盘 1000万-1亿
-}
-MIN_DAILY_TURNOVER = 1000  # 日成交额 <1000万 的微盘股不监控
+# 动态阈值参数 (方案C: 混合动态 — 替代固定分档)
+MEGA_FLOOR_PCT = 0.02      # 动态mega阈值地板 = 日成交额 × 2%
+MEGA_FLOOR_MIN = 50        # 最低地板50万(防微盘股误触发)
+MIN_DAILY_TURNOVER = 100   # 日成交额 <100万 不监控(放宽)
 
 
 # ============================================================
@@ -474,12 +470,11 @@ class IntradaySniper:
 
     @staticmethod
     def _get_tier_thresholds(day_total: float) -> Tuple[float, float, float]:
-        """根据日成交额确定阈值档位"""
-        for tier_name, (min_turnover, accel_min, mega_min, reversal_min) in TIER_THRESHOLDS.items():
-            if day_total >= min_turnover:
-                return accel_min, mega_min, reversal_min
-        # 小盘兜底
-        return 500, 800, 500
+        """根据日成交额动态计算阈值(方案C: 混合动态)"""
+        mega_floor = max(MEGA_FLOOR_MIN, day_total * MEGA_FLOOR_PCT)
+        accel_min = mega_floor * 0.5   # accel阈值 = mega地板的一半
+        reversal_min = mega_floor       # reversal阈值 = mega地板
+        return accel_min, mega_floor, reversal_min
 
     # ==================== 推送 ====================
 

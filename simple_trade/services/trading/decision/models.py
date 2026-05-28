@@ -39,11 +39,11 @@ RESONANCE_RULES = {
 # ============================================================
 
 POSITION_CONFIG = {
-    'max_total_positions': 2,          # 最多同时持有2只（集中资金，原5）
-    'max_single_position_pct': 0.50,   # 单只最大占可投资金 50%（原20%）
-    'default_quantity': 200,           # 默认买入数量(股)
-    'strong_signal_quantity': 400,     # 强信号加仓(股)
+    'max_total_positions': 2,          # 最多同时持有2只（集中资金）
+    'max_single_position_pct': 0.50,   # 单只最大占可投资金 50%
     'min_cash_reserve_pct': 0.30,      # 至少保留 30% 现金
+    # 注: 不再使用固定股数(default_quantity/strong_signal_quantity)
+    # 改为按资金百分比动态计算: qty = investable * 50% / price
 }
 
 
@@ -133,8 +133,9 @@ class TradeDecision:
 
     # 交易参数（传递给 AutoTradeService）
     buy_dip_pct: float = 1.0
-    take_profit_pct: float = 5.0       # 回测最优: 5%（原10%）
-    stop_loss_pct: float = 3.0         # 回测最优: 3%（原8%）
+    take_profit_pct: float = 5.0       # 激活移动止盈的阈值
+    trailing_stop_pct: float = 3.0     # 从峰值回撤X%卖出（移动止盈）
+    stop_loss_pct: float = 3.0         # 固定止损: -3%
 
     def to_dict(self) -> Dict[str, Any]:
         return {
