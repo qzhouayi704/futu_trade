@@ -237,6 +237,12 @@ export default function Dashboard() {
         <AlertsCard />
       </div>
 
+      {/* 持仓概览 + 持仓资金流向 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
+        <PositionsCard positions={positions} loading={positionsLoading} />
+        <PositionFlowCard data={positionsCapitalFlow} loading={positionsCapitalFlowLoading} />
+      </div>
+
       {/* 模拟交易记录 */}
       <div className="mb-4 md:mb-6">
         <SimulatedTradeCard />
@@ -263,13 +269,9 @@ export default function Dashboard() {
         <SignalsCard signals={tradeSignals} loading={signalsLoading} />
       </div>
 
-      {/* 信号分组 + 持仓摘要 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+      {/* 信号分组 */}
+      <div className="mb-4 md:mb-6">
         <SignalTabs />
-        <div className="space-y-4 md:space-y-6">
-          <PositionsCard positions={positions} loading={positionsLoading} />
-          <PositionFlowCard data={positionsCapitalFlow} loading={positionsCapitalFlowLoading} />
-        </div>
       </div>
     </div>
   );
