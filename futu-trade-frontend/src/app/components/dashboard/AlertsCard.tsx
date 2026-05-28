@@ -5,6 +5,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { Card } from "@/components/common";
 import apiClient from "@/lib/api/client";
 
@@ -121,7 +122,7 @@ export function AlertsCard() {
           </div>
         ) : (
           <div className="space-y-4">
-            {/* ===== 吸收/拉升预警 ===== */}
+            {/* ===== 吸收/拉升预警 (TOP 5) ===== */}
             {alerts.length > 0 && (
               <div className="space-y-1.5">
                 {alerts
@@ -130,6 +131,7 @@ export function AlertsCard() {
                     if (a.alert_type !== b.alert_type) return a.alert_type === "absorption" ? -1 : 1;
                     return b.duration_min - a.duration_min;
                   })
+                  .slice(0, 5)
                   .map((alert, idx) => {
                     const isAbsorption = alert.alert_type === "absorption";
                     const isDump = alert.alert_type === "dump";
@@ -251,7 +253,7 @@ export function AlertsCard() {
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  {divAlerts.map((d, idx) => {
+                  {divAlerts.slice(0, 5).map((d, idx) => {
                     const isBullish = d.div_type === "bullish";
                     const isHigh = d.severity === "high";
                     const bgColor = isBullish
@@ -299,6 +301,16 @@ export function AlertsCard() {
                   })}
                 </div>
               </div>
+            )}
+
+            {/* 查看更多 */}
+            {(alerts.length > 5 || divAlerts.length > 5) && (
+              <Link
+                href="/flow-signals"
+                className="block text-center py-2 text-xs text-primary hover:text-primary/80 hover:bg-primary/5 rounded-lg transition-colors font-medium"
+              >
+                查看全部 {alerts.length + divAlerts.length} 条预警 →
+              </Link>
             )}
           </div>
         )}
