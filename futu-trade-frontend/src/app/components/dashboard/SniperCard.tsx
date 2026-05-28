@@ -4,6 +4,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { Card } from "@/components/common";
 import { useSocket } from "@/lib/socket";
 import apiClient from "@/lib/api/client";
@@ -230,6 +231,19 @@ export function SniperCard() {
                 })}
               </div>
             ) : null}
+
+            {/* 查看全部按钮 */}
+            {signals.length > 0 && (
+              <Link
+                href="/sniper-signals"
+                className="mt-3 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium text-primary hover:bg-primary/5 transition-colors border border-transparent hover:border-primary/10"
+              >
+                查看全部信号
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </Link>
+            )}
           </>
         )}
       </div>
