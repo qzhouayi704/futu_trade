@@ -100,7 +100,11 @@ export function SniperCard() {
   }, [socket]);
 
   const hasRanking = ranking.opportunity.length > 0 || ranking.risk.length > 0;
-  const recent = [...signals].sort((a, b) => b.time.localeCompare(a.time)).slice(0, 6);
+  // 首页只展示巨量抢筹/砸盘信号
+  const recent = [...signals]
+    .filter((s) => s.signal_type === "mega_buy" || s.signal_type === "mega_sell")
+    .sort((a, b) => b.time.localeCompare(a.time))
+    .slice(0, 6);
 
   return (
     <Card>

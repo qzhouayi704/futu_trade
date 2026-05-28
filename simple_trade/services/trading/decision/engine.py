@@ -267,12 +267,11 @@ class UnifiedTradeDecisionEngine:
 
         if action == 'auto_sell':
             await self._handle_auto_sell(event)
+            # 仅实际执行卖出后加入冷却名单
+            self._cooldown[event.stock_code] = datetime.now() + timedelta(minutes=COOLDOWN_MINUTES)
         else:
             await self._handle_warn(event)
-
-        # 加入冷却名单
-        cooldown_min = COOLDOWN_MINUTES if action == 'auto_sell' else COOLDOWN_MINUTES // 2
-        self._cooldown[event.stock_code] = datetime.now() + timedelta(minutes=cooldown_min)
+            # WARN 信号不加冷却，避免阻止买入信号
 
     async def _handle_auto_sell(self, event: TradeSignalEvent):
         """巨量砸盘 → 检查持仓并自动卖出"""
