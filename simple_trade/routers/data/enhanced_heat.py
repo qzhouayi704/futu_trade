@@ -796,24 +796,72 @@ async def get_ccass_holdings(
 
 # ==================== 量价异常预警（全量扫描） ====================
 
+
+async def _get_alert_stock_codes(container, db, source: str) -> list:
+    """根据 source 参数获取目标股票代码列表
+
+    Args:
+        source: 'focus' = 仅狙击+优选股, 'all' = 全部订阅股票
+    """
+    if source == 'focus':
+        # 从狙击信号 + 盘后优选收集股票
+        focus_codes = set()
+        try:
+            # 1. 今日狙击信号股
+            sniper_rows = await db.async_execute_query("""
+                SELECT DISTINCT stock_code FROM sniper_signals
+                WHERE DATE(created_at) = DATE('now', 'localtime')
+            """)
+            if sniper_rows:
+                focus_codes.update(r[0] for r in sniper_rows)
+        except Exception:
+            pass
+        try:
+            # 2. 最新盘后优选股
+            overnight_rows = await db.async_execute_query("""
+                SELECT DISTINCT stock_code FROM overnight_screen_results
+                WHERE screen_date = (
+                    SELECT MAX(screen_date) FROM overnight_screen_results
+                )
+            """)
+            if overnight_rows:
+                focus_codes.update(r[0] for r in overnight_rows)
+        except Exception:
+            pass
+        # 3. 当前持仓股也纳入
+        try:
+            from ..trading.trade_helpers import ensure_trade_service
+            trade_service = ensure_trade_service(container)
+            result = trade_service.get_positions()
+            if result.get('success') and result.get('positions'):
+                focus_codes.update(p['stock_code'] for p in result['positions'])
+        except Exception:
+            pass
+        return list(focus_codes)
+    else:
+        # 全部订阅股票
+        sub_mgr = getattr(container, 'subscription_manager', None)
+        if sub_mgr and hasattr(sub_mgr, 'subscribed_stocks'):
+            return list(sub_mgr.subscribed_stocks)
+        return []
+
 @router.get("/volume-price-alerts")
-async def get_volume_price_alerts(container=Depends(get_container)):
-    """扫描所有已订阅股票的量价异常（吸收+拉升），供首页预警卡片使用"""
+async def get_volume_price_alerts(
+    source: str = Query("all", description="股票来源: all=全部订阅, focus=狙击+优选"),
+    container=Depends(get_container)
+):
+    """扫描股票的量价异常（吸收+拉升），供首页预警卡片使用"""
     from ...services.analysis.absorption_scanner import AbsorptionScanner
 
     db = getattr(container, 'db_manager', None)
     if not db:
         return APIResponse(success=True, data=[], message="数据库不可用")
 
-    # 获取已订阅的股票代码
-    sub_mgr = getattr(container, 'subscription_manager', None)
-    if sub_mgr and hasattr(sub_mgr, 'subscribed_stocks'):
-        codes = list(sub_mgr.subscribed_stocks)
-    else:
-        codes = []
+    # 获取目标股票代码
+    codes = await _get_alert_stock_codes(container, db, source)
 
     if not codes:
-        return APIResponse(success=True, data=[], message="无已订阅股票")
+        return APIResponse(success=True, data=[], message="无目标股票")
 
     scanner = AbsorptionScanner(db)
     # 不受冷却限制 — 清空冷却记录
@@ -832,7 +880,10 @@ async def get_volume_price_alerts(container=Depends(get_container)):
 # ==================== Delta 量价背离扫描 ====================
 
 @router.get("/delta-divergence-alerts")
-async def get_delta_divergence_alerts(container=Depends(get_container)):
+async def get_delta_divergence_alerts(
+    source: str = Query("all", description="股票来源: all=全部订阅, focus=狙击+优选"),
+    container=Depends(get_container)
+):
     """5分钟K线量价背离扫描
 
     检测两种模式:
@@ -846,10 +897,9 @@ async def get_delta_divergence_alerts(container=Depends(get_container)):
     if not db:
         return APIResponse(success=True, data=[], message="数据库不可用")
 
-    sub_mgr = getattr(container, 'subscription_manager', None)
-    codes = list(sub_mgr.subscribed_stocks) if sub_mgr and hasattr(sub_mgr, 'subscribed_stocks') else []
+    codes = await _get_alert_stock_codes(container, db, source)
     if not codes:
-        return APIResponse(success=True, data=[], message="无已订阅股票")
+        return APIResponse(success=True, data=[], message="无目标股票")
 
     today_str = _date.today().isoformat()
     placeholders = ','.join(['?' for _ in codes])

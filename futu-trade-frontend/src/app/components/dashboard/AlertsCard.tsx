@@ -52,8 +52,8 @@ export function AlertsCard() {
       // 并行加载两种预警
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const [vpRes, divRes]: any[] = await Promise.all([
-        apiClient.get("/enhanced-heat/volume-price-alerts"),
-        apiClient.get("/enhanced-heat/delta-divergence-alerts"),
+        apiClient.get("/enhanced-heat/volume-price-alerts?source=focus"),
+        apiClient.get("/enhanced-heat/delta-divergence-alerts?source=focus"),
       ]);
       if (vpRes.success && Array.isArray(vpRes.data)) setAlerts(vpRes.data);
       if (divRes.success && Array.isArray(divRes.data)) setDivAlerts(divRes.data);
