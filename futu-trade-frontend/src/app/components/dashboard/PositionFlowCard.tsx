@@ -202,6 +202,28 @@ export function PositionFlowCard({ data = [], loading = false }: PositionFlowCar
                           </div>
                         </div>
 
+                        {/* 逐笔买卖力量 */}
+                        {item.has_ticker_data && (
+                          <div className="text-right min-w-14">
+                            <div className="text-xs text-gray-400 dark:text-gray-500 mb-0.5">
+                              逐笔力量
+                            </div>
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold border ${
+                                item.ticker_power > 0.2
+                                  ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800/30"
+                                  : item.ticker_power > 0
+                                  ? "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/30 dark:text-orange-400 dark:border-orange-800/30"
+                                  : item.ticker_power > -0.2
+                                  ? "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700"
+                                  : "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/30 dark:text-green-400 dark:border-green-800/30"
+                              }`}
+                            >
+                              {item.ticker_bsr > 0 ? item.ticker_bsr.toFixed(2) : "—"}
+                            </span>
+                          </div>
+                        )}
+
                         {/* 资金评分 */}
                         <div className="text-right min-w-16">
                           <div className="text-xs text-gray-400 dark:text-gray-500 mb-0.5">

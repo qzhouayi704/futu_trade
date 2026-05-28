@@ -133,5 +133,12 @@ export interface PositionCapitalFlow {
   small_outflow: number;
   inflow_change: number;
   has_flow_data: boolean;
+  // 逐笔 BSR 字段
+  ticker_bsr: number;
+  ticker_power: number;
+  ticker_buy_turnover: number;
+  ticker_sell_turnover: number;
+  ticker_count: number;
+  has_ticker_data: boolean;
 }
 

@@ -350,11 +350,42 @@ async def get_positions_capital_flow(container=Depends(get_container)):
     except Exception as e:
         logging.warning(f"获取资金流向失败: {e}")
 
-    # 3. 合并持仓 + 资金流向
+    # 2.5 批量获取逐笔 BSR（主动买卖力量比）
+    ticker_bsr_map = {}
+    try:
+        from datetime import date
+        today = date.today().strftime('%Y-%m-%d')
+        placeholders = ','.join(['?'] * len(stock_codes))
+        # 从 ticker_data 表按股票汇总当日主动买/卖金额
+        bsr_rows = await container.db_manager.async_execute_query(f"""
+            SELECT stock_code,
+                   SUM(CASE WHEN direction = 'BUY' THEN turnover ELSE 0 END) as buy_turnover,
+                   SUM(CASE WHEN direction = 'SELL' THEN turnover ELSE 0 END) as sell_turnover,
+                   COUNT(*) as tick_count
+            FROM ticker_data
+            WHERE stock_code IN ({placeholders}) AND trade_date = ?
+            GROUP BY stock_code
+        """, (*stock_codes, today))
+        if bsr_rows:
+            for row in bsr_rows:
+                code, buy_t, sell_t, cnt = row[0], row[1] or 0, row[2] or 0, row[3] or 0
+                bsr = round(buy_t / sell_t, 3) if sell_t > 0 else 0
+                ticker_bsr_map[code] = {
+                    'bsr': bsr,
+                    'ticker_power': round(bsr - 1.0, 3) if bsr > 0 else 0,
+                    'buy_turnover': buy_t,
+                    'sell_turnover': sell_t,
+                    'tick_count': cnt,
+                }
+    except Exception as e:
+        logging.debug(f"获取逐笔BSR失败: {e}")
+
+    # 3. 合并持仓 + 资金流向 + 逐笔BSR
     merged = []
     for pos in positions:
         code = pos['stock_code']
         flow = capital_data.get(code, {})
+        ticker = ticker_bsr_map.get(code, {})
         merged.append({
             'stock_code': code,
             'stock_name': pos.get('stock_name', ''),
@@ -364,7 +395,7 @@ async def get_positions_capital_flow(container=Depends(get_container)):
             'market_val': pos.get('market_val', 0),
             'pl_val': pos.get('pl_val', 0),
             'pl_ratio': pos.get('pl_ratio', 0),
-            # 资金流向字段
+            # 资金流向字段（富途API）
             'main_net_inflow': flow.get('main_net_inflow', 0),
             'net_inflow_ratio': flow.get('net_inflow_ratio', 0),
             'capital_score': flow.get('capital_score', 0),
@@ -379,6 +410,13 @@ async def get_positions_capital_flow(container=Depends(get_container)):
             'small_outflow': flow.get('small_outflow', 0),
             'inflow_change': flow.get('inflow_change', 0),
             'has_flow_data': bool(flow),
+            # 逐笔 BSR 字段（基于实际成交方向）
+            'ticker_bsr': ticker.get('bsr', 0),
+            'ticker_power': ticker.get('ticker_power', 0),
+            'ticker_buy_turnover': ticker.get('buy_turnover', 0),
+            'ticker_sell_turnover': ticker.get('sell_turnover', 0),
+            'ticker_count': ticker.get('tick_count', 0),
+            'has_ticker_data': bool(ticker),
         })
 
     return APIResponse(
@@ -387,3 +425,4 @@ async def get_positions_capital_flow(container=Depends(get_container)):
         message=f"获取 {len(merged)} 只持仓的资金流向",
         meta={'count': len(merged)}
     )
+
