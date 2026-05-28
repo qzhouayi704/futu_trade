@@ -100,6 +100,42 @@ export default function SniperSignalsPage() {
     return list;
   }, [signals, activeType, search]);
 
+  // 按 stock_code + time 分组，合并同一股票同一时间的多个信号
+  interface GroupedSignal {
+    time: string;
+    stock_code: string;
+    stock_name: string;
+    price: number;
+    is_red: boolean;
+    emoji: string;
+    signals: { signal_type: string; detail: string; is_red: boolean; emoji: string }[];
+  }
+
+  const grouped = useMemo((): GroupedSignal[] => {
+    const map = new Map<string, GroupedSignal>();
+    for (const sig of filtered) {
+      const key = `${sig.stock_code}:${sig.time}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          time: sig.time,
+          stock_code: sig.stock_code,
+          stock_name: sig.stock_name,
+          price: sig.price,
+          is_red: sig.is_red,
+          emoji: sig.emoji,
+          signals: [],
+        });
+      }
+      map.get(key)!.signals.push({
+        signal_type: sig.signal_type,
+        detail: sig.detail,
+        is_red: sig.is_red,
+        emoji: sig.emoji,
+      });
+    }
+    return Array.from(map.values());
+  }, [filtered]);
+
   // 统计
   const stats = useMemo(() => {
     const bullCount = signals.filter((s) => !s.is_red).length;
@@ -246,51 +282,65 @@ export default function SniperSignalsPage() {
         <Card>
           <div className="p-3 md:p-4">
             <div className="text-[11px] text-muted-foreground mb-3">
-              共 {filtered.length} 条{activeType ? ` · ${TYPE_LABELS[activeType]}` : ""}{search ? ` · "${search}"` : ""}
+              共 {filtered.length} 条信号，{grouped.length} 只个股{activeType ? ` · ${TYPE_LABELS[activeType]}` : ""}{search ? ` · "${search}"` : ""}
             </div>
             <div className="space-y-1.5">
-              {filtered.map((sig, idx) => {
-                const bgColor = sig.is_red
+              {grouped.map((g) => {
+                const hasRed = g.signals.some((s) => s.is_red);
+                const hasGreen = g.signals.some((s) => !s.is_red);
+                const bgColor = hasRed && !hasGreen
                   ? "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-900/30"
-                  : "bg-emerald-50/60 border-emerald-200/50 dark:bg-emerald-950/20 dark:border-emerald-900/30";
-                const textColor = sig.is_red ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400";
-                const badgeColor = sig.is_red
-                  ? "bg-red-200/70 text-red-700 dark:bg-red-900/50 dark:text-red-300"
-                  : "bg-emerald-200/70 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300";
+                  : !hasRed && hasGreen
+                    ? "bg-emerald-50/60 border-emerald-200/50 dark:bg-emerald-950/20 dark:border-emerald-900/30"
+                    : "bg-amber-50/40 border-amber-200/50 dark:bg-amber-950/20 dark:border-amber-900/30";
+                const nameColor = hasRed && !hasGreen
+                  ? "text-red-600 dark:text-red-400"
+                  : "text-emerald-600 dark:text-emerald-400";
 
                 return (
                   <Link
-                    key={`${sig.stock_code}-${sig.signal_type}-${sig.time}-${idx}`}
-                    href={`/stock-detail?code=${sig.stock_code}`}
+                    key={`${g.stock_code}-${g.time}`}
+                    href={`/stock-detail?code=${g.stock_code}`}
                     className={`block px-3 py-2 rounded-lg border ${bgColor} hover:shadow-sm transition-all group`}
                   >
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                         <span className="text-[10px] font-mono tabular-nums text-muted-foreground shrink-0">
-                          {sig.time}
+                          {g.time}
                         </span>
-                        <span className={`text-xs ${sig.is_red ? "animate-pulse" : ""}`}>{sig.emoji}</span>
-                        <span className={`font-bold text-sm ${textColor} truncate group-hover:underline`}>
-                          {sig.stock_name}
+                        <span className="text-xs">{g.emoji}</span>
+                        <span className={`font-bold text-sm ${nameColor} truncate group-hover:underline`}>
+                          {g.stock_name}
                         </span>
                         <span className="text-[10px] text-muted-foreground shrink-0">
-                          {sig.stock_code}
+                          {g.stock_code}
                         </span>
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium shrink-0 ${badgeColor}`}>
-                          {TYPE_LABELS[sig.signal_type] || sig.signal_type}
-                        </span>
+                        {g.signals.map((s, i) => {
+                          const bc = s.is_red
+                            ? "bg-red-200/70 text-red-700 dark:bg-red-900/50 dark:text-red-300"
+                            : "bg-emerald-200/70 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300";
+                          return (
+                            <span key={i} className={`text-[9px] px-1.5 py-0.5 rounded font-medium shrink-0 ${bc}`}>
+                              {TYPE_LABELS[s.signal_type] || s.signal_type}
+                            </span>
+                          );
+                        })}
                       </div>
                       <div className="flex items-center gap-2 shrink-0 ml-2">
                         <span className="text-xs font-bold tabular-nums text-foreground/70">
-                          {sig.price.toFixed(3)}
+                          {g.price.toFixed(3)}
                         </span>
                         <svg className="w-3.5 h-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                         </svg>
                       </div>
                     </div>
-                    <div className={`text-[11px] ${textColor} opacity-70 mt-0.5 truncate`}>
-                      {sig.detail}
+                    <div className="text-[11px] text-muted-foreground/70 mt-0.5 space-x-2 truncate">
+                      {g.signals.map((s, i) => (
+                        <span key={i} className={s.is_red ? "text-red-500/70 dark:text-red-400/70" : "text-emerald-500/70 dark:text-emerald-400/70"}>
+                          {s.detail}
+                        </span>
+                      ))}
                     </div>
                   </Link>
                 );
