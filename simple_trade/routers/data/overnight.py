@@ -495,10 +495,130 @@ def _auto_create_trade_tasks(container, candidates):
         logger.error(f"[自动交易] 创建任务异常: {e}", exc_info=True)
 
 
+
 logging.info("盘后优选路由已注册")
 
 
+# ==================== Dashboard 聚合 API ====================
+
+
+@router.get("/dashboard", response_model=APIResponse)
+async def get_dashboard_data(container=Depends(get_container)):
+    """首页盘后优选卡片 — 聚合优选结果 + 实时行情 + 资金信号"""
+    try:
+        # 1. 获取优选结果（优先内存，其次DB最新）
+        candidates = _task_status.get("result")
+        timestamp = _task_status.get("timestamp")
+
+        if not candidates:
+            try:
+                rows = container.db_manager.execute_query(
+                    "SELECT candidates_json, created_at FROM overnight_screen_results "
+                    "ORDER BY screen_date DESC LIMIT 1"
+                )
+                if rows:
+                    candidates = json.loads(rows[0][0])
+                    timestamp = rows[0][1]
+            except Exception as e:
+                logger.debug(f"[盘后Dashboard] 读DB失败: {e}")
+
+        if not candidates:
+            return APIResponse(success=True, message="暂无优选数据", data={"items": [], "timestamp": None})
+
+        # 2. 构建实时报价索引
+        quote_map = {}
+        try:
+            state = get_state_manager()
+            cached_quotes = state.quote_cache.get_last_quotes()
+            if cached_quotes:
+                for q in cached_quotes:
+                    code = q.get('code', q.get('stock_code', ''))
+                    if code:
+                        quote_map[code] = q
+        except Exception:
+            pass
+
+        # 3. 批量查资金流 + 大单
+        codes = [c.get('stock_code', '') for c in candidates if c.get('stock_code')]
+        capital_map = {}
+        big_order_map = {}
+        try:
+            if codes:
+                placeholders = ','.join(['?'] * len(codes))
+                # 资金流
+                cap_rows = container.db_manager.execute_query(
+                    f"SELECT stock_code, net_inflow_ratio, capital_score "
+                    f"FROM capital_flow_cache WHERE stock_code IN ({placeholders}) "
+                    f"GROUP BY stock_code HAVING MAX(timestamp)",
+                    tuple(codes)
+                )
+                if cap_rows:
+                    for r in cap_rows:
+                        capital_map[r[0]] = {'net_inflow_ratio': r[1] or 0, 'capital_score': r[2] or 50}
+
+                # 大单
+                bo_rows = container.db_manager.execute_query(
+                    f"SELECT stock_code, buy_sell_ratio "
+                    f"FROM big_order_tracking WHERE stock_code IN ({placeholders}) "
+                    f"GROUP BY stock_code HAVING MAX(timestamp)",
+                    tuple(codes)
+                )
+                if bo_rows:
+                    for r in bo_rows:
+                        big_order_map[r[0]] = r[1] or 0
+        except Exception as e:
+            logger.debug(f"[盘后Dashboard] 查资金/大单失败: {e}")
+
+        # 4. 聚合输出
+        items = []
+        for c in candidates:
+            code = c.get('stock_code', '')
+            if not code:
+                continue
+
+            quote = quote_map.get(code, {})
+            cap = capital_map.get(code, {})
+            bo_ratio = big_order_map.get(code, 0)
+
+            # 资金信号判定
+            cap_score = cap.get('capital_score', 50)
+            net_ratio = cap.get('net_inflow_ratio', 0)
+            if cap_score >= 65:
+                capital_signal = "偏多"
+            elif cap_score <= 35:
+                capital_signal = "偏空"
+            else:
+                capital_signal = "中性"
+
+            items.append({
+                'stock_code': code,
+                'stock_name': c.get('stock_name', ''),
+                'total_score': c.get('total_score', 0),
+                'category': c.get('category', ''),
+                'verdict': c.get('verdict', ''),
+                'reasons': c.get('reasons', []),
+                'screen_change_rate': c.get('key_metrics', {}).get('change_rate', 0),
+                'live_price': quote.get('last_price', quote.get('cur_price', 0)),
+                'live_change_rate': quote.get('change_rate', quote.get('change_percent', 0)),
+                'capital_signal': capital_signal,
+                'capital_score': cap_score,
+                'net_inflow_ratio': net_ratio,
+                'big_order_ratio': round(bo_ratio, 2) if bo_ratio else 0,
+                'volume_ratio': quote.get('volume_ratio', 0),
+            })
+
+        return APIResponse(
+            success=True,
+            message=f"共 {len(items)} 只推荐",
+            data={"items": items, "timestamp": timestamp}
+        )
+    except Exception as e:
+        logger.error(f"[盘后Dashboard] 异常: {e}", exc_info=True)
+        return APIResponse(success=False, message=str(e))
+
+
 # ==================== 表现追踪 API ====================
+
 
 
 @router.post("/track", response_model=APIResponse)

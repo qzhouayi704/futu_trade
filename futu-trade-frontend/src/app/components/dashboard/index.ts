@@ -11,5 +11,6 @@ export { PlateAlertsCard } from "./PlateAlertsCard";
 export { SniperCard } from "./SniperCard";
 export { SimulatedTradeCard } from "./SimulatedTradeCard";
 export { PositionFlowCard } from "./PositionFlowCard";
+export { OvernightScreenCard } from "./OvernightScreenCard";
 
 

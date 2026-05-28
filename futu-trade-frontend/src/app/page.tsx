@@ -19,6 +19,7 @@ import {
   SniperCard,
   SimulatedTradeCard,
   PositionFlowCard,
+  OvernightScreenCard,
 } from "./components/dashboard";
 import { AlertsCard } from "./components/dashboard/AlertsCard";
 import {
@@ -229,6 +230,11 @@ export default function Dashboard() {
       {/* 策略面板 */}
       <div className="mb-4 md:mb-6">
         <StrategyPanel />
+      </div>
+
+      {/* 盘后优选 */}
+      <div className="mb-4 md:mb-6">
+        <OvernightScreenCard />
       </div>
 
       {/* 盘中狙击 + 量价预警 */}

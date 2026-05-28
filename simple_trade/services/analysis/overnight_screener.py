@@ -163,8 +163,14 @@ class OvernightScreener:
         for i, c in enumerate(momentum_candidates[:10]):
             c.rank = i + 1
 
-        # 合并输出
-        result = trend_candidates[:10] + momentum_candidates[:10]
+        # 合并输出（按stock_code去重，同一股票保留分数更高的模式）
+        seen_codes = {}
+        for c in trend_candidates[:10]:
+            seen_codes[c.stock_code] = c
+        for c in momentum_candidates[:10]:
+            if c.stock_code not in seen_codes or c.total_score > seen_codes[c.stock_code].total_score:
+                seen_codes[c.stock_code] = c
+        result = sorted(seen_codes.values(), key=lambda x: x.total_score, reverse=True)
 
         logger.info(
             f"[盘后优选] 完成 | TREND: {len(trend_candidates)}只(Top1={trend_candidates[0].total_score:.0f}分)"
