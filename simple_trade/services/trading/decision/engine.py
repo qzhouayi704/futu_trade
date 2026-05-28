@@ -101,11 +101,36 @@ class UnifiedTradeDecisionEngine:
         """IntradaySniper 信号的便捷入口
 
         将 SniperSignal 转换为 TradeSignalEvent 后调用 on_signal。
+        基于回测结论：高涨幅+巨量抢筹胜率更高，高涨幅+巨量砸盘多为假信号。
         """
         strength = SNIPER_STRENGTH_MAP.get(signal.signal_type, 50.0)
         direction = 'SELL' if signal.is_red else 'BUY'
         if signal.signal_type in ('reversal_bear', 'sustained_out'):
             direction = 'WARN'
+
+        # === 涨幅感知调整（回测数据支撑） ===
+        # 巨量抢筹: 涨8~12%时76.9%胜率, 涨12~20%时91.7%胜率
+        # 巨量砸盘: 涨5%+时仅25~50%胜率（假信号）
+        gain_pct = self._get_intraday_gain(signal.stock_code, signal.price)
+        reason_suffix = ""
+
+        if gain_pct is not None and signal.signal_type == 'mega_buy' and gain_pct >= 5:
+            # 高涨幅+巨量抢筹=动能确认，提升强度
+            if gain_pct >= 12:
+                strength = min(strength * 1.5, 100)
+                reason_suffix = f" [动能加成+50%: 已涨{gain_pct:.1f}%]"
+            elif gain_pct >= 8:
+                strength = min(strength * 1.3, 100)
+                reason_suffix = f" [动能加成+30%: 已涨{gain_pct:.1f}%]"
+            else:
+                strength = min(strength * 1.15, 100)
+                reason_suffix = f" [动能加成+15%: 已涨{gain_pct:.1f}%]"
+
+        elif gain_pct is not None and signal.signal_type == 'mega_sell' and gain_pct >= 5:
+            # 高涨幅+巨量砸盘=假信号概率高，降级为WARN
+            direction = 'WARN'
+            strength = strength * 0.5
+            reason_suffix = f" [高涨幅砸盘降级: 已涨{gain_pct:.1f}%, 假信号概率高]"
 
         event = TradeSignalEvent(
             source='sniper',
@@ -114,7 +139,7 @@ class UnifiedTradeDecisionEngine:
             direction=direction,
             strength=strength,
             price=signal.price,
-            reason=signal.detail,
+            reason=signal.detail + reason_suffix,
             sniper_signal_type=signal.signal_type,
         )
         await self.on_signal(event)
@@ -341,6 +366,27 @@ class UnifiedTradeDecisionEngine:
                 })
         except Exception as e:
             logger.debug(f"[DecisionEngine] 预警推送失败: {e}")
+
+    # ==================== 涨幅感知 ====================
+
+    def _get_intraday_gain(self, stock_code: str, current_price: float) -> Optional[float]:
+        """获取当日涨幅(%) — 当前价 vs 昨收价
+
+        Returns: 涨幅百分比，获取失败返回 None
+        """
+        try:
+            quote_cache = getattr(self.container, 'quote_cache', None)
+            if not quote_cache:
+                return None
+            quotes = quote_cache.get_quotes_for_codes([stock_code])
+            if stock_code not in quotes:
+                return None
+            prev_close = quotes[stock_code].get('prev_close', 0)
+            if prev_close <= 0:
+                return None
+            return round((current_price - prev_close) / prev_close * 100, 2)
+        except Exception:
+            return None
 
     # ==================== 门卫检查 ====================
 
