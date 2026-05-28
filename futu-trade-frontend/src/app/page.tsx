@@ -17,6 +17,7 @@ import {
   PositionsCard,
   PlateAlertsCard,
   SniperCard,
+  SignalPipelineCard,
   SimulatedTradeCard,
   PositionFlowCard,
   OvernightScreenCard,
@@ -247,6 +248,11 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
         <PositionsCard positions={positions} loading={positionsLoading} />
         <PositionFlowCard data={positionsCapitalFlow} loading={positionsCapitalFlowLoading} />
+      </div>
+
+      {/* 交易信号追踪 */}
+      <div className="mb-4 md:mb-6">
+        <SignalPipelineCard />
       </div>
 
       {/* 模拟交易记录 */}

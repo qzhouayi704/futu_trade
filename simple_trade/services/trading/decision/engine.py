@@ -11,9 +11,11 @@ StockScorer 等信号源的标准化信号，通过共振确认后执行交易�
 """
 
 import asyncio
+import json
 import logging
+import os
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
 
 from .models import (
@@ -165,36 +167,55 @@ class UnifiedTradeDecisionEngine:
     # ==================== 买入信号处理 ====================
 
     async def _handle_buy_signal(self, event: TradeSignalEvent):
-        """处理买入信号 → 共振判断 → 门卫 → 仓位 → 执行"""
+        """处理买入信号 → 共振判断 → 门卫 → 仓位 → 执行（含流水记录）"""
+        pipeline = {
+            'source': event.source,
+            'direction': event.direction,
+            'strength': event.strength,
+            'reason': event.reason,
+            'sniper_type': event.sniper_signal_type,
+        }
 
         # 1. 冷却检查
         if self._is_in_cooldown(event.stock_code):
             logger.debug(f"[DecisionEngine] {event.stock_code} 在冷却期内，跳过")
+            self._save_pipeline_record(event, 'rejected', '冷却期内', {}, {}, pipeline)
             return
 
         # 2. 共振判断
         decision = self._evaluate_buy_resonance(event.stock_code)
+        resonance_info = {
+            'matched': decision is not None,
+            'type': decision.resonance_type if decision else None,
+            'reason': decision.reason if decision else '未满足共振条件',
+        }
         if decision is None:
+            self._save_pipeline_record(event, 'waiting', '等待共振确认', resonance_info, {}, pipeline)
             return
 
         # 3. 门卫检查
         guard_result = self._run_all_guards(event.stock_code, event.price)
+        guard_info = {
+            'passed': guard_result['passed'],
+            'reason': guard_result.get('reason', ''),
+        }
         if not guard_result['passed']:
-            logger.info(
-                f"[DecisionEngine] 门卫拒绝 {event.stock_code}: {guard_result['reason']}"
-            )
+            logger.info(f"[DecisionEngine] 门卫拒绝 {event.stock_code}: {guard_result['reason']}")
+            self._save_pipeline_record(event, 'rejected', f"门卫拒绝: {guard_result['reason']}", resonance_info, guard_info, pipeline)
             return
 
         # 4. 仓位计算
         quantity = self._calculate_position(decision)
         if quantity <= 0:
             logger.info(f"[DecisionEngine] {event.stock_code} 仓位计算为0，跳过")
+            self._save_pipeline_record(event, 'rejected', '仓位计算为0', resonance_info, guard_info, pipeline)
             return
 
         decision.quantity = quantity
 
         # 5. 执行
         await self._execute_decision(decision)
+        self._save_pipeline_record(event, 'executed', f"{decision.resonance_type}: 执行{decision.direction}", resonance_info, guard_info, pipeline)
 
     def _evaluate_buy_resonance(self, stock_code: str) -> Optional[TradeDecision]:
         """共振判断 — 检查是否满足交易条件"""
@@ -669,3 +690,218 @@ class UnifiedTradeDecisionEngine:
         self._cooldown.clear()
         self._today_decisions.clear()
         logger.info("[DecisionEngine] 每日重置完成")
+
+    # ==================== 信号流水记录 ====================
+
+    def _save_pipeline_record(
+        self, event: TradeSignalEvent, final_action: str,
+        final_reason: str, resonance_info: dict, guard_info: dict, raw: dict,
+    ):
+        """将信号处理流水写入数据库"""
+        try:
+            db = getattr(self.container, 'db_manager', None)
+            if not db:
+                return
+            today = date.today().isoformat()
+            db.execute_update(
+                '''INSERT INTO signal_pipeline
+                   (trade_date, timestamp, stock_code, stock_name, source,
+                    direction, strength, resonance_result, guard_result,
+                    final_action, final_reason, raw_detail)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (today, event.timestamp.isoformat(), event.stock_code,
+                 event.stock_name, event.source, event.direction,
+                 event.strength, json.dumps(resonance_info, ensure_ascii=False),
+                 json.dumps(guard_info, ensure_ascii=False),
+                 final_action, final_reason,
+                 json.dumps(raw, ensure_ascii=False)),
+            )
+        except Exception as e:
+            logger.debug(f"[DecisionEngine] 流水记录写入失败: {e}")
+
+        # WebSocket 实时推送
+        try:
+            import asyncio
+            socket_manager = getattr(self.container, '_socket_manager', None)
+            if not socket_manager:
+                from ...dependencies import get_socket_manager
+                socket_manager = get_socket_manager()
+            if socket_manager:
+                asyncio.create_task(socket_manager.emit_to_all('signal_pipeline', {
+                    'stock_code': event.stock_code,
+                    'stock_name': event.stock_name,
+                    'source': event.source,
+                    'direction': event.direction,
+                    'strength': event.strength,
+                    'final_action': final_action,
+                    'final_reason': final_reason,
+                    'resonance': resonance_info,
+                    'guard': guard_info,
+                    'timestamp': event.timestamp.isoformat(),
+                }))
+        except Exception:
+            pass
+
+    def get_signal_pipeline(self, limit: int = 50, trade_date: str = '') -> List[dict]:
+        """查询信号流水记录（供 API 调用）"""
+        try:
+            db = getattr(self.container, 'db_manager', None)
+            if not db:
+                return []
+            if not trade_date:
+                trade_date = date.today().isoformat()
+            with db.get_connection() as conn:
+                rows = conn.execute(
+                    '''SELECT id, trade_date, timestamp, stock_code, stock_name,
+                              source, direction, strength, resonance_result,
+                              guard_result, final_action, final_reason, raw_detail
+                       FROM signal_pipeline
+                       WHERE trade_date = ?
+                       ORDER BY id DESC LIMIT ?''',
+                    (trade_date, limit),
+                ).fetchall()
+            result = []
+            for r in rows:
+                result.append({
+                    'id': r[0], 'trade_date': r[1], 'timestamp': r[2],
+                    'stock_code': r[3], 'stock_name': r[4],
+                    'source': r[5], 'direction': r[6], 'strength': r[7],
+                    'resonance': json.loads(r[8]) if r[8] else {},
+                    'guard': json.loads(r[9]) if r[9] else {},
+                    'final_action': r[10], 'final_reason': r[11],
+                    'raw_detail': json.loads(r[12]) if r[12] else {},
+                })
+            return result
+        except Exception as e:
+            logger.error(f"[DecisionEngine] 查询流水失败: {e}")
+            return []
+
+    def get_screening_analysis(self, stock_code: str) -> dict:
+        """获取单只股票的7环节筛选分析（供选股工作台分析按钮调用）"""
+        result = {'stock_code': stock_code, 'stages': {}}
+        try:
+            # ① StockScorer 评分
+            scorer = getattr(self.container, 'stock_scorer', None)
+            if scorer:
+                cached = scorer.get_score(stock_code)
+                if cached:
+                    result['stages']['scorer'] = {
+                        'passed': cached.total_score >= 60,
+                        'score': cached.total_score,
+                        'mode': getattr(cached, 'mode', ''),
+                        'details': getattr(cached, 'details', []),
+                        'veto': getattr(cached, 'veto_reason', None),
+                    }
+                else:
+                    result['stages']['scorer'] = {'passed': False, 'score': 0, 'reason': '无缓存评分'}
+
+            # ② 盘中狙击信号
+            sniper = getattr(self.container, 'intraday_sniper', None)
+            if sniper:
+                today_sigs = [s for s in sniper.get_today_signals() if s.get('stock_code') == stock_code]
+                result['stages']['sniper'] = {
+                    'has_signal': len(today_sigs) > 0,
+                    'signals': today_sigs[-5:],  # 最近5条
+                }
+
+            # ③ 经纪商一致性
+            try:
+                from ...services.analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
+                bf = BrokerConsistencyFilter(self.container)
+                trap = bf.check_distribution_trap(stock_code, change_pct=0)
+                result['stages']['broker'] = {
+                    'is_trap': trap.is_trap,
+                    'confidence': trap.trap_confidence,
+                    'reason': trap.reason,
+                }
+            except Exception:
+                result['stages']['broker'] = {'is_trap': False, 'confidence': 0, 'reason': '检测异常'}
+
+            # ④ 信号仲裁
+            try:
+                arbitrator = getattr(self.container, 'signal_arbitrator', None)
+                if arbitrator and hasattr(arbitrator, 'get_stock_status'):
+                    arb_status = arbitrator.get_stock_status(stock_code)
+                    result['stages']['arbitrator'] = arb_status
+                else:
+                    result['stages']['arbitrator'] = {'status': 'unknown'}
+            except Exception:
+                result['stages']['arbitrator'] = {'status': 'unknown'}
+
+            # ⑤ 共振状态
+            decision = self._evaluate_buy_resonance(stock_code)
+            result['stages']['resonance'] = {
+                'matched': decision is not None,
+                'type': decision.resonance_type if decision else None,
+            }
+
+            # ⑥ 门卫检查
+            quote_cache = getattr(self.container, 'quote_cache', None)
+            price = 0
+            if quote_cache:
+                quotes = quote_cache.get_quotes_for_codes([stock_code])
+                if stock_code in quotes:
+                    price = quotes[stock_code].get('last_price', 0)
+            if price > 0:
+                guard = self._run_all_guards(stock_code, price)
+                result['stages']['guard'] = guard
+            else:
+                result['stages']['guard'] = {'passed': True, 'reason': '无报价数据，跳过'}
+
+            # ⑦ 今日流水记录
+            pipeline = self.get_signal_pipeline(limit=10, trade_date=date.today().isoformat())
+            result['stages']['pipeline'] = [p for p in pipeline if p['stock_code'] == stock_code][:5]
+
+        except Exception as e:
+            logger.error(f"[DecisionEngine] 筛选分析异常 {stock_code}: {e}")
+            result['error'] = str(e)
+
+        return result
+
+    def log_daily_screening_summary(self):
+        """收盘后输出当天股票池筛选总结到日志文件（数据盘）"""
+        try:
+            today = date.today().isoformat()
+            # 确定日志目录（与数据库同级）
+            config = getattr(self.container, 'config', None)
+            db_path = getattr(config, 'database_path', 'simple_trade/data/trade.db') if config else 'simple_trade/data/trade.db'
+            log_dir = os.path.join(os.path.dirname(db_path), 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, f'screening_{today}.log')
+
+            # 查询当天所有流水
+            records = self.get_signal_pipeline(limit=500, trade_date=today)
+
+            lines = []
+            lines.append(f"=" * 80)
+            lines.append(f"盘后筛选总结 — {today}")
+            lines.append(f"=" * 80)
+            lines.append(f"总信号数: {len(records)}")
+
+            # 按股票分组
+            by_stock: Dict[str, list] = {}
+            for r in records:
+                by_stock.setdefault(r['stock_code'], []).append(r)
+
+            for code, recs in sorted(by_stock.items()):
+                name = recs[0].get('stock_name', code)
+                executed = [r for r in recs if r['final_action'] == 'executed']
+                rejected = [r for r in recs if r['final_action'] == 'rejected']
+                waiting = [r for r in recs if r['final_action'] == 'waiting']
+                lines.append(f"\n--- {name}({code}) ---")
+                lines.append(f"  执行: {len(executed)}  拒绝: {len(rejected)}  等待: {len(waiting)}")
+                for r in recs:
+                    lines.append(
+                        f"  [{r['timestamp'][11:16]}] "
+                        f"{r['source']:8s} {r['direction']:4s} "
+                        f"强度{r['strength']:5.0f} → {r['final_action']:8s} | {r['final_reason']}"
+                    )
+
+            content = '\n'.join(lines)
+            with open(log_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            logger.info(f"[DecisionEngine] 📝 盘后筛选日志已写入: {log_file} ({len(records)}条记录, {len(by_stock)}只股票)")
+
+        except Exception as e:
+            logger.error(f"[DecisionEngine] 盘后日志写入失败: {e}")

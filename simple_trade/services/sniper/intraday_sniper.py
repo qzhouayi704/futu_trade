@@ -170,6 +170,13 @@ class IntradaySniper:
                     # 收盘后清理状态，准备下一天
                     if self._stock_states:
                         logger.info(f"收盘，今日共产生 {len(self._today_signals)} 条信号")
+                        # 输出盘后筛选日志到数据盘
+                        try:
+                            engine = getattr(self.container, 'trade_decision_engine', None)
+                            if engine:
+                                engine.log_daily_screening_summary()
+                        except Exception as e:
+                            logger.warning(f"盘后日志输出失败: {e}")
                         self._stock_states.clear()
 
                 # 等待到下一个扫描周期

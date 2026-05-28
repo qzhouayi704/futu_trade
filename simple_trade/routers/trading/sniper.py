@@ -157,3 +157,34 @@ async def get_simulated_trades_daily(date: str = "", limit: int = 100):
 
     except Exception as e:
         return {"success": False, "message": str(e), "data": {}}
+
+
+@router.get("/signal-pipeline")
+async def get_signal_pipeline(limit: int = 50, date: str = ""):
+    """获取信号处理流水（从数据库查询）"""
+    container = get_container()
+    engine = getattr(container, 'trade_decision_engine', None)
+    if not engine:
+        return {"success": False, "message": "DecisionEngine 未初始化", "data": []}
+
+    records = engine.get_signal_pipeline(limit=limit, trade_date=date)
+    return {
+        "success": True,
+        "message": f"共 {len(records)} 条流水记录",
+        "data": records,
+    }
+
+
+@router.get("/screening-analysis/{stock_code}")
+async def get_screening_analysis(stock_code: str):
+    """获取单只股票的7环节筛选分析"""
+    container = get_container()
+    engine = getattr(container, 'trade_decision_engine', None)
+    if not engine:
+        return {"success": False, "message": "DecisionEngine 未初始化", "data": {}}
+
+    analysis = engine.get_screening_analysis(stock_code)
+    return {
+        "success": True,
+        "data": analysis,
+    }

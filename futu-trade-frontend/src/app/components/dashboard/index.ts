@@ -10,6 +10,7 @@ export { PositionsCard } from "./PositionsCard";
 export { PlateAlertsCard } from "./PlateAlertsCard";
 export { SniperCard } from "./SniperCard";
 export { SimulatedTradeCard } from "./SimulatedTradeCard";
+export { SignalPipelineCard } from "./SignalPipelineCard";
 export { PositionFlowCard } from "./PositionFlowCard";
 export { OvernightScreenCard } from "./OvernightScreenCard";
 

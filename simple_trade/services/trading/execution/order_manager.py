@@ -108,6 +108,36 @@ class OrderManager:
                 ON simulated_trade_records(created_at)
             ''')
 
+            # 信号处理流水表（记录每条信号从产生到最终决策的完整过程）
+            self.db_manager.execute_update('''
+                CREATE TABLE IF NOT EXISTS signal_pipeline (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_date TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    stock_code TEXT NOT NULL,
+                    stock_name TEXT,
+                    source TEXT,
+                    direction TEXT,
+                    strength REAL,
+                    resonance_result TEXT,
+                    guard_result TEXT,
+                    final_action TEXT,
+                    final_reason TEXT,
+                    raw_detail TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            self.db_manager.execute_update('''
+                CREATE INDEX IF NOT EXISTS idx_signal_pipeline_date
+                ON signal_pipeline(trade_date)
+            ''')
+
+            self.db_manager.execute_update('''
+                CREATE INDEX IF NOT EXISTS idx_signal_pipeline_code
+                ON signal_pipeline(stock_code, trade_date)
+            ''')
+
             logging.info("订单数据库表初始化完成")
 
         except Exception as e:

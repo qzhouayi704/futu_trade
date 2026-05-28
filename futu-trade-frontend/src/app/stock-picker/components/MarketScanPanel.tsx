@@ -161,6 +161,12 @@ export default function MarketScanPanel() {
   const [levelsStock, setLevelsStock] = useState<{code: string; name: string} | null>(null);
   const [brokerAnalysis, setBrokerAnalysis] = useState<Record<string, {is_trap: boolean; trap_confidence: number; reason: string}> | null>(null);
 
+  // 筛选分析面板
+  const [screeningStock, setScreeningStock] = useState<string | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [screeningData, setScreeningData] = useState<Record<string, any>>({});
+  const [screeningLoading, setScreeningLoading] = useState<string | null>(null);
+
   // ==================== 数据加载 ====================
 
   const loadData = useCallback(async (isRefresh = false) => {
@@ -412,6 +418,30 @@ export default function MarketScanPanel() {
       prev?.code === stock.code ? null : { code: stock.code, name: stock.name }
     );
   }, []);
+
+  // ==================== 筛选分析 ====================
+
+  const handleScreeningAnalysis = useCallback(async (code: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (screeningStock === code) {
+      setScreeningStock(null);
+      return;
+    }
+    setScreeningStock(code);
+    if (screeningData[code]) return; // 已有缓存
+    setScreeningLoading(code);
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const res: any = await fetch(`/api/sniper/screening-analysis/${encodeURIComponent(code)}`).then(r => r.json());
+      if (res.success && res.data) {
+        setScreeningData(prev => ({ ...prev, [code]: res.data }));
+      }
+    } catch (err) {
+      console.error("筛选分析失败:", err);
+    } finally {
+      setScreeningLoading(null);
+    }
+  }, [screeningStock, screeningData]);
 
   // ==================== 价位分析 ====================
 
@@ -930,11 +960,154 @@ export default function MarketScanPanel() {
                           })()}
                           {/* AI 分析按钮 */}
                           <AIAnalysisButton stockCode={stock.code} stockName={stock.name} />
+                          {/* 筛选分析按钮 */}
+                          <button
+                            onClick={(e) => handleScreeningAnalysis(stock.code, e)}
+                            className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                              screeningStock === stock.code
+                                ? "bg-violet-600 text-white"
+                                : "bg-violet-50 text-violet-600 hover:bg-violet-100"
+                            }`}
+                            title="查看7环节筛选分析"
+                          >
+                            {screeningLoading === stock.code ? (
+                              <i className="fas fa-spinner fa-spin" />
+                            ) : (
+                              <>🔬</>
+                            )}
+                          </button>
 
                         </div>
                       </td>
                     </tr>
                     
+                    {/* 折叠行：筛选分析面板 */}
+                    {screeningStock === stock.code && (
+                      <tr className="bg-violet-50/50 border-b border-violet-100">
+                        <td colSpan={14} className="p-3">
+                          {screeningLoading === stock.code ? (
+                            <div className="text-center py-4 text-gray-400 text-sm">
+                              <i className="fas fa-spinner fa-spin mr-1" />加载分析数据...
+                            </div>
+                          ) : screeningData[stock.code] ? (
+                            <div className="space-y-2">
+                              <div className="text-xs font-semibold text-violet-700 mb-2">🔬 7环节筛选分析 — {stock.name}</div>
+                              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                                {/* ① 评分 */}
+                                {(() => {
+                                  const s = screeningData[stock.code]?.stages?.scorer;
+                                  return (
+                                    <div className={`rounded-lg border p-2 ${s?.passed ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
+                                      <div className="text-[10px] text-gray-500">① 综合评分</div>
+                                      <div className={`text-sm font-bold ${s?.passed ? 'text-emerald-700' : 'text-red-700'}`}>
+                                        {s?.score ?? '-'} 分 {s?.passed ? '✓' : '✗'}
+                                      </div>
+                                      <div className="text-[10px] text-gray-500">{s?.mode || s?.reason || '-'}</div>
+                                      {s?.veto && <div className="text-[10px] text-red-500">否决: {s.veto}</div>}
+                                    </div>
+                                  );
+                                })()}
+                                {/* ② 狙击信号 */}
+                                {(() => {
+                                  const s = screeningData[stock.code]?.stages?.sniper;
+                                  return (
+                                    <div className={`rounded-lg border p-2 ${s?.has_signal ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
+                                      <div className="text-[10px] text-gray-500">② 盘中狙击</div>
+                                      <div className={`text-sm font-bold ${s?.has_signal ? 'text-emerald-700' : 'text-gray-400'}`}>
+                                        {s?.has_signal ? `${s.signals?.length || 0} 条信号` : '无信号'}
+                                      </div>
+                                      {s?.signals?.slice(-2).map((sig: {signal_type?: string; detail?: string}, i: number) => (
+                                        <div key={i} className="text-[10px] text-gray-500 truncate">{sig.signal_type}: {sig.detail?.slice(0, 30)}</div>
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
+                                {/* ③ 经纪商 */}
+                                {(() => {
+                                  const s = screeningData[stock.code]?.stages?.broker;
+                                  return (
+                                    <div className={`rounded-lg border p-2 ${s?.is_trap ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                                      <div className="text-[10px] text-gray-500">③ 经纪商检测</div>
+                                      <div className={`text-sm font-bold ${s?.is_trap ? 'text-red-700' : 'text-emerald-700'}`}>
+                                        {s?.is_trap ? '⚠ 出货陷阱' : '✓ 正常'}
+                                      </div>
+                                      <div className="text-[10px] text-gray-500">置信度: {(s?.confidence ?? 0).toFixed(0)}%</div>
+                                    </div>
+                                  );
+                                })()}
+                                {/* ④ 信号仲裁 */}
+                                {(() => {
+                                  const s = screeningData[stock.code]?.stages?.arbitrator;
+                                  const suppressed = s?.suppressed || s?.status === 'suppressed';
+                                  return (
+                                    <div className={`rounded-lg border p-2 ${suppressed ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                                      <div className="text-[10px] text-gray-500">④ 信号仲裁</div>
+                                      <div className={`text-sm font-bold ${suppressed ? 'text-red-700' : 'text-emerald-700'}`}>
+                                        {suppressed ? '⚠ 已压制' : '✓ 放行'}
+                                      </div>
+                                      {s?.reason && <div className="text-[10px] text-gray-500 truncate">{s.reason}</div>}
+                                    </div>
+                                  );
+                                })()}
+                                {/* ⑤ 共振 */}
+                                {(() => {
+                                  const s = screeningData[stock.code]?.stages?.resonance;
+                                  return (
+                                    <div className={`rounded-lg border p-2 ${s?.matched ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
+                                      <div className="text-[10px] text-gray-500">⑤ 共振判断</div>
+                                      <div className={`text-sm font-bold ${s?.matched ? 'text-emerald-700' : 'text-gray-400'}`}>
+                                        {s?.matched ? `✓ ${s.type || '匹配'}` : '✗ 未匹配'}
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+                                {/* ⑥ 门卫 */}
+                                {(() => {
+                                  const s = screeningData[stock.code]?.stages?.guard;
+                                  return (
+                                    <div className={`rounded-lg border p-2 ${s?.passed ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
+                                      <div className="text-[10px] text-gray-500">⑥ 门卫检查</div>
+                                      <div className={`text-sm font-bold ${s?.passed ? 'text-emerald-700' : 'text-red-700'}`}>
+                                        {s?.passed ? '✓ 通过' : `✗ ${s?.reason || '拒绝'}`}
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+                                {/* ⑦ 今日流水 */}
+                                {(() => {
+                                  const pipes = screeningData[stock.code]?.stages?.pipeline || [];
+                                  return (
+                                    <div className="rounded-lg border p-2 bg-gray-50 border-gray-200 col-span-2">
+                                      <div className="text-[10px] text-gray-500">⑦ 今日信号流水</div>
+                                      {pipes.length === 0 ? (
+                                        <div className="text-sm text-gray-400">无记录</div>
+                                      ) : (
+                                        <div className="space-y-0.5 mt-1">
+                                          {pipes.map((p: {timestamp?: string; source?: string; final_action?: string; final_reason?: string}, i: number) => (
+                                            <div key={i} className="text-[10px] flex items-center gap-1">
+                                              <span className="text-gray-400 font-mono">{p.timestamp?.slice(11, 16)}</span>
+                                              <span className={`px-1 rounded ${
+                                                p.final_action === 'executed' ? 'bg-emerald-200 text-emerald-700'
+                                                : p.final_action === 'rejected' ? 'bg-red-200 text-red-700'
+                                                : 'bg-amber-200 text-amber-700'
+                                              }`}>{p.final_action}</span>
+                                              <span className="text-gray-600 truncate">{p.final_reason}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-center py-4 text-gray-400 text-sm">无数据</div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+
                     {/* 折叠行：日内资金支撑/阻力位面板 */}
                     {levelsStock?.code === stock.code && (
                       <tr className="bg-gray-50 border-b border-gray-100 shadow-inner">
