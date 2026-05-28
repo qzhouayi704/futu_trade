@@ -274,17 +274,19 @@ def _get_ticker_strength(db, stock_code: str, trade_date: str) -> list:
 
 
 def _get_big_orders(db, stock_code: str, trade_date: str) -> list:
-    """获取大单记录"""
+    """获取大单追踪记录（聚合数据）"""
     rows = db.execute_query(
-        """SELECT timestamp, price, volume, turnover, direction
+        """SELECT timestamp, big_buy_count, big_sell_count,
+                  big_buy_amount, big_sell_amount, buy_sell_ratio, order_strength
            FROM big_order_tracking
            WHERE stock_code = ? AND DATE(timestamp) = ?
            ORDER BY timestamp ASC""",
         (stock_code, trade_date)
     )
     return [
-        {"time": r[0], "price": r[1], "volume": r[2],
-         "turnover": r[3], "direction": r[4]}
+        {"time": r[0], "buy_count": r[1], "sell_count": r[2],
+         "buy_amount": r[3], "sell_amount": r[4],
+         "ratio": r[5], "strength": r[6]}
         for r in rows
     ]
 
@@ -595,17 +597,16 @@ def _get_delta_history(db, stock_code: str, limit: int) -> list:
     # 先尝试专用表
     try:
         rows = db.execute_query(
-            """SELECT timestamp, delta_value, cumulative_delta,
-                      buy_volume, sell_volume
+            """SELECT created_at, delta, volume, period_seconds
                FROM scalping_delta_history
                WHERE stock_code = ?
-               ORDER BY timestamp DESC LIMIT ?""",
+               ORDER BY created_at DESC LIMIT ?""",
             (stock_code, limit)
         )
         if rows:
             result = [
-                {"time": r[0], "delta": r[1], "cum_delta": r[2],
-                 "buy_vol": r[3], "sell_vol": r[4]}
+                {"time": r[0], "delta": r[1], "volume": r[2],
+                 "period": r[3]}
                 for r in rows
             ]
             result.reverse()
