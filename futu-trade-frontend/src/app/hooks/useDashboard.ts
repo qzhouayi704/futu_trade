@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { systemApi, stockApi, tradeApi, strategyApi } from "@/lib/api";
 import type { Stats, PlateStrength, HighTurnoverStock } from "@/types/stock";
+import type { PositionCapitalFlow } from "@/types";
 
 export function useSystemStatus() {
   return useQuery({
@@ -121,5 +122,21 @@ export function useHighTurnoverStocks(limit: number = 5) {
       return r.success && r.data ? r.data.stocks || [] : [];
     },
     staleTime: 60000,
+  });
+}
+
+export function usePositionsCapitalFlow() {
+  return useQuery<PositionCapitalFlow[]>({
+    queryKey: ["positionsCapitalFlow"],
+    queryFn: async () => {
+      try {
+        const r = await tradeApi.getPositionsCapitalFlow();
+        return r.success && r.data ? r.data : [];
+      } catch {
+        return [];
+      }
+    },
+    staleTime: 15000,
+    refetchInterval: 15000,
   });
 }

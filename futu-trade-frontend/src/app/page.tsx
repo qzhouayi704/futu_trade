@@ -18,6 +18,7 @@ import {
   PlateAlertsCard,
   SniperCard,
   SimulatedTradeCard,
+  PositionFlowCard,
 } from "./components/dashboard";
 import { AlertsCard } from "./components/dashboard/AlertsCard";
 import {
@@ -27,6 +28,7 @@ import {
   useHotStocks,
   usePositions,
   useHighTurnoverStocks,
+  usePositionsCapitalFlow,
 } from "./hooks/useDashboard";
 import type { QuoteData } from "@/types/socket";
 
@@ -41,6 +43,7 @@ export default function Dashboard() {
   const { data: hotStocks = [], isLoading: hotStocksLoading, refetch: refetchHotStocks } = useHotStocks(5);
   const { data: highTurnoverStocks = [], isLoading: highTurnoverLoading } = useHighTurnoverStocks(5);
   const { data: positions = [], isLoading: positionsLoading, refetch: refetchPositions } = usePositions();
+  const { data: positionsCapitalFlow = [], isLoading: positionsCapitalFlowLoading, refetch: refetchPositionsCapitalFlow } = usePositionsCapitalFlow();
 
   // 启动监控 Modal
   const [startModalOpen, setStartModalOpen] = useState(false);
@@ -103,6 +106,7 @@ export default function Dashboard() {
     refetchSystemStatus();
     refetchHotStocks();
     refetchPositions();
+    refetchPositionsCapitalFlow();
     loadTradeSignals();
   };
 
@@ -157,6 +161,7 @@ export default function Dashboard() {
       // 设置新的定时器，2秒后执行
       positionsUpdateTimer = setTimeout(() => {
         refetchPositions();
+        refetchPositionsCapitalFlow();
       }, 2000);
     });
 
@@ -174,7 +179,7 @@ export default function Dashboard() {
         clearTimeout(positionsUpdateTimer);
       }
     };
-  }, [socket, refetchPositions, refetchSystemStatus]);
+  }, [socket, refetchPositions, refetchPositionsCapitalFlow, refetchSystemStatus]);
 
   return (
     <div className="container mx-auto px-3 md:px-4 py-4 md:py-6 max-w-7xl">
@@ -261,7 +266,10 @@ export default function Dashboard() {
       {/* 信号分组 + 持仓摘要 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
         <SignalTabs />
-        <PositionsCard positions={positions} loading={positionsLoading} />
+        <div className="space-y-4 md:space-y-6">
+          <PositionsCard positions={positions} loading={positionsLoading} />
+          <PositionFlowCard data={positionsCapitalFlow} loading={positionsCapitalFlowLoading} />
+        </div>
       </div>
     </div>
   );

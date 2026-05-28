@@ -109,3 +109,29 @@ export interface CreateLotTakeProfitRequest {
   take_profit_pct: number;
   take_profit_price: number;
 }
+
+export interface PositionCapitalFlow {
+  stock_code: string;
+  stock_name: string;
+  qty: number;
+  cost_price: number;
+  nominal_price: number;
+  market_val: number;
+  pl_val: number;
+  pl_ratio: number;
+  main_net_inflow: number;
+  net_inflow_ratio: number;
+  capital_score: number;
+  big_order_buy_ratio: number;
+  super_large_inflow: number;
+  super_large_outflow: number;
+  large_inflow: number;
+  large_outflow: number;
+  medium_inflow: number;
+  medium_outflow: number;
+  small_inflow: number;
+  small_outflow: number;
+  inflow_change: number;
+  has_flow_data: boolean;
+}
+

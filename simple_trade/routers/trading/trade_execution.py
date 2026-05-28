@@ -316,3 +316,74 @@ async def connect_trade_api(container=Depends(get_container)):
         },
         message=result['message']
     )
+
+
+@router.get("/positions/capital-flow", response_model=APIResponse)
+async def get_positions_capital_flow(container=Depends(get_container)):
+    """获取持仓股票的资金流向数据"""
+    trade_service = ensure_trade_service(container)
+
+    # 1. 获取持仓列表
+    result = await asyncio.to_thread(trade_service.get_positions)
+    if not result['success'] or not result.get('positions'):
+        return APIResponse(
+            success=True,
+            data=[],
+            message="无持仓数据",
+            meta={'count': 0}
+        )
+
+    positions = result['positions']
+    stock_codes = [p['stock_code'] for p in positions]
+
+    # 2. 批量获取资金流向（带缓存，60秒TTL）
+    capital_data = {}
+    try:
+        analyzer = container.capital_analyzer
+        if analyzer:
+            capital_data = await asyncio.to_thread(
+                analyzer.fetch_capital_flow_data,
+                stock_codes,
+                True,  # use_cache
+                60,    # cache_ttl
+            )
+    except Exception as e:
+        logging.warning(f"获取资金流向失败: {e}")
+
+    # 3. 合并持仓 + 资金流向
+    merged = []
+    for pos in positions:
+        code = pos['stock_code']
+        flow = capital_data.get(code, {})
+        merged.append({
+            'stock_code': code,
+            'stock_name': pos.get('stock_name', ''),
+            'qty': pos.get('qty', 0),
+            'cost_price': pos.get('cost_price', 0),
+            'nominal_price': pos.get('nominal_price', 0),
+            'market_val': pos.get('market_val', 0),
+            'pl_val': pos.get('pl_val', 0),
+            'pl_ratio': pos.get('pl_ratio', 0),
+            # 资金流向字段
+            'main_net_inflow': flow.get('main_net_inflow', 0),
+            'net_inflow_ratio': flow.get('net_inflow_ratio', 0),
+            'capital_score': flow.get('capital_score', 0),
+            'big_order_buy_ratio': flow.get('big_order_buy_ratio', 0),
+            'super_large_inflow': flow.get('super_large_inflow', 0),
+            'super_large_outflow': flow.get('super_large_outflow', 0),
+            'large_inflow': flow.get('large_inflow', 0),
+            'large_outflow': flow.get('large_outflow', 0),
+            'medium_inflow': flow.get('medium_inflow', 0),
+            'medium_outflow': flow.get('medium_outflow', 0),
+            'small_inflow': flow.get('small_inflow', 0),
+            'small_outflow': flow.get('small_outflow', 0),
+            'inflow_change': flow.get('inflow_change', 0),
+            'has_flow_data': bool(flow),
+        })
+
+    return APIResponse(
+        success=True,
+        data=merged,
+        message=f"获取 {len(merged)} 只持仓的资金流向",
+        meta={'count': len(merged)}
+    )

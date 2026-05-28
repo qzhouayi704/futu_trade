@@ -10,6 +10,7 @@ import type {
   OrderForm,
   PositionLot,
   TakeProfitTask,
+  PositionCapitalFlow,
 } from "@/types";
 
 export const tradeApi = {
@@ -44,6 +45,11 @@ export const tradeApi = {
     }>
   > => {
     return apiClient.get("/trading/positions/standalone");
+  },
+
+  // 获取持仓股票资金流向数据
+  getPositionsCapitalFlow: async (): Promise<ApiResponse<PositionCapitalFlow[]>> => {
+    return apiClient.get("/trading/positions/capital-flow");
   },
 
   // 获取交易记录
