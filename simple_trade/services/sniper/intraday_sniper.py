@@ -264,6 +264,32 @@ class IntradaySniper:
                         except Exception as e:
                             logger.debug(f"出货陷阱检测异常: {stock_code}: {e}")
 
+                    # 吸筹信号检测（镜像：买方机构+卖方散户）
+                    last_acc = self._stock_states.get(stock_code, {}).get('last_acc_idx', -999)
+                    if len(timeline) - last_acc >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
+                        try:
+                            from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
+                            bf = BrokerConsistencyFilter(self.container)
+                            acc_result = bf.check_accumulation_signal(stock_code, change_pct=0)
+                            if acc_result.is_trap and acc_result.trap_confidence >= 0.5:
+                                price = timeline[-1]['price'] if timeline else 0
+                                acc_sig = SniperSignal(
+                                    time=datetime.now().strftime("%H:%M"),
+                                    stock_code=stock_code,
+                                    stock_name=stock_name,
+                                    signal_type="accumulation_signal",
+                                    is_red=False,
+                                    price=price,
+                                    detail=f"主力吸筹(置信度{acc_result.trap_confidence:.0%}): {acc_result.reason}",
+                                    action="🟢 机构吸筹中，关注买入机会",
+                                    severity="high",
+                                )
+                                new_signals.append(acc_sig)
+                                if stock_code in self._stock_states:
+                                    self._stock_states[stock_code]['last_acc_idx'] = len(timeline)
+                        except Exception as e:
+                            logger.debug(f"吸筹检测异常: {stock_code}: {e}")
+
                 # 先更新 TOP 排行榜（用于过滤信号）
                 self._update_ranking(conn, watch_codes, today)
 

@@ -30,15 +30,16 @@ const TYPE_LABELS: Record<string, string> = {
   accel_in: "资金加速",
   sustained_out: "持续流出",
   distribution_trap: "出货陷阱",
+  accumulation_signal: "主力吸筹",
 };
 
 // 主信号 = 核心决策依据
-const PRIMARY_TYPES = new Set(["mega_buy", "mega_sell", "distribution_trap"]);
+const PRIMARY_TYPES = new Set(["mega_buy", "mega_sell", "distribution_trap", "accumulation_signal"]);
 // 确认信号 = 辅助佐证
 const CONFIRM_TYPES = new Set(["accel_in", "reversal_bull", "sustained_out", "reversal_bear"]);
 
 // 筛选标签：只展示主信号类型
-const FILTER_TYPES = ["mega_buy", "mega_sell", "distribution_trap"];
+const FILTER_TYPES = ["mega_buy", "mega_sell", "distribution_trap", "accumulation_signal"];
 
 // 时间字符串转分钟数
 function timeToMinutes(t: string): number {
@@ -162,9 +163,10 @@ export default function SniperSignalsPage() {
     const buyCount = cards.filter((c) => c.primary.signal_type === "mega_buy").length;
     const sellCount = cards.filter((c) => c.primary.signal_type === "mega_sell").length;
     const trapCount = cards.filter((c) => c.primary.signal_type === "distribution_trap").length;
+    const accCount = cards.filter((c) => c.primary.signal_type === "accumulation_signal").length;
     const stockSet = new Set(cards.map((c) => c.primary.stock_code));
     const withConfirm = cards.filter((c) => c.confirmCount > 0).length;
-    return { total: cards.length, buyCount, sellCount, trapCount, stockCount: stockSet.size, withConfirm };
+    return { total: cards.length, buyCount, sellCount, trapCount, accCount, stockCount: stockSet.size, withConfirm };
   }, [cards]);
 
   const toggleExpand = (key: string) => {
@@ -234,6 +236,12 @@ export default function SniperSignalsPage() {
         </Card>
         <Card>
           <div className="p-3 text-center">
+            <div className="text-2xl font-bold text-cyan-600">{stats.accCount}</div>
+            <div className="text-[11px] text-muted-foreground mt-1">🟢 主力吸筹</div>
+          </div>
+        </Card>
+        <Card>
+          <div className="p-3 text-center">
             <div className="text-2xl font-bold text-blue-600">{stats.stockCount}</div>
             <div className="text-[11px] text-muted-foreground mt-1">涉及个股</div>
           </div>
@@ -286,6 +294,10 @@ export default function SniperSignalsPage() {
                 active: "bg-amber-500 text-white shadow-sm",
                 inactive: "bg-amber-50 text-amber-600 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-400",
               },
+              accumulation_signal: {
+                active: "bg-cyan-500 text-white shadow-sm",
+                inactive: "bg-cyan-50 text-cyan-600 hover:bg-cyan-100 dark:bg-cyan-950/30 dark:text-cyan-400",
+              },
             };
             const colors = colorMap[type] || colorMap.mega_sell;
             return (
@@ -322,24 +334,31 @@ export default function SniperSignalsPage() {
             // 卡片颜色方案
             const isTrap = p.signal_type === "distribution_trap";
             const isBuy = p.signal_type === "mega_buy";
+            const isAcc = p.signal_type === "accumulation_signal";
 
             const bgColor = isTrap
               ? "bg-amber-50/80 border-amber-300/60 dark:bg-amber-950/30 dark:border-amber-800/40"
-              : p.is_red
-                ? "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-900/30"
-                : "bg-emerald-50/60 border-emerald-200/50 dark:bg-emerald-950/20 dark:border-emerald-900/30";
+              : isAcc
+                ? "bg-cyan-50/80 border-cyan-300/60 dark:bg-cyan-950/30 dark:border-cyan-800/40"
+                : p.is_red
+                  ? "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-900/30"
+                  : "bg-emerald-50/60 border-emerald-200/50 dark:bg-emerald-950/20 dark:border-emerald-900/30";
 
             const nameColor = isTrap
               ? "text-amber-700 dark:text-amber-400"
-              : p.is_red
-                ? "text-red-600 dark:text-red-400"
-                : "text-emerald-600 dark:text-emerald-400";
+              : isAcc
+                ? "text-cyan-700 dark:text-cyan-400"
+                : p.is_red
+                  ? "text-red-600 dark:text-red-400"
+                  : "text-emerald-600 dark:text-emerald-400";
 
             const badgeColor = isTrap
               ? "bg-amber-200/80 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300"
-              : p.is_red
-                ? "bg-red-200/70 text-red-700 dark:bg-red-900/50 dark:text-red-300"
-                : "bg-emerald-200/70 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300";
+              : isAcc
+                ? "bg-cyan-200/80 text-cyan-800 dark:bg-cyan-900/50 dark:text-cyan-300"
+                : p.is_red
+                  ? "bg-red-200/70 text-red-700 dark:bg-red-900/50 dark:text-red-300"
+                  : "bg-emerald-200/70 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300";
 
             const emoji = isTrap ? "⚠️" : p.emoji;
 

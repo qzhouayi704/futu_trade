@@ -241,6 +241,122 @@ class BrokerConsistencyFilter:
 
         return result
 
+    def check_accumulation_signal(
+        self,
+        stock_code: str,
+        change_pct: float = 0.0,
+    ) -> BrokerAnalysisResult:
+        """
+        检查经纪商席位分布，识别主力吸筹信号（出货陷阱的镜像）
+
+        当卖方以散户券商为主、买方以机构/清算通道为主时，
+        说明散户在恐慌抛售，机构在悄悄吸筹 → 看涨机会
+
+        Args:
+            stock_code: 股票代码
+            change_pct: 当日涨跌幅(%)
+
+        Returns:
+            BrokerAnalysisResult (is_trap=True表示检测到吸筹)
+        """
+        result = BrokerAnalysisResult(stock_code=stock_code)
+
+        if not self._futu_client:
+            return result
+
+        quote_ctx = getattr(self._futu_client, 'client', None)
+        if not quote_ctx:
+            return result
+
+        try:
+            self._ensure_subscription(stock_code, quote_ctx)
+
+            ret, bid_df, ask_df = quote_ctx.get_broker_queue(stock_code)
+            if ret != RET_OK:
+                return result
+
+            top_buyers = self._extract_unique_brokers(
+                bid_df, 'bid_broker_name', 'bid_broker_pos', top_n=10
+            )
+            top_sellers = self._extract_unique_brokers(
+                ask_df, 'ask_broker_name', 'ask_broker_pos', top_n=10
+            )
+
+            result.top_buyers = [b['name'] for b in top_buyers[:5]]
+            result.top_sellers = [s['name'] for s in top_sellers[:5]]
+            result.buyer_details = top_buyers[:8]
+            result.seller_details = top_sellers[:8]
+            result.total_bid_brokers = len(top_buyers)
+            result.total_ask_brokers = len(top_sellers)
+
+            # 镜像分类：买方机构密度 + 卖方散户密度
+            inst_buy = sum(1 for b in top_buyers if b['tag'] == '机构')
+            connect_buy = sum(1 for b in top_buyers if b['tag'] == '北水')
+            clearing_buy = sum(1 for b in top_buyers if b['tag'] == '清算通道')
+            retail_sell = sum(1 for s in top_sellers if s['tag'] == '散户')
+
+            result.institutional_sell_count = inst_buy + clearing_buy  # 复用字段记录机构买方数
+            result.retail_buy_count = retail_sell  # 复用字段记录散户卖方数
+
+            if len(top_sellers) > 0 and len(top_buyers) > 0:
+                smart_buy = inst_buy + clearing_buy + connect_buy
+                retail_sell_ratio = retail_sell / len(top_sellers) if top_sellers else 0
+
+                acc_score = 0.0
+
+                # 买方清算通道（对冲基金在吸筹）
+                if clearing_buy >= 2:
+                    acc_score += 0.35
+                elif clearing_buy >= 1:
+                    acc_score += 0.2
+
+                # 买方机构密度
+                if inst_buy >= 3:
+                    acc_score += 0.3
+                elif inst_buy >= 2:
+                    acc_score += 0.2
+                elif inst_buy >= 1:
+                    acc_score += 0.1
+
+                # 北水买入
+                if connect_buy >= 1:
+                    acc_score += 0.1
+
+                # 卖方散户密度
+                if retail_sell_ratio >= 0.5:
+                    acc_score += 0.3
+                elif retail_sell_ratio >= 0.3:
+                    acc_score += 0.15
+
+                # 跌幅加成（越跌越买=吸筹信号越强）
+                if change_pct < -5:
+                    acc_score += 0.2
+                elif change_pct < -2:
+                    acc_score += 0.1
+
+                result.trap_confidence = min(acc_score, 1.0)
+                result.is_trap = result.trap_confidence >= 0.5
+
+                if result.is_trap:
+                    smart_names = []
+                    for b in top_buyers:
+                        if b['tag'] in ('机构', '清算通道', '北水'):
+                            smart_names.append(f"{b['name']}({b['tag']})")
+                            if len(smart_names) >= 3:
+                                break
+                    retail_names = [s['name'] for s in top_sellers if s['tag'] == '散户'][:3]
+                    result.reason = (
+                        f"主力吸筹(置信度{result.trap_confidence:.0%})："
+                        f"买方专业资金[{','.join(smart_names)}]，"
+                        f"卖方散户[{','.join(retail_names)}]"
+                    )
+                    logger.info(f"[{stock_code}] 🟢 {result.reason}")
+
+        except Exception as e:
+            logger.debug(f"[{stock_code}] 吸筹检测异常: {e}")
+
+        return result
+
     def _ensure_subscription(self, stock_code: str, quote_ctx) -> None:
         """确保已订阅该股票的 BROKER 数据"""
         if stock_code in self._subscribed:

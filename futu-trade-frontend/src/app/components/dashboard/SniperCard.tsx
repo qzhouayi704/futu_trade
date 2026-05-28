@@ -100,9 +100,9 @@ export function SniperCard() {
   }, [socket]);
 
   const hasRanking = ranking.opportunity.length > 0 || ranking.risk.length > 0;
-  // 首页只展示巨量抢筹/砸盘/出货陷阱信号
+  // 首页只展示巨量抢筹/砸盘/出货陷阱/吸筹信号
   const recent = [...signals]
-    .filter((s) => s.signal_type === "mega_buy" || s.signal_type === "mega_sell" || s.signal_type === "distribution_trap")
+    .filter((s) => ["mega_buy", "mega_sell", "distribution_trap", "accumulation_signal"].includes(s.signal_type))
     .sort((a, b) => b.time.localeCompare(a.time))
     .slice(0, 6);
 
