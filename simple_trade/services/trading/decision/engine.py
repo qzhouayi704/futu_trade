@@ -369,6 +369,19 @@ class UnifiedTradeDecisionEngine:
                 if veto:
                     return {'passed': False, 'reason': f"[否决] {veto}"}
 
+            # 4. 出货陷阱检测
+            try:
+                from ...services.analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
+                bf = BrokerConsistencyFilter(self.container)
+                trap_result = bf.check_distribution_trap(stock_code, change_pct=0)
+                if trap_result.is_trap:
+                    return {
+                        'passed': False,
+                        'reason': f"[出货陷阱] 置信度{trap_result.trap_confidence:.0%}: {trap_result.reason}"
+                    }
+            except Exception as e:
+                logger.debug(f"[DecisionEngine] 出货陷阱检测异常(放行): {e}")
+
             return {'passed': True, 'reason': ''}
 
         except Exception as e:

@@ -237,6 +237,33 @@ class IntradaySniper:
                     )
                     new_signals.extend(signals)
 
+                    # 出货陷阱检测（每只股票每15分钟最多触发一次）
+                    trap_cooldown_key = f"trap:{stock_code}"
+                    last_trap = self._stock_states.get(stock_code, {}).get('last_trap_idx', -999)
+                    if len(timeline) - last_trap >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
+                        try:
+                            from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
+                            bf = BrokerConsistencyFilter(self.container)
+                            trap_result = bf.check_distribution_trap(stock_code, change_pct=0)
+                            if trap_result.is_trap and trap_result.trap_confidence >= 0.5:
+                                price = timeline[-1]['price'] if timeline else 0
+                                trap_sig = SniperSignal(
+                                    time=datetime.now().strftime("%H:%M"),
+                                    stock_code=stock_code,
+                                    stock_name=stock_name,
+                                    signal_type="distribution_trap",
+                                    is_red=True,
+                                    price=price,
+                                    detail=f"出货陷阱(置信度{trap_result.trap_confidence:.0%}): {trap_result.reason}",
+                                    action="⚠️ 警惕主力出货，不宜追买",
+                                    severity="high",
+                                )
+                                new_signals.append(trap_sig)
+                                if stock_code in self._stock_states:
+                                    self._stock_states[stock_code]['last_trap_idx'] = len(timeline)
+                        except Exception as e:
+                            logger.debug(f"出货陷阱检测异常: {stock_code}: {e}")
+
                 # 先更新 TOP 排行榜（用于过滤信号）
                 self._update_ranking(conn, watch_codes, today)
 

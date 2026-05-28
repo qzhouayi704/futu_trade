@@ -29,6 +29,7 @@ const TYPE_LABELS: Record<string, string> = {
   reversal_bull: "资金转正",
   accel_in: "资金加速",
   sustained_out: "持续流出",
+  distribution_trap: "出货陷阱",
 };
 
 const ALL_TYPES = Object.keys(TYPE_LABELS);
