@@ -331,7 +331,7 @@ class AsyncQuotePusher:
             from ...services.strategy.stock_scorer import StockScorer, PASSING_SCORE
 
             db = self.container.db_manager
-            scorer = StockScorer()
+            scorer = getattr(self.container, 'stock_scorer', None) or StockScorer()
             scored_alerts = []
 
             for anomaly in anomalies:
