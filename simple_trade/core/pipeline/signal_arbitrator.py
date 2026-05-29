@@ -30,13 +30,17 @@ class SignalArbitrator:
     SOURCE_PRIORITY = {
         # P0: 自动风控卖出（最高优先级）
         'intraday_risk': 0,
-        # P1: 资金流卖出/警告类信号
+        # P1: 真正的资金流卖出信号（R2主力净流出/R7跌破VWAP/R13日内波段高抛）
         'capital_flow_sell': 1,
-        # P2: 资金流买入类信号
-        'capital_flow_buy': 2,
+        # P2: 买入质量警告（R3流入不足/R4资金转正力度弱/R10量价背离）
+        #     不压制BUY，而是附加为 risk_notes 供 DecisionEngine 参考
+        'capital_flow_buy_warning': 2,
         # P3: 策略信号
         'strategy': 3,
     }
+
+    # 买入质量警告规则（P2）：这些规则的 SELL/ALERT 不应压制 BUY
+    _BUY_QUALITY_WARNING_RULES = {'r3', 'r4', 'r10'}
 
     def arbitrate(self, signals: List[Dict]) -> List[Dict]:
         """
@@ -84,30 +88,58 @@ class SignalArbitrator:
             return signals
 
         # 有矛盾：同一股票同时出现 SELL/ALERT 和 BUY
-        # 判断卖出信号中是否有高优先级来源
-        has_high_priority_sell = any(
-            self._get_priority(sig) <= 1  # P0/P1 only (风控卖出+资金流卖出)
-            for sig in sell_alerts
-        )
+        # 区分 P0/P1（真正的卖出信号）和 P2（买入质量警告）
+        p0_p1_sells: List[Dict] = []
+        p2_warnings: List[Dict] = []
 
-        if has_high_priority_sell:
-            # 压制所有 BUY 信号
+        for sig in sell_alerts:
+            priority = self._get_priority(sig)
+            if priority <= 1:
+                p0_p1_sells.append(sig)
+            else:
+                p2_warnings.append(sig)
+
+        if p0_p1_sells:
+            # 存在真正的高优先级卖出信号（P0/P1）→ 压制所有 BUY
             suppressed_count = len(buy_signals)
-            sell_reasons = [s.get('reason', '')[:30] for s in sell_alerts[:2]]
+            sell_reasons = [s.get('reason', '')[:30] for s in p0_p1_sells[:2]]
 
             logger.warning(
                 f"[{stock_code}] 信号仲裁：压制 {suppressed_count} 个 BUY 信号，"
-                f"因存在高优先级卖出/警告信号: {sell_reasons}"
+                f"因存在高优先级卖出/警告信号(P0/P1): {sell_reasons}"
             )
 
             # 保留卖出/警告 + 其他，丢弃买入
             return sell_alerts + other_signals
+        elif p2_warnings:
+            # 仅有 P2 买入质量警告 → 不压制 BUY，但将警告附加到 BUY 信号
+            risk_notes = [w.get('reason', '') for w in p2_warnings]
+            risk_rules = [self._extract_rule_id(w) for w in p2_warnings]
+
+            for buy_sig in buy_signals:
+                buy_sig['risk_notes'] = risk_notes
+                buy_sig['risk_rules'] = risk_rules
+
+            logger.info(
+                f"[{stock_code}] 信号仲裁：放行 {len(buy_signals)} 个 BUY 信号，"
+                f"附加 {len(p2_warnings)} 条买入质量警告(P2): "
+                f"{[r[:25] for r in risk_notes[:2]]}"
+            )
+
+            # 保留 BUY（带 risk_notes）+ 其他，移除 P2 警告（已合并到 BUY 中）
+            return buy_signals + other_signals
         else:
-            # 低优先级的卖出信号不足以压制买入，全部保留
+            # 无高优先级信号，全部保留
             return signals
 
     def _get_priority(self, signal: Dict) -> int:
-        """获取信号的优先级（0=最高）"""
+        """获取信号的优先级（0=最高）
+
+        P0: IntradayRiskManager 自动卖出 — 不可覆盖
+        P1: 资金流真正的卖出信号（R2主力净流出/R7跌破VWAP/R13日内波段高抛）
+        P2: 买入质量警告（R3流入不足/R4资金转正/R10量价背离）— 不压制BUY
+        P3: 策略信号
+        """
         source = signal.get('source', '')
         sig_type = signal.get('signal_type', '').upper()
 
@@ -115,12 +147,28 @@ class SignalArbitrator:
         if 'risk' in source.lower() or signal.get('message', '') in ('触发自动止损', '触发自动半仓止盈', '触发大单逃顶卖出'):
             return 0
 
-        # 资金流信号
+        # 资金流信号 — 区分真正卖出(P1)和买入质量警告(P2)
         if 'capital_flow' in source or 'flow_signal' in signal.get('action', ''):
+            rule_id = self._extract_rule_id(signal)
+            if rule_id in self._BUY_QUALITY_WARNING_RULES:
+                return 2  # P2: 买入质量警告，不压制 BUY
             if sig_type in ('SELL', 'ALERT'):
-                return 1
+                return 1  # P1: 真正的卖出信号
             else:
-                return 2
+                return 2  # 其他资金流信号
 
         # 策略信号
         return 3
+
+    @staticmethod
+    def _extract_rule_id(signal: Dict) -> str:
+        """从信号中提取 rule_id（小写）"""
+        # 优先从 flow_signal_detail 获取
+        detail = signal.get('flow_signal_detail', {})
+        if detail and detail.get('rule_id'):
+            return detail['rule_id'].lower()
+        # 从 action 字段提取: flow_signal_r3 → r3
+        action = signal.get('action', '')
+        if action.startswith('flow_signal_'):
+            return action.replace('flow_signal_', '')
+        return ''
