@@ -6,6 +6,12 @@ import { useState, useEffect, useCallback } from "react";
 import { Card } from "@/components/common";
 import apiClient from "@/lib/api/client";
 
+interface SniperSignalItem {
+  type: string; // mega_buy | mega_sell
+  time: string;
+  detail: string;
+}
+
 interface OvernightItem {
   stock_code: string;
   stock_name: string;
@@ -21,6 +27,7 @@ interface OvernightItem {
   net_inflow_ratio: number;
   big_order_ratio: number;
   volume_ratio: number;
+  sniper_signals: SniperSignalItem[];
 }
 
 export function OvernightScreenCard() {
@@ -163,6 +170,23 @@ export function OvernightScreenCard() {
 
                 {/* 第二行：实时数据指标 */}
                 <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                  {/* 巨量抢筹/砸盘信号 */}
+                  {item.sniper_signals && item.sniper_signals.length > 0 && item.sniper_signals.map((sig, si) => {
+                    const isBuy = sig.type === 'mega_buy';
+                    return (
+                      <span
+                        key={si}
+                        className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold border ${
+                          isBuy
+                            ? 'bg-emerald-100 border-emerald-300 text-emerald-700'
+                            : 'bg-red-100 border-red-300 text-red-700'
+                        }`}
+                        title={sig.detail}
+                      >
+                        {isBuy ? '🟢 巨量抢筹' : '🔴 巨量砸盘'} {sig.time}
+                      </span>
+                    );
+                  })}
                   {/* 实时涨跌 */}
                   <div className="flex items-center gap-0.5">
                     <span className="text-[9px] text-gray-400">涨跌</span>

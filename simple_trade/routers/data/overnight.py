@@ -569,7 +569,27 @@ async def get_dashboard_data(container=Depends(get_container)):
         except Exception as e:
             logger.debug(f"[盘后Dashboard] 查资金/大单失败: {e}")
 
-        # 4. 聚合输出
+        # 4. 查询狙击手信号（巨量抢筹/砸盘）
+        sniper_map = {}  # stock_code -> [{'type': 'mega_buy'|'mega_sell', 'time': 'HH:MM', 'detail': '...'}]
+        try:
+            sniper = getattr(container, 'intraday_sniper', None)
+            if sniper:
+                all_signals = sniper.get_today_signals()
+                for sig in all_signals:
+                    if sig.get('signal_type') in ('mega_buy', 'mega_sell'):
+                        code_s = sig.get('stock_code', '')
+                        if code_s in set(codes):
+                            if code_s not in sniper_map:
+                                sniper_map[code_s] = []
+                            sniper_map[code_s].append({
+                                'type': sig['signal_type'],
+                                'time': sig.get('time', ''),
+                                'detail': sig.get('detail', ''),
+                            })
+        except Exception as e:
+            logger.debug(f"[盘后Dashboard] 查狙击手信号失败: {e}")
+
+        # 5. 聚合输出
         items = []
         for c in candidates:
             code = c.get('stock_code', '')
@@ -605,6 +625,7 @@ async def get_dashboard_data(container=Depends(get_container)):
                 'net_inflow_ratio': net_ratio,
                 'big_order_ratio': round(bo_ratio, 2) if bo_ratio else 0,
                 'volume_ratio': quote.get('volume_ratio', 0),
+                'sniper_signals': sniper_map.get(code, []),
             })
 
         return APIResponse(
