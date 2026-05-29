@@ -41,8 +41,7 @@ export interface SmartPickResult {
 export async function smartPickStocks(
   stocks: SmartPickStock[]
 ): Promise<{ success: boolean; data?: SmartPickResult; message?: string }> {
-  const res = await apiClient.post("/api/ai-analysis/smart-pick", {
+  return apiClient.post("/ai-analysis/smart-pick", {
     stocks,
-  });
-  return res.data;
+  }, { timeout: 120000 });
 }
