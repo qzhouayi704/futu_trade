@@ -86,7 +86,7 @@ class SignalArbitrator:
         # 有矛盾：同一股票同时出现 SELL/ALERT 和 BUY
         # 判断卖出信号中是否有高优先级来源
         has_high_priority_sell = any(
-            self._get_priority(sig) <= 2  # P0/P1/P2
+            self._get_priority(sig) <= 1  # P0/P1 only (风控卖出+资金流卖出)
             for sig in sell_alerts
         )
 
