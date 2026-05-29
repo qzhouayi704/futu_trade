@@ -12,6 +12,7 @@ import { formatPrice, formatPercent, formatTime } from "@/lib/utils";
 import type { TopHotStock, TickerSummary, CapitalFlowSummary } from "@/types";
 import { analyzeStock, batchAnalyze, type QuickScanResult, type QuickScanRequest } from "@/lib/api/quick-scan";
 import { flowSignalApi, type FlowSignalMap, type TradeSignalMap } from "@/lib/api/flow-signal";
+import { smartPickStocks, type SmartPickResult, type SmartPickItem } from "@/lib/api/ai-smart-pick";
 
 import { IntradayLevelsPanel } from "@/app/market-scan/components/IntradayLevelsPanel";
 import { AIAnalysisButton } from "@/app/components/AIAnalysisDialog";
@@ -165,6 +166,12 @@ export default function MarketScanPanel() {
   const [screeningStock, setScreeningStock] = useState<string | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [screeningData, setScreeningData] = useState<Record<string, any>>({});
+
+  // AI 智选
+  const [smartPickOpen, setSmartPickOpen] = useState(false);
+  const [smartPickLoading, setSmartPickLoading] = useState(false);
+  const [smartPickResult, setSmartPickResult] = useState<SmartPickResult | null>(null);
+  const [smartPickError, setSmartPickError] = useState<string | null>(null);
   const [screeningLoading, setScreeningLoading] = useState<string | null>(null);
 
   // ==================== 数据加载 ====================
@@ -599,6 +606,50 @@ export default function MarketScanPanel() {
           <Button
             size="sm"
             variant="secondary"
+            loading={smartPickLoading}
+            onClick={async () => {
+              setSmartPickOpen(true);
+              setSmartPickLoading(true);
+              setSmartPickError(null);
+              setSmartPickResult(null);
+              try {
+                const payload = displayStocks.map((s) => ({
+                  code: s.code,
+                  name: s.name,
+                  change_rate: getChangeRate(s),
+                  turnover_rate: getTurnoverRate(s),
+                  turnover: getTurnover(s),
+                  volume_ratio: s.volume_ratio || 0,
+                  amplitude: s.amplitude || 0,
+                  capital_signal: s.capital_signal || "",
+                  capital_score: s.capital_flow_summary?.capital_score ?? 0,
+                  main_net_inflow: s.capital_flow_summary?.main_net_inflow ?? 0,
+                  big_order_buy_ratio: s.capital_flow_summary?.big_order_buy_ratio ?? 0,
+                  ticker_buy_sell_ratio: s.ticker_summary?.buy_sell_ratio ?? 0,
+                  consensus_score: s.consensus?.total_score ?? 0,
+                  consensus_verdict: s.consensus?.verdict_label ?? "",
+                  is_position: s.is_position,
+                }));
+                const res = await smartPickStocks(payload);
+                if (res.success && res.data) {
+                  setSmartPickResult(res.data);
+                } else {
+                  setSmartPickError(res.message || "AI 智选失败");
+                }
+              } catch (err: unknown) {
+                setSmartPickError(err instanceof Error ? err.message : "请求失败");
+              } finally {
+                setSmartPickLoading(false);
+              }
+            }}
+            className="flex items-center gap-1 bg-gradient-to-r from-violet-500 to-indigo-600 text-white hover:from-violet-600 hover:to-indigo-700 border-0 shadow-md"
+          >
+            <i className="fas fa-robot" />
+            AI 智选
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
             loading={refiltering}
             onClick={async () => {
               setRefiltering(true);
@@ -607,7 +658,6 @@ export default function MarketScanPanel() {
                 const res = await stockApi.refilterActivity();
                 if (res.success) {
                   showToast("success", "筛选已启动", res.message || "正在后台重新筛选活跃股，完成后将自动刷新");
-                  // 安全超时：5分钟后无论如何恢复状态（防止 WS 断连时卡死）
                   setTimeout(() => {
                     setRefiltering(false);
                     refilteringRef.current = false;
@@ -1346,6 +1396,152 @@ export default function MarketScanPanel() {
         </div>
       </Card>
 
+      {/* AI 智选结果弹窗 */}
+      {smartPickOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setSmartPickOpen(false)}>
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-[600px] max-h-[85vh] overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-violet-50 to-indigo-50">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shadow-md">
+                  <i className="fas fa-robot text-white text-sm" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-900">AI 智选</h3>
+                  <p className="text-xs text-gray-500">Claude · 从 {displayStocks.length} 只股票中筛选</p>
+                </div>
+              </div>
+              <button onClick={() => setSmartPickOpen(false)} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors">
+                <i className="fas fa-times" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+              {/* Loading */}
+              {smartPickLoading && (
+                <div className="flex flex-col items-center justify-center py-16 text-gray-500">
+                  <div className="w-12 h-12 border-3 border-violet-200 border-t-violet-600 rounded-full animate-spin mb-4" />
+                  <p className="text-sm font-medium">Claude 正在分析 {displayStocks.length} 只股票...</p>
+                  <p className="text-xs text-gray-400 mt-1">首次分析可能需要 15-30 秒</p>
+                </div>
+              )}
+
+              {/* Error */}
+              {smartPickError && !smartPickLoading && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-center">
+                  <i className="fas fa-exclamation-triangle text-red-500 text-2xl mb-2" />
+                  <p className="text-sm text-red-700 font-medium">{smartPickError}</p>
+                </div>
+              )}
+
+              {/* Result */}
+              {smartPickResult && !smartPickLoading && (
+                <>
+                  {/* Market Summary */}
+                  {smartPickResult.market_summary && (
+                    <div className="bg-gray-50 rounded-xl p-3 text-sm text-gray-600 flex items-center gap-2">
+                      <i className="fas fa-chart-line text-indigo-500" />
+                      {smartPickResult.market_summary}
+                    </div>
+                  )}
+
+                  {/* Skip Reason */}
+                  {smartPickResult.picks.length === 0 && smartPickResult.skip_reason && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+                      <i className="fas fa-info-circle text-amber-500 text-2xl mb-2" />
+                      <p className="text-sm text-amber-700">{smartPickResult.skip_reason}</p>
+                    </div>
+                  )}
+
+                  {/* Pick Cards */}
+                  {smartPickResult.picks.map((pick, idx) => {
+                    const isStrong = pick.action === "STRONG_BUY";
+                    return (
+                      <div
+                        key={pick.code}
+                        className={`rounded-xl border-2 p-4 transition-all hover:shadow-md ${
+                          isStrong
+                            ? "border-red-300 bg-gradient-to-r from-red-50 to-orange-50"
+                            : "border-indigo-200 bg-gradient-to-r from-indigo-50 to-blue-50"
+                        }`}
+                      >
+                        {/* Top row */}
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-lg font-extrabold ${isStrong ? "text-red-600" : "text-indigo-600"}`}>
+                              #{idx + 1}
+                            </span>
+                            <div>
+                              <span className="font-bold text-gray-900">{pick.name}</span>
+                              <span className="text-xs text-gray-400 ml-1.5">{pick.code}</span>
+                            </div>
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${
+                              isStrong ? "bg-red-600 text-white" : "bg-indigo-600 text-white"
+                            }`}>
+                              {isStrong ? "强烈推荐" : "推荐买入"}
+                            </span>
+                          </div>
+                          {/* Confidence */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-gray-400">置信度</span>
+                            <span className={`text-sm font-bold ${pick.confidence >= 70 ? "text-red-600" : pick.confidence >= 50 ? "text-amber-600" : "text-gray-600"}`}>
+                              {pick.confidence}%
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Reasoning */}
+                        <p className="text-sm text-gray-700 mb-2">{pick.reasoning}</p>
+
+                        {/* Key Signal + Risk */}
+                        <div className="flex flex-wrap gap-2 text-xs">
+                          {pick.key_signal && (
+                            <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">
+                              🔑 {pick.key_signal}
+                            </span>
+                          )}
+                          {pick.risk && (
+                            <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">
+                              ⚠️ {pick.risk}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Target/StopLoss */}
+                        {(pick.target_price || pick.stop_loss_price) && (
+                          <div className="flex gap-3 mt-2 text-xs">
+                            {pick.target_price && (
+                              <span className="text-red-600">目标价: <b>{pick.target_price}</b></span>
+                            )}
+                            {pick.stop_loss_price && (
+                              <span className="text-green-600">止损价: <b>{pick.stop_loss_price}</b></span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Quick Action */}
+                        <div className="flex justify-end mt-2">
+                          <button
+                            className="text-xs text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 px-2 py-1 rounded transition-colors"
+                            onClick={() => window.open(`/stock-detail?code=${pick.code}`, '_blank')}
+                          >
+                            <i className="fas fa-external-link-alt mr-1" />
+                            查看详情
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

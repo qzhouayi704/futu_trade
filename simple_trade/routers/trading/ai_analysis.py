@@ -663,3 +663,243 @@ def _get_sniper_data(container, stock_code: str) -> dict:
         logger.debug(f"获取 {stock_code} 狙击手数据失败: {e}")
 
     return result
+
+
+# ==================== AI 智选 ====================
+
+from pydantic import BaseModel
+from typing import List, Optional as Opt
+
+
+class SmartPickStockItem(BaseModel):
+    """前端传入的单只股票数据"""
+    code: str
+    name: str
+    change_rate: float = 0
+    turnover_rate: float = 0
+    turnover: float = 0
+    volume_ratio: float = 0
+    amplitude: float = 0
+    capital_signal: str = ""
+    capital_score: float = 0
+    main_net_inflow: float = 0
+    big_order_buy_ratio: float = 0
+    ticker_buy_sell_ratio: float = 0
+    consensus_score: float = 0
+    consensus_verdict: str = ""
+    is_position: bool = False
+
+
+class SmartPickRequest(BaseModel):
+    """AI 智选请求"""
+    stocks: List[SmartPickStockItem]
+
+
+SMART_PICK_SYSTEM_PROMPT = """# 角色
+你是一位资深的港股/美股短线量化交易师。你的任务是从一组活跃股票中，筛选出最值得短线买入的标的。
+
+# 分析方法
+1. **资金优先**：资金流入（capital_score高、主力净流入正、大单买入占比高）的股票优先
+2. **趋势确认**：涨跌幅合理（不追高位暴涨股）、换手率适中（2-15%最佳）、量比放大
+3. **交叉验证**：资金流入 + 价格上涨 = 健康；资金流入 + 价格下跌 = 可能洗盘（关注）
+4. **风险排除**：一票否决触发的不选、capital_score极低的不选、暴涨超5%慎选
+
+# 选股标准（按优先级）
+- 🥇 资金评分 ≥ 60 + 涨幅温和(0~3%) + 换手率 3~10% → 最佳
+- 🥈 大单买卖比 ≥ 1.5 + 量比放大 + 评分通过 → 良好
+- 🥉 资金转正 + 低位反弹 + 板块强势 → 可关注
+
+# 输出要求
+1. 最多选出 **5 只** 最值得买入的股票
+2. 如果没有任何股票值得买入，返回空列表并说明原因
+3. 严格输出 JSON 格式，所有文本使用简体中文
+4. picks 数组中按推荐优先级排序（最推荐的在前）
+
+```json
+{
+  "picks": [
+    {
+      "code": "股票代码",
+      "name": "股票名称",
+      "action": "STRONG_BUY" | "BUY",
+      "confidence": 0-100,
+      "reasoning": "简短买入理由（不超过100字）",
+      "key_signal": "最关键的一个信号",
+      "risk": "主要风险点",
+      "target_price": null,
+      "stop_loss_price": null
+    }
+  ],
+  "market_summary": "一句话总结当前市场整体状态",
+  "skip_reason": "如果没有推荐，说明原因"
+}
+```"""
+
+
+@router.post("/smart-pick", response_model=APIResponse)
+async def smart_pick(
+    req: SmartPickRequest,
+    container=Depends(get_container),
+):
+    """AI 智选：从页面股票中筛选最值得买入的标的"""
+    if not req.stocks:
+        return APIResponse(success=False, message="未提供股票数据")
+
+    # 获取 Claude 配置
+    claude_cfg = container.config.claude
+    if not claude_cfg or not claude_cfg.get('enabled') or not claude_cfg.get('api_key'):
+        return APIResponse(success=False, message="Claude AI 未配置，请设置 CLAUDE_API_KEY 环境变量")
+
+    try:
+        # 构建 prompt
+        prompt = _build_smart_pick_prompt(req.stocks)
+        logger.info(f"[AI智选] 收到 {len(req.stocks)} 只股票，Prompt 长度: {len(prompt)}")
+
+        # 调用 Claude
+        response = await _call_claude_for_smart_pick(claude_cfg, prompt)
+        if not response:
+            return APIResponse(success=False, message="Claude API 调用失败")
+
+        # 解析结果
+        result = _parse_smart_pick_response(response)
+        if result is None:
+            return APIResponse(success=False, message="AI 响应解析失败")
+
+        logger.info(f"[AI智选] 完成，推荐 {len(result.get('picks', []))} 只股票")
+        return APIResponse(success=True, data=result, message=f"AI 推荐 {len(result.get('picks', []))} 只标的")
+
+    except Exception as e:
+        logger.error(f"[AI智选] 异常: {e}", exc_info=True)
+        return APIResponse(success=False, message=f"AI 智选异常: {str(e)}")
+
+
+def _build_smart_pick_prompt(stocks: List[SmartPickStockItem]) -> str:
+    """构建批量智选的 prompt"""
+    from datetime import datetime
+    prompt = f"# 待分析股票池（{len(stocks)} 只）\n"
+    prompt += f"分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+
+    prompt += "| # | 代码 | 名称 | 涨跌% | 换手% | 成交额 | 量比 | 资金评分 | 主力净流入 | 大单买比 | 力量比 | 综合评分 | 判定 | 持仓 |\n"
+    prompt += "|---|------|------|-------|-------|--------|------|---------|-----------|---------|-------|---------|------|------|\n"
+
+    for i, s in enumerate(stocks, 1):
+        turnover_str = f"{s.turnover/1e8:.2f}亿" if s.turnover >= 1e8 else f"{s.turnover/1e4:.0f}万"
+        inflow_str = f"{s.main_net_inflow/1e4:+.0f}万" if s.main_net_inflow else "0"
+        prompt += (
+            f"| {i} | {s.code} | {s.name} | {s.change_rate:+.2f} | {s.turnover_rate:.1f} | "
+            f"{turnover_str} | {s.volume_ratio:.1f} | {s.capital_score:.0f} | {inflow_str} | "
+            f"{s.big_order_buy_ratio:.2f} | {s.ticker_buy_sell_ratio:.2f} | "
+            f"{s.consensus_score:.0f} | {s.consensus_verdict or '-'} | "
+            f"{'✓' if s.is_position else ''} |\n"
+        )
+
+    prompt += "\n请根据以上数据，筛选出最值得短线买入的股票。\n"
+    return prompt
+
+
+async def _call_claude_for_smart_pick(claude_cfg, prompt: str) -> Opt[str]:
+    """调用 Claude API 进行智选分析"""
+    import json
+    import urllib.request
+    import urllib.error
+
+    base_url = claude_cfg.get('base_url', 'https://vtok.ai').rstrip('/')
+    api_key = claude_cfg.get('api_key', '')
+    model = claude_cfg.get('model', 'claude-sonnet-4-20250514')
+    timeout = claude_cfg.get('timeout', 90)
+    max_retries = claude_cfg.get('max_retries', 3)
+    api_format = claude_cfg.get('api_format', 'openai')
+
+    for attempt in range(max_retries):
+        try:
+            if api_format == 'anthropic':
+                url = f"{base_url}/v1/messages"
+                payload = {
+                    "model": model,
+                    "max_tokens": 4096,
+                    "system": SMART_PICK_SYSTEM_PROMPT,
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+                headers = {
+                    "Content-Type": "application/json",
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                }
+            else:
+                url = f"{base_url}/v1/chat/completions"
+                payload = {
+                    "model": model,
+                    "max_tokens": 4096,
+                    "messages": [
+                        {"role": "system", "content": SMART_PICK_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                }
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                }
+
+            data = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: urllib.request.urlopen(req, timeout=timeout)
+            )
+            result = json.loads(response.read().decode('utf-8'))
+
+            if api_format == 'anthropic':
+                content = result.get('content', [])
+                if content and isinstance(content, list):
+                    return content[0].get('text', '').strip()
+            else:
+                choices = result.get('choices', [])
+                if choices:
+                    return choices[0].get('message', {}).get('content', '').strip()
+
+            return None
+
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            status = getattr(e, 'code', 0)
+            if status in (429, 503, 529) and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                logger.warning(f"[AI智选] Claude API 暂不可用 (attempt {attempt+1})，{wait}s 后重试")
+                await asyncio.sleep(wait)
+                continue
+            logger.error(f"[AI智选] Claude API 调用失败: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"[AI智选] Claude API 异常: {e}")
+            return None
+
+
+def _parse_smart_pick_response(response: str) -> Opt[dict]:
+    """解析 AI 智选响应"""
+    import json
+    try:
+        json_str = response
+        if "```json" in response:
+            json_str = response.split("```json")[1].split("```")[0].strip()
+        elif "```" in response:
+            json_str = response.split("```")[1].split("```")[0].strip()
+
+        data = json.loads(json_str)
+
+        # 标准化
+        picks = data.get('picks', [])
+        for p in picks:
+            if p.get('action') not in ('STRONG_BUY', 'BUY'):
+                p['action'] = 'BUY'
+            p['confidence'] = min(100, max(0, int(p.get('confidence', 50))))
+
+        return {
+            'picks': picks[:5],
+            'market_summary': data.get('market_summary', ''),
+            'skip_reason': data.get('skip_reason', ''),
+        }
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error(f"[AI智选] 响应解析失败: {e}, response={response[:300]}")
+        return None
+
