@@ -139,6 +139,7 @@ export default function Dashboard() {
             created_at: a.timestamp,
             is_executed: false,
             reason: a.reason,
+            risk_notes: a.risk_notes || null,
           }));
           // 合并并去重（同 stock_code + signal_type 保留最新），最多保留 30 条
           const merged = [...newSignals, ...prev];
