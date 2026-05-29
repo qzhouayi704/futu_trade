@@ -4,7 +4,6 @@ const FLASK_API_URL = process.env.FLASK_API_URL || "http://127.0.0.1:5001";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  output: "standalone",
 
   async rewrites() {
     return [
