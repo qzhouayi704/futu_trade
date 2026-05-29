@@ -698,22 +698,37 @@ class SmartPickRequest(BaseModel):
 SMART_PICK_SYSTEM_PROMPT = """# 角色
 你是一位资深的港股/美股短线量化交易师。你的任务是从一组活跃股票中，筛选出最值得短线买入的标的。
 
+# 数据说明
+你将收到每只股票的以下信息：
+- **基础行情**：涨跌幅、换手率、成交额、量比、振幅
+- **资金数据**：资金评分、主力净流入、大单买入占比、逐笔力量比
+- **K线趋势**：5日/10日涨幅、20日位置（0=最低点, 100=最高点）
+- **评分系统**：多策略评分（趋势/突破/动量）、是否通过
+- **大单追踪**：近30分钟主力方向、买卖强度
+- **日内资金流**：当日大单净流入/流出
+- **狙击手信号**：机会/风险排行、今日信号
+- **持仓信息**：成本价、盈亏比例（如为持仓股）
+- **所属板块**：行业板块归属
+
 # 分析方法
-1. **资金优先**：资金流入（capital_score高、主力净流入正、大单买入占比高）的股票优先
-2. **趋势确认**：涨跌幅合理（不追高位暴涨股）、换手率适中（2-15%最佳）、量比放大
+1. **资金优先**：资金流入（capital_score高、主力净流入正、大单买入占比高、大单追踪显示"主力买入"）的股票优先
+2. **趋势确认**：涨跌幅合理（不追高位暴涨股）、换手率适中（2-15%最佳）、量比放大、20日位置适中
 3. **交叉验证**：资金流入 + 价格上涨 = 健康；资金流入 + 价格下跌 = 可能洗盘（关注）
-4. **风险排除**：一票否决触发的不选、capital_score极低的不选、暴涨超5%慎选
+4. **评分系统**：评分通过且分数高的优先，多策略均通过更好
+5. **狙击手确认**：在机会排行中的股票加分，在风险排行中的减分
+6. **风险排除**：一票否决触发的不选、capital_score极低的不选、暴涨超5%慎选、大单追踪显示"主力卖出"慎选
 
 # 选股标准（按优先级）
-- 🥇 资金评分 ≥ 60 + 涨幅温和(0~3%) + 换手率 3~10% → 最佳
-- 🥈 大单买卖比 ≥ 1.5 + 量比放大 + 评分通过 → 良好
-- 🥉 资金转正 + 低位反弹 + 板块强势 → 可关注
+- 🥇 资金评分 ≥ 60 + 大单主力买入 + 评分通过 + 涨幅温和(0~3%) → 最佳
+- 🥈 大单买卖比 ≥ 1.5 + 量比放大 + 日内净流入 + 20日位置 < 70% → 良好
+- 🥉 资金转正 + 低位反弹(20日位置<30%) + 板块强势 → 可关注
 
 # 输出要求
 1. 最多选出 **5 只** 最值得买入的股票
 2. 如果没有任何股票值得买入，返回空列表并说明原因
-3. 严格输出 JSON 格式，所有文本使用简体中文
-4. picks 数组中按推荐优先级排序（最推荐的在前）
+3. reasoning 中必须引用具体的服务端指标（如"大单追踪显示主力买入"、"20日位置仅23%处于低位"）
+4. 严格输出 JSON 格式，所有文本使用简体中文
+5. picks 数组中按推荐优先级排序（最推荐的在前）
 
 ```json
 {
@@ -723,7 +738,7 @@ SMART_PICK_SYSTEM_PROMPT = """# 角色
       "name": "股票名称",
       "action": "STRONG_BUY" | "BUY",
       "confidence": 0-100,
-      "reasoning": "简短买入理由（不超过100字）",
+      "reasoning": "简短买入理由（引用关键指标，不超过150字）",
       "key_signal": "最关键的一个信号",
       "risk": "主要风险点",
       "target_price": null,
@@ -734,6 +749,206 @@ SMART_PICK_SYSTEM_PROMPT = """# 角色
   "skip_reason": "如果没有推荐，说明原因"
 }
 ```"""
+
+
+async def _enrich_stocks_batch(
+    stocks: List[SmartPickStockItem], container
+) -> dict:
+    """批量为股票列表注入服务端深度指标
+
+    Returns: dict mapping stock_code -> enriched data dict
+    """
+    enriched = {}
+
+    # 1. 一次性获取所有持仓
+    all_positions = {}
+    try:
+        trade_svc = container.futu_trade_service
+        if trade_svc:
+            positions_result = trade_svc.get_positions()
+            positions = []
+            if isinstance(positions_result, dict) and positions_result.get('success'):
+                positions = positions_result.get('positions', [])
+            elif isinstance(positions_result, list):
+                positions = positions_result
+            for pos in positions:
+                code = pos.get('stock_code', pos.get('code', ''))
+                if code:
+                    all_positions[code] = pos
+    except Exception as e:
+        logger.debug(f"[AI智选] 批量获取持仓失败: {e}")
+
+    # 2. 获取狙击手排行（一次性）
+    sniper_ranking = {}
+    sniper = getattr(container, 'intraday_sniper', None)
+    if sniper:
+        try:
+            ranking = sniper.get_top_ranking()
+            if ranking and ranking.get('updated_at'):
+                for item in ranking.get('opportunity', []):
+                    sniper_ranking[item['stock_code']] = {
+                        'type': '机会',
+                        'rank': ranking['opportunity'].index(item) + 1,
+                        'score': item['score'],
+                    }
+                for item in ranking.get('risk', []):
+                    sniper_ranking[item['stock_code']] = {
+                        'type': '风险',
+                        'rank': ranking['risk'].index(item) + 1,
+                        'score': item['score'],
+                    }
+        except Exception as e:
+            logger.debug(f"[AI智选] 获取狙击手排行失败: {e}")
+
+    # 3. 获取狙击手今日所有信号
+    all_signals = []
+    if sniper:
+        try:
+            all_signals = sniper.get_today_signals()
+        except Exception:
+            pass
+
+    db = container.db_manager
+
+    # 4. 逐只获取 K线/评分/大单/资金
+    for s in stocks:
+        code = s.code
+        data = {}
+
+        # K线趋势摘要
+        try:
+            klines = _get_kline_data(container, code)
+            if klines and len(klines) >= 5:
+                closes = [k.get('close', 0) for k in klines if k.get('close', 0) > 0]
+                if len(closes) >= 5:
+                    data['kline'] = {}
+                    if len(closes) >= 6:
+                        data['kline']['5d_chg'] = round(
+                            (closes[-1] - closes[-6]) / closes[-6] * 100, 2)
+                    if len(closes) >= 11:
+                        data['kline']['10d_chg'] = round(
+                            (closes[-1] - closes[-11]) / closes[-11] * 100, 2)
+                    # 20日位置
+                    recent = klines[-20:] if len(klines) >= 20 else klines
+                    highs = [k.get('high', 0) for k in recent]
+                    lows = [k.get('low', 0) for k in recent]
+                    max_h = max(highs) if highs else 0
+                    min_l = min(lows) if lows else 0
+                    if max_h > min_l:
+                        data['kline']['pos_20d'] = round(
+                            (closes[-1] - min_l) / (max_h - min_l) * 100, 1)
+        except Exception:
+            pass
+
+        # 多策略评分
+        try:
+            quote = _get_stock_quote(container, code)
+            if quote:
+                kls = _get_kline_data(container, code) if 'kline' not in data else klines
+                score = _get_score_result(container, code, quote, kls)
+                if score:
+                    data['score'] = {
+                        'total': score.get('total_score', 0),
+                        'passed': score.get('passed', False),
+                        'mode': score.get('best_mode', ''),
+                    }
+                    strategies = score.get('strategies', [])
+                    if strategies:
+                        data['score']['detail'] = ', '.join(
+                            f"{st['mode']}:{st['total_score']}{'✓' if st['passed'] else '✗'}"
+                            for st in strategies
+                        )
+        except Exception:
+            pass
+
+        # 大单追踪摘要（近30分钟）
+        if db:
+            try:
+                from datetime import datetime, timedelta
+                lookback = (datetime.now() - timedelta(minutes=30)).isoformat()
+                rows = db.execute_query("""
+                    SELECT AVG(order_strength),
+                           SUM(CASE WHEN order_strength > 0.1 THEN 1 ELSE 0 END),
+                           SUM(CASE WHEN order_strength < -0.1 THEN 1 ELSE 0 END),
+                           COUNT(*)
+                    FROM big_order_tracking
+                    WHERE stock_code = ? AND timestamp > ?
+                """, (code, lookback))
+                if rows and rows[0][3]:
+                    r = rows[0]
+                    avg_s = float(r[0] or 0)
+                    data['big_order'] = {
+                        'strength': round(avg_s, 2),
+                        'buy_n': int(r[1] or 0),
+                        'sell_n': int(r[2] or 0),
+                        'trend': '主力卖出' if avg_s < -0.15 else '主力买入' if avg_s > 0.15 else '均衡',
+                    }
+            except Exception:
+                pass
+
+            # 日内大单累计
+            try:
+                from datetime import datetime as _dt
+                trade_date = _dt.now().strftime("%Y-%m-%d")
+                rows2 = db.execute_query("""
+                    SELECT super_large_buy_amt, super_large_sell_amt,
+                           large_buy_amt, large_sell_amt
+                    FROM daily_order_accumulator
+                    WHERE stock_code = ? AND trade_date = ?
+                """, (code, trade_date))
+                if rows2:
+                    r = rows2[0]
+                    big_buy = float(r[0] or 0) + float(r[2] or 0)
+                    big_sell = float(r[1] or 0) + float(r[3] or 0)
+                    net = big_buy - big_sell
+                    data['daily_flow'] = {
+                        'buy_wan': round(big_buy / 1e4),
+                        'sell_wan': round(big_sell / 1e4),
+                        'net_wan': round(net / 1e4),
+                        'inflow': net > 0,
+                    }
+            except Exception:
+                pass
+
+        # 持仓详情
+        pos = all_positions.get(code)
+        if pos:
+            data['position'] = {
+                'qty': pos.get('qty', pos.get('position_qty', 0)),
+                'cost': pos.get('cost_price', 0),
+                'pnl_pct': round(float(pos.get('pnl_pct', pos.get('profit_ratio', 0)) or 0), 2),
+            }
+
+        # 板块
+        try:
+            plate = _get_plate_info(container, code)
+            if plate:
+                data['plate'] = plate
+        except Exception:
+            pass
+
+        # 狙击手排行
+        if code in sniper_ranking:
+            data['sniper'] = sniper_ranking[code]
+
+        # 该股今日信号数
+        stock_sigs = [sig for sig in all_signals if sig.get('stock_code') == code]
+        if stock_sigs:
+            data['sniper_sig_count'] = len(stock_sigs)
+            latest = stock_sigs[-1]
+            data['sniper_latest'] = (
+                latest.get('signal_type', '') + ':' +
+                str(latest.get('detail', ''))[:50]
+            )
+
+        enriched[code] = data
+
+    logger.info(
+        f"[AI智选] 数据聚合完成: {len(enriched)} 只股票, "
+        f"持仓 {len(all_positions)} 只, "
+        f"狙击手排行 {len(sniper_ranking)} 只"
+    )
+    return enriched
 
 
 @router.post("/smart-pick", response_model=APIResponse)
@@ -751,8 +966,11 @@ async def smart_pick(
         return APIResponse(success=False, message="Claude AI 未配置，请设置 CLAUDE_API_KEY 环境变量")
 
     try:
-        # 构建 prompt
-        prompt = _build_smart_pick_prompt(req.stocks)
+        # 聚合服务端深度指标
+        enriched = await _enrich_stocks_batch(req.stocks, container)
+
+        # 构建 prompt（含深度指标）
+        prompt = _build_smart_pick_prompt(req.stocks, enriched)
         logger.info(f"[AI智选] 收到 {len(req.stocks)} 只股票，Prompt 长度: {len(prompt)}")
 
         # 调用 Claude
@@ -773,14 +991,18 @@ async def smart_pick(
         return APIResponse(success=False, message=f"AI 智选异常: {str(e)}")
 
 
-def _build_smart_pick_prompt(stocks: List[SmartPickStockItem]) -> str:
-    """构建批量智选的 prompt"""
+def _build_smart_pick_prompt(
+    stocks: List[SmartPickStockItem], enriched: dict
+) -> str:
+    """构建批量智选的 prompt（含服务端深度指标）"""
     from datetime import datetime
     prompt = f"# 待分析股票池（{len(stocks)} 只）\n"
     prompt += f"分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
 
-    prompt += "| # | 代码 | 名称 | 涨跌% | 换手% | 成交额 | 量比 | 资金评分 | 主力净流入 | 大单买比 | 力量比 | 综合评分 | 判定 | 持仓 |\n"
-    prompt += "|---|------|------|-------|-------|--------|------|---------|-----------|---------|-------|---------|------|------|\n"
+    # 基础行情总览表
+    prompt += "## 基础行情\n"
+    prompt += "| # | 代码 | 名称 | 涨跌% | 换手% | 成交额 | 量比 | 资金评分 | 主力净流入 | 大单买比 | 力量比 | 综合评分 | 判定 |\n"
+    prompt += "|---|------|------|-------|-------|--------|------|---------|-----------|---------|-------|---------|------|\n"
 
     for i, s in enumerate(stocks, 1):
         turnover_str = f"{s.turnover/1e8:.2f}亿" if s.turnover >= 1e8 else f"{s.turnover/1e4:.0f}万"
@@ -789,11 +1011,80 @@ def _build_smart_pick_prompt(stocks: List[SmartPickStockItem]) -> str:
             f"| {i} | {s.code} | {s.name} | {s.change_rate:+.2f} | {s.turnover_rate:.1f} | "
             f"{turnover_str} | {s.volume_ratio:.1f} | {s.capital_score:.0f} | {inflow_str} | "
             f"{s.big_order_buy_ratio:.2f} | {s.ticker_buy_sell_ratio:.2f} | "
-            f"{s.consensus_score:.0f} | {s.consensus_verdict or '-'} | "
-            f"{'✓' if s.is_position else ''} |\n"
+            f"{s.consensus_score:.0f} | {s.consensus_verdict or '-'} |\n"
         )
 
-    prompt += "\n请根据以上数据，筛选出最值得短线买入的股票。\n"
+    # 每只股票的深度指标
+    prompt += "\n## 服务端深度指标\n"
+    for s in stocks:
+        d = enriched.get(s.code, {})
+        if not d:
+            continue
+
+        parts = [f"### {s.code} {s.name}"]
+
+        # K线趋势
+        kl = d.get('kline')
+        if kl:
+            items = []
+            if '5d_chg' in kl:
+                items.append(f"5日涨幅:{kl['5d_chg']:+.1f}%")
+            if '10d_chg' in kl:
+                items.append(f"10日涨幅:{kl['10d_chg']:+.1f}%")
+            if 'pos_20d' in kl:
+                items.append(f"20日位置:{kl['pos_20d']:.0f}%")
+            if items:
+                parts.append(f"- K线趋势: {', '.join(items)}")
+
+        # 评分
+        sc = d.get('score')
+        if sc:
+            status = '✓通过' if sc.get('passed') else '✗未通过'
+            line = f"- 评分: {sc.get('total', 0)}分({status}, 最佳策略:{sc.get('mode', '?')})"
+            if sc.get('detail'):
+                line += f" [{sc['detail']}]"
+            parts.append(line)
+
+        # 大单追踪
+        bo = d.get('big_order')
+        if bo:
+            parts.append(
+                f"- 大单追踪(30min): {bo['trend']}(强度{bo['strength']:+.2f}, "
+                f"买入{bo['buy_n']}期/卖出{bo['sell_n']}期)"
+            )
+
+        # 日内资金流
+        df = d.get('daily_flow')
+        if df:
+            parts.append(
+                f"- 日内大单: 买{df['buy_wan']}万/卖{df['sell_wan']}万, "
+                f"净{'流入' if df['inflow'] else '流出'}{abs(df['net_wan'])}万"
+            )
+
+        # 持仓
+        pos = d.get('position')
+        if pos:
+            parts.append(
+                f"- 持仓: {pos['qty']}股, 成本{pos['cost']}, "
+                f"盈亏{pos['pnl_pct']:+.1f}%"
+            )
+
+        # 狙击手
+        sn = d.get('sniper')
+        if sn:
+            parts.append(f"- 狙击手: {sn['type']}排行第{sn['rank']}(分数{sn['score']:.1f})")
+        if d.get('sniper_sig_count'):
+            parts.append(f"- 今日信号: {d['sniper_sig_count']}条, 最新: {d.get('sniper_latest', '')}")
+
+        # 板块
+        pl = d.get('plate')
+        if pl:
+            parts.append(f"- {pl}")
+
+        if len(parts) > 1:  # 有深度数据才输出
+            prompt += '\n'.join(parts) + '\n\n'
+
+    prompt += "请综合基础行情和服务端深度指标，筛选出最值得短线买入的股票。\n"
     return prompt
 
 
