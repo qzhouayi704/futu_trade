@@ -542,21 +542,167 @@ class QuotePipeline:
 
 
     def _notify_trade_signals(self, trade_actions: List[Dict]):
-        """异步发送交易信号的企业微信通知（保存 task 引用）"""
+        """异步发送交易信号的企业微信通知（保存 task 引用）
+
+        持仓股卖出信号特殊处理：
+        1. 所有持仓股的SELL信号 → 高优先级专属推送
+        2. R10(量价背离)/R13(波段高抛) → 异步调用 Claude AI 确认
+        """
         wechat = getattr(self.container, 'wechat_alert_service', None)
         if not wechat or not wechat.enabled:
             return
+
+        # 获取当前持仓代码集（缓存，避免每次调API）
+        position_codes = set()
+        try:
+            if hasattr(self, '_cached_position_codes'):
+                position_codes = self._cached_position_codes
+            else:
+                futu_trade = getattr(self.container, 'futu_trade_service', None)
+                if futu_trade:
+                    result = futu_trade.get_positions()
+                    if result and result.get('success'):
+                        position_codes = {
+                            p['stock_code'] for p in result.get('positions', [])
+                            if p.get('qty', 0) > 0
+                        }
+                        self._cached_position_codes = position_codes
+        except Exception:
+            pass
+
         for action in trade_actions:
-            task = asyncio.create_task(
-                wechat.alert_trade_signal(
-                    stock_code=action['stock_code'],
-                    signal_type=action['signal_type'],
-                    price=action['price'],
-                    reason=action.get('reason', ''),
+            stock_code = action.get('stock_code', '')
+            signal_type = action.get('signal_type', '')
+            reason = action.get('reason', '')
+            is_position = stock_code in position_codes
+
+            if is_position and signal_type == 'SELL':
+                # 持仓股卖出信号 → 高优先级推送
+                task = asyncio.create_task(
+                    self._push_position_sell_alert(
+                        wechat, action, reason
+                    )
                 )
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._on_task_done)
+
+                # R10/R13 高优信号 → 异步 Claude AI 确认
+                is_high_priority = any(
+                    tag in reason for tag in ('R10', 'R13', '量价背离', '波段高抛')
+                )
+                if is_high_priority:
+                    ai_task = asyncio.create_task(
+                        self._claude_confirm_position_signal(
+                            wechat, stock_code, action
+                        )
+                    )
+                    self._pending_tasks.add(ai_task)
+                    ai_task.add_done_callback(self._on_task_done)
+            else:
+                # 非持仓股 / 非卖出信号 → 普通推送
+                task = asyncio.create_task(
+                    wechat.alert_trade_signal(
+                        stock_code=stock_code,
+                        signal_type=signal_type,
+                        price=action['price'],
+                        reason=reason,
+                    )
+                )
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._on_task_done)
+
+    async def _push_position_sell_alert(self, wechat, action: dict, reason: str):
+        """持仓股卖出信号 — 高优先级企业微信推送"""
+        try:
+            stock_code = action.get('stock_code', '')
+            stock_name = action.get('stock_name', stock_code)
+            price = action.get('price', 0)
+            rule_id = ''
+            for tag in ('R2', 'R3', 'R7', 'R10', 'R13'):
+                if tag in reason:
+                    rule_id = tag
+                    break
+
+            content = (
+                f"- 股票：**{stock_name}** ({stock_code})\n"
+                f"- 信号：<font color=\"warning\">**卖出**</font> {rule_id}\n"
+                f"- 现价：**{price:.3f}**\n"
+                f"- 原因：{reason}\n"
+                f"- ⚡ 建议立即关注持仓操作"
             )
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._on_task_done)
+            await wechat.warning(
+                f"⚠️ 持仓预警 - {stock_name}",
+                content,
+                dedup_key=f"pos_sell:{stock_code}:{rule_id}",
+            )
+        except Exception as e:
+            logging.error(f"持仓卖出推送失败: {e}")
+
+    async def _claude_confirm_position_signal(
+        self, wechat, stock_code: str, action: dict
+    ):
+        """调用 Claude AI 确认持仓股的高优卖出信号，并追加推送"""
+        try:
+            # 获取 AI 分析器（复用现有 Claude 集成）
+            analyzer = getattr(self.container, 'stock_ai_analyzer', None)
+            if not analyzer or not analyzer.is_available():
+                return
+
+            stock_name = action.get('stock_name', stock_code)
+            reason = action.get('reason', '')
+            price = action.get('price', 0)
+
+            # 聚合数据（简化版，只取关键数据避免太慢）
+            from ...routers.trading.ai_analysis import (
+                _get_stock_quote, _get_kline_data, _get_intraday_flow_data,
+                _get_position_info,
+            )
+            quote = _get_stock_quote(self.container, stock_code)
+            klines = _get_kline_data(self.container, stock_code)
+            flow_data = _get_intraday_flow_data(self.container, stock_code)
+            position_info = _get_position_info(self.container, stock_code)
+
+            # 构建精简 prompt 给 Claude
+            prompt = (
+                f"你是港股量化交易师。持仓股 {stock_name}({stock_code}) "
+                f"刚触发卖出信号：{reason}。现价 {price:.3f}。\n\n"
+                f"持仓信息：{position_info}\n"
+                f"K线数据(近5日)：{klines[-5:] if klines else '无'}\n"
+                f"日内资金流：{flow_data}\n\n"
+                f"请用50字以内判断：这个卖出信号是否可靠？建议操作？"
+            )
+
+            result = await analyzer.analyze_stock(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                quote=quote or {},
+                klines=klines,
+                position_info=position_info,
+                flow_data=flow_data,
+            )
+
+            if result.get('success'):
+                ai_data = result.get('data', {})
+                ai_summary = ai_data.get('summary', ai_data.get('action_suggestion', ''))
+                if ai_summary:
+                    from ...services.alert.wechat_alert import AlertLevel
+                    is_sell_confirm = (
+                        'sell' in str(ai_data.get('action', '')).lower()
+                        or '卖' in ai_summary or '减' in ai_summary
+                    )
+                    await wechat.send(
+                        AlertLevel.WARNING if is_sell_confirm else AlertLevel.INFO,
+                        f"🤖 AI确认 - {stock_name}",
+                        f"- 规则信号：{reason[:60]}\n"
+                        f"- AI判断：{ai_summary[:200]}\n"
+                        f"- 建议操作：{ai_data.get('action_suggestion', '请结合规则判断')}",
+                        dedup_key=f"ai_confirm:{stock_code}",
+                    )
+                    logging.info(
+                        f"[AI确认] {stock_name}: {ai_summary[:50]}"
+                    )
+        except Exception as e:
+            logging.error(f"Claude AI 确认失败 {stock_code}: {e}")
 
     def _on_task_done(self, task):
         """异步任务完成回调：移除引用 + 记录异常"""
