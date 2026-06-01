@@ -28,6 +28,8 @@ interface OvernightItem {
   big_order_ratio: number;
   volume_ratio: number;
   sniper_signals: SniperSignalItem[];
+  flow_pattern?: string;
+  flow_pattern_desc?: string;
 }
 
 export function OvernightScreenCard() {
@@ -170,6 +172,20 @@ export function OvernightScreenCard() {
 
                 {/* 第二行：实时数据指标 */}
                 <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                  {/* 资金流模式 */}
+                  {item.flow_pattern_desc && (() => {
+                    const fc: Record<string, { icon: string; color: string }> = {
+                      sustained_in: { icon: "🔥", color: "text-red-600" },
+                      sustained_out: { icon: "💧", color: "text-green-600" },
+                      alternating: { icon: "⚡", color: "text-yellow-600" },
+                    };
+                    const cfg = fc[item.flow_pattern || ""] || fc.alternating;
+                    return (
+                      <span className={`text-[9px] font-bold ${cfg.color}`}>
+                        {cfg.icon} {item.flow_pattern_desc}
+                      </span>
+                    );
+                  })()}
                   {/* 巨量抢筹/砸盘信号 */}
                   {item.sniper_signals && item.sniper_signals.length > 0 && item.sniper_signals.map((sig, si) => {
                     const isBuy = sig.type === 'mega_buy';

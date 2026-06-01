@@ -83,6 +83,8 @@ class DailyKlineUpdater:
             self._last_run_date = today
             # K线更新完成后，自动触发盘后优选评分
             await self._auto_run_overnight_screen()
+            # 盘后优选完成后，生成持仓操作建议
+            await self._auto_run_position_advice()
 
     async def _run_update(self) -> bool:
         """执行K线更新，返回是否成功执行"""
@@ -242,6 +244,32 @@ class DailyKlineUpdater:
             logger.info("[每日K线] 盘后优选评分已完成")
         except Exception as e:
             logger.error(f"[每日K线] 自动触发盘后优选失败: {e}", exc_info=True)
+
+    async def _auto_run_position_advice(self):
+        """盘后生成持仓操作建议"""
+        try:
+            trade_svc = getattr(self._container, 'futu_trade_service', None)
+            if not trade_svc:
+                logger.warning("[每日K线] 交易服务不可用，跳过持仓建议")
+                return
+
+            result = trade_svc.get_positions()
+            if not result.get('success') or not result.get('positions'):
+                logger.info("[每日K线] 无持仓数据，跳过持仓建议")
+                return
+
+            from ...analysis.position_advisor import PositionAdvisor
+            advisor = PositionAdvisor(self._container.db_manager, self._container)
+            advices = await advisor.generate_all_advice(result['positions'])
+
+            if advices:
+                await advisor.push_wechat_alerts(advices)
+                logger.info(f"[每日K线] 持仓操作建议已生成: {len(advices)} 只")
+            else:
+                logger.info("[每日K线] 持仓建议生成为空")
+
+        except Exception as e:
+            logger.error(f"[每日K线] 持仓建议生成失败: {e}", exc_info=True)
 
     @staticmethod
     def _has_today_kline(kline_service, stock_code: str) -> bool:

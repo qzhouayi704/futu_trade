@@ -380,7 +380,22 @@ async def get_positions_capital_flow(container=Depends(get_container)):
     except Exception as e:
         logging.debug(f"获取逐笔BSR失败: {e}")
 
-    # 3. 合并持仓 + 资金流向 + 逐笔BSR
+    # 2.6 获取持仓股票的狙击手信号
+    sniper_signals_map = {}
+    try:
+        sniper = getattr(container, 'intraday_sniper', None)
+        if sniper:
+            all_signals = sniper.get_today_signals()
+            for sig in all_signals:
+                code = sig.get('stock_code', '')
+                if code in stock_codes:
+                    if code not in sniper_signals_map:
+                        sniper_signals_map[code] = []
+                    sniper_signals_map[code].append(sig)
+    except Exception as e:
+        logging.debug(f"获取狙击手信号失败: {e}")
+
+    # 3. 合并持仓 + 资金流向 + 逐笔BSR + 狙击手信号
     merged = []
     for pos in positions:
         code = pos['stock_code']
@@ -417,6 +432,9 @@ async def get_positions_capital_flow(container=Depends(get_container)):
             'ticker_sell_turnover': ticker.get('sell_turnover', 0),
             'ticker_count': ticker.get('tick_count', 0),
             'has_ticker_data': bool(ticker),
+            # 狙击手信号（盘中巨量抢筹/砸盘等）
+            'sniper_signals': sniper_signals_map.get(code, []),
+            'has_sniper_alerts': len(sniper_signals_map.get(code, [])) > 0,
         })
 
     return APIResponse(
@@ -425,4 +443,28 @@ async def get_positions_capital_flow(container=Depends(get_container)):
         message=f"获取 {len(merged)} 只持仓的资金流向",
         meta={'count': len(merged)}
     )
+
+
+@router.get("/positions/advice", response_model=APIResponse)
+async def get_positions_advice(container=Depends(get_container)):
+    """获取持仓股票的盘后操作建议"""
+    try:
+        from ...services.analysis.position_advisor import PositionAdvisor
+        advisor = PositionAdvisor(container.db_manager, container)
+        advices = advisor.get_latest_advice()
+
+        return APIResponse(
+            success=True,
+            data=advices,
+            message=f"获取 {len(advices)} 只持仓的操作建议",
+            meta={'count': len(advices)}
+        )
+    except Exception as e:
+        logging.error(f"获取持仓建议失败: {e}")
+        return APIResponse(
+            success=True,
+            data=[],
+            message=f"获取失败: {str(e)}",
+            meta={'count': 0, 'error': True}
+        )
 

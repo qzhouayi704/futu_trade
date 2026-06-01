@@ -110,7 +110,7 @@ class OvernightScreener:
             excluded_trend, reason_trend = self._check_exclusions(stock, code, mode='TREND')
             if not excluded_trend and indicators:
                 c_t = OvernightCandidate(stock_code=code, stock_name=name)
-                c_t.key_metrics = self._collect_metrics(stock)
+                c_t.key_metrics = self._collect_metrics(stock, code)
                 c_t.category = "趋势追涨"
 
                 from ..strategy.stock_scorer import StockScorer, PASSING_SCORE
@@ -139,7 +139,7 @@ class OvernightScreener:
                 )
                 if m_result['total'] >= 45:  # MOMENTUM 及格线较低（蓄势信号本身有价值）
                     c_m = OvernightCandidate(stock_code=code, stock_name=name)
-                    c_m.key_metrics = self._collect_metrics(stock)
+                    c_m.key_metrics = self._collect_metrics(stock, code)
                     c_m.category = "蓄势突破"
                     c_m.total_score = m_result['total']
                     c_m.verdict = m_result['verdict']
@@ -816,8 +816,8 @@ class OvernightScreener:
                 max_dd = dd
         return max_dd
 
-    def _collect_metrics(self, stock: dict) -> dict:
-        return {
+    def _collect_metrics(self, stock: dict, code: str = '') -> dict:
+        metrics = {
             'last_price': stock.get('last_price', 0),
             'change_rate': stock.get('change_rate', 0),
             'turnover_rate': stock.get('turnover_rate', 0),
@@ -825,6 +825,53 @@ class OvernightScreener:
             'amplitude': stock.get('amplitude', 0),
             'turnover': stock.get('turnover', 0),
         }
+        # 资金流模式标签
+        if code:
+            pattern, desc = self._get_flow_pattern(code)
+            metrics['flow_pattern'] = pattern
+            metrics['flow_pattern_desc'] = desc
+        return metrics
+
+    def _get_flow_pattern(self, code: str) -> tuple:
+        """分析资金流模式（复用 PositionAdvisor 逻辑）"""
+        try:
+            rows = self.db.execute_query(
+                "SELECT net_inflow FROM capital_flow_daily "
+                "WHERE stock_code = ? ORDER BY date DESC LIMIT 10",
+                (code,)
+            )
+            if not rows:
+                return 'unknown', ''
+
+            # 连续流入天数
+            in_days = 0
+            for r in rows:
+                if r[0] and r[0] > 0:
+                    in_days += 1
+                else:
+                    break
+            # 连续流出天数
+            out_days = 0
+            for r in rows:
+                if r[0] and r[0] < 0:
+                    out_days += 1
+                else:
+                    break
+
+            if in_days >= 3:
+                return 'sustained_in', f'持续流入{in_days}天'
+            elif out_days >= 3:
+                return 'sustained_out', f'持续流出{out_days}天'
+            else:
+                # 判断交替
+                if len(rows) >= 4:
+                    signs = [1 if (r[0] or 0) > 0 else -1 for r in rows[:7]]
+                    changes = sum(1 for i in range(1, len(signs)) if signs[i] != signs[i-1])
+                    if changes >= 3:
+                        return 'alternating', '交替进出'
+                return 'alternating', '方向不明'
+        except Exception:
+            return 'unknown', ''
 
     def _get_stock_plates(self, code: str) -> List[str]:
         """获取股票所属板块名称列表"""

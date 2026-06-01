@@ -626,6 +626,8 @@ async def get_dashboard_data(container=Depends(get_container)):
                 'big_order_ratio': round(bo_ratio, 2) if bo_ratio else 0,
                 'volume_ratio': quote.get('volume_ratio', 0),
                 'sniper_signals': sniper_map.get(code, []),
+                'flow_pattern': c.get('key_metrics', {}).get('flow_pattern', ''),
+                'flow_pattern_desc': c.get('key_metrics', {}).get('flow_pattern_desc', ''),
             })
 
         return APIResponse(
