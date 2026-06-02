@@ -10,9 +10,23 @@ import {
   TrendingUp,
   TrendingDown,
   Info,
-  RefreshCw
+  RefreshCw,
+  AlertTriangle,
+  Zap
 } from "lucide-react";
-import type { PositionCapitalFlow } from "@/types";
+import type { PositionCapitalFlow, SniperSignal } from "@/types";
+
+// 狙击手信号中文标签映射
+const SIGNAL_LABELS: Record<string, string> = {
+  mega_sell: '巨量砸盘',
+  mega_buy: '巨量抢筹',
+  reversal_bear: '资金转负',
+  reversal_bull: '资金转正',
+  accel_in: '资金加速',
+  sustained_out: '持续流出',
+  distribution_trap: '出货陷阱',
+  accumulation_signal: '主力吸筹',
+};
 
 interface PositionFlowCardProps {
   data: PositionCapitalFlow[];
@@ -149,12 +163,39 @@ export function PositionFlowCard({ data = [], loading = false }: PositionFlowCar
                     {/* 股票基本信息 */}
                     <div className="flex items-center gap-3">
                       <div>
-                        <div className="font-semibold text-gray-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                          {item.stock_name}
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-gray-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                            {item.stock_name}
+                          </span>
+                          {item.has_sniper_alerts && (
+                            <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-600 border border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800/30 animate-pulse">
+                              <AlertTriangle className="w-3 h-3" />
+                              {item.sniper_signals.length}
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-gray-500 dark:text-gray-400 font-mono mt-0.5">
                           {item.stock_code}
                         </div>
+                        {/* 狙击手信号标签（最新2条） */}
+                        {item.has_sniper_alerts && (
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {item.sniper_signals.slice(-2).reverse().map((sig: SniperSignal, idx: number) => (
+                              <span
+                                key={`${sig.signal_type}-${sig.time}-${idx}`}
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+                                  sig.is_red
+                                    ? 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800/30'
+                                    : 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800/30'
+                                }`}
+                              >
+                                <span>{sig.emoji}</span>
+                                <span>{SIGNAL_LABELS[sig.signal_type] || sig.signal_type}</span>
+                                <span className="opacity-60">{sig.time}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -249,109 +290,158 @@ export function PositionFlowCard({ data = [], loading = false }: PositionFlowCar
                   </div>
 
                   {/* 展开的资金流向详情 */}
-                  {isExpanded && item.has_flow_data && (
-                    <div className="border-t border-gray-100 dark:border-gray-800/80 p-4 bg-gray-50/50 dark:bg-gray-900/10 rounded-b-xl animate-fadeIn">
-                      <h5 className="text-xs font-bold text-gray-500 dark:text-gray-400 mb-3 uppercase tracking-wider flex items-center gap-1.5">
-                        <Info className="w-3.5 h-3.5" />
-                        资金成交明细 (大单/中单/小单分类)
-                      </h5>
-                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                        {/* 超大单 */}
-                        <div className="bg-white dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800/30">
-                          <div className="text-xs font-semibold text-purple-600 dark:text-purple-400 mb-2">
-                            超大单 (主控力)
-                          </div>
-                          <div className="space-y-1 text-xs">
-                            <div className="flex justify-between text-gray-500">
-                              <span>买入额</span>
-                              <span className="text-red-500">{formatCapital(item.super_large_inflow)}</span>
-                            </div>
-                            <div className="flex justify-between text-gray-500">
-                              <span>卖出额</span>
-                              <span className="text-green-500">{formatCapital(item.super_large_outflow)}</span>
-                            </div>
-                            <div className="flex justify-between pt-1 border-t border-dashed border-gray-100 dark:border-gray-800 font-semibold text-gray-700 dark:text-gray-300">
-                              <span>净流入</span>
-                              <span className={item.super_large_inflow - item.super_large_outflow >= 0 ? "text-red-600" : "text-green-600"}>
-                                {item.super_large_inflow - item.super_large_outflow >= 0 ? "+" : ""}
-                                {formatCapital(item.super_large_inflow - item.super_large_outflow)}
-                              </span>
-                            </div>
+                  {isExpanded && (
+                    <div className="border-t border-gray-100 dark:border-gray-800/80 p-4 bg-gray-50/50 dark:bg-gray-900/10 rounded-b-xl animate-fadeIn space-y-4">
+                      {/* 盘中狙击信号时间线 */}
+                      {item.has_sniper_alerts && (
+                        <div>
+                          <h5 className="text-xs font-bold text-gray-500 dark:text-gray-400 mb-3 uppercase tracking-wider flex items-center gap-1.5">
+                            <Zap className="w-3.5 h-3.5 text-amber-500" />
+                            盘中狙击信号
+                          </h5>
+                          <div className="space-y-2">
+                            {[...item.sniper_signals].reverse().map((sig: SniperSignal, idx: number) => (
+                              <div
+                                key={`timeline-${sig.signal_type}-${sig.time}-${idx}`}
+                                className={`flex items-start gap-3 p-2.5 rounded-lg border ${
+                                  sig.is_red
+                                    ? 'bg-red-50/50 border-red-100 dark:bg-red-950/10 dark:border-red-900/20'
+                                    : 'bg-emerald-50/50 border-emerald-100 dark:bg-emerald-950/10 dark:border-emerald-900/20'
+                                }`}
+                              >
+                                <div className={`flex-shrink-0 mt-0.5 w-6 h-6 rounded-full flex items-center justify-center text-xs ${
+                                  sig.is_red
+                                    ? 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400'
+                                    : 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
+                                }`}>
+                                  {sig.emoji}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className={`text-xs font-bold ${
+                                      sig.is_red ? 'text-red-700 dark:text-red-400' : 'text-emerald-700 dark:text-emerald-400'
+                                    }`}>
+                                      {SIGNAL_LABELS[sig.signal_type] || sig.signal_type}
+                                    </span>
+                                    <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">{sig.time}</span>
+                                    <span className="text-[10px] text-gray-400 dark:text-gray-500">¥{sig.price.toFixed(3)}</span>
+                                  </div>
+                                  <div className="text-[11px] text-gray-600 dark:text-gray-400 mt-0.5 truncate">
+                                    {sig.detail}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
+                      )}
 
-                        {/* 大单 */}
-                        <div className="bg-white dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800/30">
-                          <div className="text-xs font-semibold text-red-600 dark:text-red-400 mb-2">
-                            大单 (主力)
-                          </div>
-                          <div className="space-y-1 text-xs">
-                            <div className="flex justify-between text-gray-500">
-                              <span>买入额</span>
-                              <span className="text-red-500">{formatCapital(item.large_inflow)}</span>
+                      {/* 资金成交明细 */}
+                      {item.has_flow_data && (
+                        <div>
+                          <h5 className="text-xs font-bold text-gray-500 dark:text-gray-400 mb-3 uppercase tracking-wider flex items-center gap-1.5">
+                            <Info className="w-3.5 h-3.5" />
+                            资金成交明细 (大单/中单/小单分类)
+                          </h5>
+                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                            {/* 超大单 */}
+                            <div className="bg-white dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800/30">
+                              <div className="text-xs font-semibold text-purple-600 dark:text-purple-400 mb-2">
+                                超大单 (主控力)
+                              </div>
+                              <div className="space-y-1 text-xs">
+                                <div className="flex justify-between text-gray-500">
+                                  <span>买入额</span>
+                                  <span className="text-red-500">{formatCapital(item.super_large_inflow)}</span>
+                                </div>
+                                <div className="flex justify-between text-gray-500">
+                                  <span>卖出额</span>
+                                  <span className="text-green-500">{formatCapital(item.super_large_outflow)}</span>
+                                </div>
+                                <div className="flex justify-between pt-1 border-t border-dashed border-gray-100 dark:border-gray-800 font-semibold text-gray-700 dark:text-gray-300">
+                                  <span>净流入</span>
+                                  <span className={item.super_large_inflow - item.super_large_outflow >= 0 ? "text-red-600" : "text-green-600"}>
+                                    {item.super_large_inflow - item.super_large_outflow >= 0 ? "+" : ""}
+                                    {formatCapital(item.super_large_inflow - item.super_large_outflow)}
+                                  </span>
+                                </div>
+                              </div>
                             </div>
-                            <div className="flex justify-between text-gray-500">
-                              <span>卖出额</span>
-                              <span className="text-green-500">{formatCapital(item.large_outflow)}</span>
-                            </div>
-                            <div className="flex justify-between pt-1 border-t border-dashed border-gray-100 dark:border-gray-800 font-semibold text-gray-700 dark:text-gray-300">
-                              <span>净流入</span>
-                              <span className={item.large_inflow - item.large_outflow >= 0 ? "text-red-600" : "text-green-600"}>
-                                {item.large_inflow - item.large_outflow >= 0 ? "+" : ""}
-                                {formatCapital(item.large_inflow - item.large_outflow)}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
 
-                        {/* 中单 */}
-                        <div className="bg-white dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800/30">
-                          <div className="text-xs font-semibold text-blue-600 dark:text-blue-400 mb-2">
-                            中单 (中户)
-                          </div>
-                          <div className="space-y-1 text-xs">
-                            <div className="flex justify-between text-gray-500">
-                              <span>买入额</span>
-                              <span className="text-red-500">{formatCapital(item.medium_inflow)}</span>
+                            {/* 大单 */}
+                            <div className="bg-white dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800/30">
+                              <div className="text-xs font-semibold text-red-600 dark:text-red-400 mb-2">
+                                大单 (主力)
+                              </div>
+                              <div className="space-y-1 text-xs">
+                                <div className="flex justify-between text-gray-500">
+                                  <span>买入额</span>
+                                  <span className="text-red-500">{formatCapital(item.large_inflow)}</span>
+                                </div>
+                                <div className="flex justify-between text-gray-500">
+                                  <span>卖出额</span>
+                                  <span className="text-green-500">{formatCapital(item.large_outflow)}</span>
+                                </div>
+                                <div className="flex justify-between pt-1 border-t border-dashed border-gray-100 dark:border-gray-800 font-semibold text-gray-700 dark:text-gray-300">
+                                  <span>净流入</span>
+                                  <span className={item.large_inflow - item.large_outflow >= 0 ? "text-red-600" : "text-green-600"}>
+                                    {item.large_inflow - item.large_outflow >= 0 ? "+" : ""}
+                                    {formatCapital(item.large_inflow - item.large_outflow)}
+                                  </span>
+                                </div>
+                              </div>
                             </div>
-                            <div className="flex justify-between text-gray-500">
-                              <span>卖出额</span>
-                              <span className="text-green-500">{formatCapital(item.medium_outflow)}</span>
-                            </div>
-                            <div className="flex justify-between pt-1 border-t border-dashed border-gray-100 dark:border-gray-800 font-semibold text-gray-700 dark:text-gray-300">
-                              <span>净流入</span>
-                              <span className={item.medium_inflow - item.medium_outflow >= 0 ? "text-red-600" : "text-green-600"}>
-                                {item.medium_inflow - item.medium_outflow >= 0 ? "+" : ""}
-                                {formatCapital(item.medium_inflow - item.medium_outflow)}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
 
-                        {/* 小单 */}
-                        <div className="bg-white dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800/30">
-                          <div className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2">
-                            小单 (散户)
-                          </div>
-                          <div className="space-y-1 text-xs">
-                            <div className="flex justify-between text-gray-500">
-                              <span>买入额</span>
-                              <span className="text-red-500">{formatCapital(item.small_inflow)}</span>
+                            {/* 中单 */}
+                            <div className="bg-white dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800/30">
+                              <div className="text-xs font-semibold text-blue-600 dark:text-blue-400 mb-2">
+                                中单 (中户)
+                              </div>
+                              <div className="space-y-1 text-xs">
+                                <div className="flex justify-between text-gray-500">
+                                  <span>买入额</span>
+                                  <span className="text-red-500">{formatCapital(item.medium_inflow)}</span>
+                                </div>
+                                <div className="flex justify-between text-gray-500">
+                                  <span>卖出额</span>
+                                  <span className="text-green-500">{formatCapital(item.medium_outflow)}</span>
+                                </div>
+                                <div className="flex justify-between pt-1 border-t border-dashed border-gray-100 dark:border-gray-800 font-semibold text-gray-700 dark:text-gray-300">
+                                  <span>净流入</span>
+                                  <span className={item.medium_inflow - item.medium_outflow >= 0 ? "text-red-600" : "text-green-600"}>
+                                    {item.medium_inflow - item.medium_outflow >= 0 ? "+" : ""}
+                                    {formatCapital(item.medium_inflow - item.medium_outflow)}
+                                  </span>
+                                </div>
+                              </div>
                             </div>
-                            <div className="flex justify-between text-gray-500">
-                              <span>卖出额</span>
-                              <span className="text-green-500">{formatCapital(item.small_outflow)}</span>
-                            </div>
-                            <div className="flex justify-between pt-1 border-t border-dashed border-gray-100 dark:border-gray-800 font-semibold text-gray-700 dark:text-gray-300">
-                              <span>净流入</span>
-                              <span className={item.small_inflow - item.small_outflow >= 0 ? "text-red-600" : "text-green-600"}>
-                                {item.small_inflow - item.small_outflow >= 0 ? "+" : ""}
-                                {formatCapital(item.small_inflow - item.small_outflow)}
-                              </span>
+
+                            {/* 小单 */}
+                            <div className="bg-white dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800/30">
+                              <div className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2">
+                                小单 (散户)
+                              </div>
+                              <div className="space-y-1 text-xs">
+                                <div className="flex justify-between text-gray-500">
+                                  <span>买入额</span>
+                                  <span className="text-red-500">{formatCapital(item.small_inflow)}</span>
+                                </div>
+                                <div className="flex justify-between text-gray-500">
+                                  <span>卖出额</span>
+                                  <span className="text-green-500">{formatCapital(item.small_outflow)}</span>
+                                </div>
+                                <div className="flex justify-between pt-1 border-t border-dashed border-gray-100 dark:border-gray-800 font-semibold text-gray-700 dark:text-gray-300">
+                                  <span>净流入</span>
+                                  <span className={item.small_inflow - item.small_outflow >= 0 ? "text-red-600" : "text-green-600"}>
+                                    {item.small_inflow - item.small_outflow >= 0 ? "+" : ""}
+                                    {formatCapital(item.small_inflow - item.small_outflow)}
+                                  </span>
+                                </div>
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   )}
                 </div>

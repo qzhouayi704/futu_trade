@@ -1,0 +1,11 @@
+import sqlite3
+db = sqlite3.connect('simple_trade/database/trade.db')
+r = db.execute("SELECT COUNT(*), SUM(CASE WHEN direction='BUY' THEN volume ELSE 0 END), SUM(CASE WHEN direction='SELL' THEN volume ELSE 0 END) FROM ticker_data WHERE stock_code='HK.00772' AND trade_date='2026-05-29'").fetchone()
+print('TICKER:', r)
+r2 = db.execute("SELECT timestamp, net_inflow_ratio, capital_score FROM capital_flow_cache WHERE stock_code='HK.00772' ORDER BY timestamp DESC LIMIT 3").fetchall()
+print('CAPITAL:', r2)
+r3 = db.execute("SELECT timestamp, big_buy_count, big_sell_count, buy_sell_ratio FROM big_order_tracking WHERE stock_code='HK.00772' ORDER BY timestamp DESC LIMIT 3").fetchall()
+print('BIGORDER:', r3)
+r4 = db.execute("SELECT time_key, close_price, volume FROM kline_data WHERE stock_code='HK.00772' ORDER BY time_key DESC LIMIT 5").fetchall()
+print('KLINE:', r4)
+db.close()

@@ -3,6 +3,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { Card } from "@/components/common";
 import apiClient from "@/lib/api/client";
 
@@ -25,6 +26,7 @@ interface OvernightItem {
   capital_signal: string;
   capital_score: number;
   net_inflow_ratio: number;
+  main_net_inflow: number;
   big_order_ratio: number;
   volume_ratio: number;
   sniper_signals: SniperSignalItem[];
@@ -33,6 +35,7 @@ interface OvernightItem {
 }
 
 export function OvernightScreenCard() {
+  const router = useRouter();
   const [items, setItems] = useState<OvernightItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
@@ -90,11 +93,28 @@ export function OvernightScreenCard() {
     );
   };
 
-  // 资金信号颜色
-  const capitalColor = (signal: string) => {
-    if (signal === "偏多") return "text-red-600";
-    if (signal === "偏空") return "text-green-600";
-    return "text-gray-500";
+  // 资金净流入格式化
+  const formatCapital = (val: number): string => {
+    const abs = Math.abs(val);
+    if (abs >= 1e8) return `${(val / 1e8).toFixed(1)}亿`;
+    if (abs >= 1e4) return `${(val / 1e4).toFixed(0)}万`;
+    return `${val.toFixed(0)}`;
+  };
+
+  // 资金评分颜色（细化5档）
+  const scoreColor = (score: number) => {
+    if (score >= 70) return "text-red-600";
+    if (score >= 55) return "text-orange-500";
+    if (score >= 45) return "text-gray-500";
+    if (score >= 30) return "text-teal-500";
+    return "text-green-600";
+  };
+  const scoreLabel = (score: number) => {
+    if (score >= 70) return "强流入";
+    if (score >= 55) return "偏多";
+    if (score >= 45) return "均衡";
+    if (score >= 30) return "偏空";
+    return "强流出";
   };
 
   // 涨跌颜色
@@ -157,7 +177,11 @@ export function OvernightScreenCard() {
                     <span className="text-[10px] font-bold text-gray-400 w-4 shrink-0">
                       {idx + 1}
                     </span>
-                    <span className="text-[12px] font-bold text-gray-900 truncate max-w-[80px]">
+                    <span
+                      className="text-[12px] font-bold text-gray-900 truncate max-w-[80px] hover:text-indigo-600 hover:underline transition-colors"
+                      onClick={(e) => { e.stopPropagation(); router.push(`/stock-detail?code=${item.stock_code}`); }}
+                      title={`查看 ${item.stock_name} 深度分析`}
+                    >
                       {item.stock_name}
                     </span>
                     {categoryTag(item.category)}
@@ -210,14 +234,17 @@ export function OvernightScreenCard() {
                       {fmtChg(item.live_change_rate)}
                     </span>
                   </div>
-                  {/* 资金信号 */}
+                  {/* 资金流向（细化：净流入金额 + 评分标签） */}
                   <div className="flex items-center gap-0.5">
-                    <span className="text-[9px] text-gray-400">资金</span>
-                    <span className={`text-[11px] font-bold ${capitalColor(item.capital_signal)}`}>
-                      {item.capital_signal}
+                    <span className="text-[9px] text-gray-400">主力</span>
+                    <span className={`text-[11px] font-bold tabular-nums ${item.main_net_inflow >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      {item.main_net_inflow >= 0 ? '+' : ''}{formatCapital(item.main_net_inflow)}
                     </span>
-                    <span className="text-[9px] text-gray-400">
-                      ({item.capital_score})
+                    <span className={`text-[9px] font-bold px-1 py-px rounded ${scoreColor(item.capital_score)}`}>
+                      {scoreLabel(item.capital_score)}
+                    </span>
+                    <span className="text-[9px] text-gray-400 tabular-nums">
+                      ({item.capital_score.toFixed(0)})
                     </span>
                   </div>
                   {/* 大单比 */}

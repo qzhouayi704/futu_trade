@@ -110,6 +110,21 @@ export interface CreateLotTakeProfitRequest {
   take_profit_price: number;
 }
 
+// ==================== 狙击手信号类型 ====================
+
+export interface SniperSignal {
+  time: string;           // HH:MM
+  stock_code: string;
+  stock_name: string;
+  signal_type: string;    // mega_sell / mega_buy / reversal_bear / reversal_bull / accel_in / sustained_out / distribution_trap / accumulation_signal
+  is_red: boolean;
+  emoji: string;
+  price: number;
+  detail: string;
+  action: string;
+  severity: string;
+}
+
 export interface PositionCapitalFlow {
   stock_code: string;
   stock_name: string;
@@ -140,5 +155,9 @@ export interface PositionCapitalFlow {
   ticker_sell_turnover: number;
   ticker_count: number;
   has_ticker_data: boolean;
+  // 狙击手信号字段
+  sniper_signals: SniperSignal[];
+  has_sniper_alerts: boolean;
 }
+
 

@@ -12,8 +12,81 @@
 """
 import sqlite3, os
 from collections import defaultdict
+from simple_trade.services.strategy.stock_scorer import StockScorer
 
 DB_PATH = os.environ.get("DB_PATH", "/opt/futu_trade_sys/simple_trade/data/trade.db")
+
+
+def calc_pre_market_indicators(db, code, trade_date):
+    """计算单个股票在交易日 trade_date 盘前的指标"""
+    # 1. 查找 trade_date 之前的 30 条日K线
+    rows = db.execute("""
+        SELECT time_key, open_price, close_price, high_price, low_price, volume
+        FROM kline_data
+        WHERE stock_code = ? AND date(time_key) < ?
+        ORDER BY time_key DESC LIMIT 30
+    """, (code, trade_date)).fetchall()
+
+    if len(rows) < 6:
+        return None
+
+    klines = list(reversed(rows))
+    closes = [k[2] for k in klines if k[2] and k[2] > 0]
+    highs = [k[3] for k in klines if k[3] and k[3] > 0]
+    lows = [k[4] for k in klines if k[4] and k[4] > 0]
+    volumes = [k[5] for k in klines if k[5] and k[5] > 0]
+
+    if len(closes) < 6:
+        return None
+
+    indicators = {}
+    # 5日累计涨幅：(今日收盘 - 5日前收盘) / 5日前收盘
+    indicators['change_5d'] = (closes[-1] - closes[-6]) / closes[-6] * 100
+
+    # 前日涨幅
+    indicators['prev_day_change'] = (closes[-1] - closes[-2]) / closes[-2] * 100
+
+    # K线20日位置
+    recent_highs = highs[-20:]
+    recent_lows = lows[-20:]
+    if recent_highs and recent_lows:
+        max_h = max(recent_highs)
+        min_l = min(recent_lows)
+        if max_h > min_l:
+            indicators['kline_pos_20d'] = (closes[-1] - min_l) / (max_h - min_l)
+        else:
+            indicators['kline_pos_20d'] = 0.5
+    else:
+        indicators['kline_pos_20d'] = None
+
+    # 日内振幅 (前一个交易日的振幅)
+    last_day = klines[-1]
+    if last_day[4] > 0:
+        indicators['day_amplitude'] = (last_day[3] - last_day[4]) / last_day[4] * 100
+    else:
+        indicators['day_amplitude'] = 0
+
+    # 量比 (前一个交易日的成交量 vs 再往前5个交易日的均量)
+    if len(volumes) >= 6:
+        today_vol = volumes[-1]
+        avg_5d_vol = sum(volumes[-6:-1]) / 5
+        if avg_5d_vol > 0:
+            indicators['vol_ratio'] = today_vol / avg_5d_vol
+        else:
+            indicators['vol_ratio'] = 1.0
+    else:
+        indicators['vol_ratio'] = 1.0
+
+    # 资金流入 (前一个交易日的净流入占比)
+    flow_row = db.execute("""
+        SELECT net_inflow_ratio FROM capital_flow_daily
+        WHERE stock_code = ? AND date < ?
+        ORDER BY date DESC LIMIT 1
+    """, (code, trade_date)).fetchone()
+
+    indicators['ticker_power'] = flow_row[0] if flow_row else 0
+    return indicators
+
 
 # === Sniper 信号检测参数 (与 intraday_sniper.py 完全一致) ===
 MEGA_MULTIPLIER = 3
@@ -178,12 +251,12 @@ def detect_signals(timeline):
     return signals
 
 
-def check_resonance(signals, cur_idx):
+def check_resonance(signals, cur_idx, score):
     """共振判断 — 复刻 engine.py 的 _evaluate_buy_resonance
     
     mega_buy (strength=90) 是唯一的买入触发信号，通过 strong_single 路径:
       - strength >= 80 ✅ (mega_buy=90)
-      - 假设活跃池中的股票 StockScorer 评分 >= 80 ✅
+      - 必须满足 StockScorer 评分 >= 80
     
     返回: (resonance_type, trigger_signal) 或 (None, None)
     """
@@ -192,11 +265,12 @@ def check_resonance(signals, cur_idx):
     if not cur_signals:
         return None, None
 
-    # 规则2: strong_single — mega_buy (strength=90 >= 80) 直接触发
-    # 活跃池股票假设 scorer >= 80 (系统设计意图)
+    # 规则2: strong_single — mega_buy (strength=90 >= 80) 且 StockScorer 评分 >= 80
     for s in cur_signals:
         if s.get('strength', 0) >= 80:  # mega_buy=90
-            return 'strong_single', s
+            if score >= 80:
+                return 'strong_single', s
+
 
     # 规则3: multi_green — 15分钟窗口内2种以上sniper绿色信号 (辅助路径)
     cutoff = max(0, cur_idx - RESONANCE_WINDOW)
@@ -301,6 +375,8 @@ def main():
     total_signals = defaultdict(int)
     resonance_stats = defaultdict(int)
 
+    scorer = StockScorer()
+
     for di, trade_date in enumerate(dates):
         day_start_val = pf.cash
         codes = [r[0] for r in db.execute(
@@ -309,10 +385,25 @@ def main():
 
         stock_data = {}
         stock_signals = {}
+        daily_scores = {}
+        scorer.reset_daily()
+
         for code in codes:
             tl = load_minute_data(db, code, trade_date)
             if len(tl) < 10: continue
             stock_data[code] = tl
+
+            # 计算 StockScorer 评分
+            ind = calc_pre_market_indicators(db, code, trade_date)
+            if ind:
+                try:
+                    res = scorer.score_stock(code, code, ind)
+                    daily_scores[code] = res.total_score
+                except Exception:
+                    daily_scores[code] = 0
+            else:
+                daily_scores[code] = 0
+
             sigs = detect_signals(tl)
             if sigs:
                 stock_signals[code] = sigs
@@ -346,7 +437,8 @@ def main():
 
                     # 绿色信号: 检查共振
                     if not sig['is_red']:
-                        res_type, trigger = check_resonance(sigs, sig['idx'])
+                        score = daily_scores.get(code, 0)
+                        res_type, trigger = check_resonance(sigs, sig['idx'], score)
                         if res_type and pf.can_buy(code, sig['idx']):
                             resonance_stats[res_type] += 1
                             # 用下一分钟价格模拟执行延迟
@@ -355,6 +447,7 @@ def main():
                             exec_price = tl[exec_idx]['price']
                             if exec_price <= 0: exec_price = sig['price']
                             pf.buy(code, code, exec_price, sig['idx'], trade_date, res_type)
+
 
         # 收盘强平
         pf.force_close_all(stock_data, trade_date)

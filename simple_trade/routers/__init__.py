@@ -58,6 +58,7 @@ from .data.stock_insight import router as stock_insight_router
 from .data.resistance_breakout import router as resistance_breakout_router
 from .data.stock_detail_composite import router as stock_detail_composite_router
 from .data.momentum import router as momentum_router
+from .data.watchlist import router as watchlist_router
 
 
 
@@ -111,3 +112,4 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(resistance_breakout_router)
     app.include_router(stock_detail_composite_router)
     app.include_router(momentum_router)
+    app.include_router(watchlist_router)

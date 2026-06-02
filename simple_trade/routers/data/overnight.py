@@ -547,14 +547,18 @@ async def get_dashboard_data(container=Depends(get_container)):
                 placeholders = ','.join(['?'] * len(codes))
                 # 资金流
                 cap_rows = container.db_manager.execute_query(
-                    f"SELECT stock_code, net_inflow_ratio, capital_score "
+                    f"SELECT stock_code, net_inflow_ratio, capital_score, main_net_inflow "
                     f"FROM capital_flow_cache WHERE stock_code IN ({placeholders}) "
                     f"GROUP BY stock_code HAVING MAX(timestamp)",
                     tuple(codes)
                 )
                 if cap_rows:
                     for r in cap_rows:
-                        capital_map[r[0]] = {'net_inflow_ratio': r[1] or 0, 'capital_score': r[2] or 50}
+                        capital_map[r[0]] = {
+                            'net_inflow_ratio': r[1] or 0,
+                            'capital_score': r[2] or 50,
+                            'main_net_inflow': r[3] or 0,
+                        }
 
                 # 大单
                 bo_rows = container.db_manager.execute_query(
@@ -623,6 +627,7 @@ async def get_dashboard_data(container=Depends(get_container)):
                 'capital_signal': capital_signal,
                 'capital_score': cap_score,
                 'net_inflow_ratio': net_ratio,
+                'main_net_inflow': cap.get('main_net_inflow', 0),
                 'big_order_ratio': round(bo_ratio, 2) if bo_ratio else 0,
                 'volume_ratio': quote.get('volume_ratio', 0),
                 'sniper_signals': sniper_map.get(code, []),
