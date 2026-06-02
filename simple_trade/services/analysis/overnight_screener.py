@@ -127,7 +127,7 @@ class OvernightScreener:
                 c_t.total_score *= c_t.penalty_factor
 
                 c_t.verdict = self._verdict(c_t.total_score)
-                if trend_score >= PASSING_SCORE:
+                if c_t.total_score >= PASSING_SCORE:
                     trend_candidates.append(c_t)
 
             # REVERSAL 策略已归档 → strategy_archive/reversal_v1.py
