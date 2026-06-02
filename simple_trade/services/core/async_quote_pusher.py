@@ -181,22 +181,26 @@ class AsyncQuotePusher:
 
         while self.is_running:
             try:
+                # 0. 收盘后暂停一切：不获取报价，不执行监控
+                if not MarketTimeHelper.is_any_market_trading():
+                    if self._loop_count % 60 == 1:
+                        logging.info("【行情推送】所有市场已收盘，暂停报价获取和策略监控")
+                    await asyncio.sleep(60)  # 收盘后每60秒检查一次是否开盘
+                    self._loop_count += 1
+                    continue
+
                 # 1. 始终执行报价获取周期
                 t0 = time.time()
                 quotes = await self.quote_pipeline.run_quote_cycle()
                 fetch_ms = (time.time() - t0) * 1000
 
-                # 2. 仅在监控启动 且 有市场正在交易时执行监控周期
+                # 2. 仅在监控启动时执行监控周期
                 t1 = time.time()
                 if self.state_manager.is_running() and quotes:
-                    if MarketTimeHelper.is_any_market_trading():
-                        try:
-                            await self.quote_pipeline.run_monitoring_cycle(quotes)
-                        except Exception as e:
-                            logging.error(f"监控周期异常（不影响报价获取）: {e}", exc_info=True)
-                    elif self._loop_count % 60 == 1:
-                        # 收盘后每5分钟打一次日志（60*5s=300s）
-                        logging.info("【行情推送】所有市场已收盘，暂停策略监控，仅保持报价获取")
+                    try:
+                        await self.quote_pipeline.run_monitoring_cycle(quotes)
+                    except Exception as e:
+                        logging.error(f"监控周期异常（不影响报价获取）: {e}", exc_info=True)
                 broadcast_ms = (time.time() - t1) * 1000
 
                 # P1-1: 记录每轮指标
