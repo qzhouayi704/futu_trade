@@ -4,7 +4,7 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useSocket } from "@/lib/socket";
 import { systemApi, quoteApi } from "@/lib/api";
 import { useToast } from "@/components/common/Toast";
@@ -63,8 +63,31 @@ export default function Dashboard() {
   // 市场概览折叠状态
   const [marketOverviewOpen, setMarketOverviewOpen] = useState(false);
 
+  // 实时价格覆盖层（WebSocket quotes_update 推送）
+  const [realtimePrices, setRealtimePrices] = useState<Record<string, number>>({});
+
+  // 合并持仓 + 实时价格
+  const livePositions = useMemo(() => {
+    if (Object.keys(realtimePrices).length === 0) return positions;
+    return positions.map((p: any) => {
+      const livePrice = realtimePrices[p.stock_code];
+      if (livePrice == null || livePrice === p.current_price) return p;
+      const costTotal = p.avg_price * p.quantity;
+      const newMarketValue = livePrice * p.quantity;
+      const newPL = newMarketValue - costTotal;
+      const newPLPct = costTotal > 0 ? (newPL / costTotal) : 0;
+      return {
+        ...p,
+        current_price: livePrice,
+        market_value: newMarketValue,
+        profit_loss: newPL,
+        profit_loss_pct: newPLPct,
+      };
+    });
+  }, [positions, realtimePrices]);
+
   // 持仓股票代码列表（传给 UnifiedSignalFeed 用于优先排序）
-  const positionStockCodes = positions.map((p: any) => p.stock_code);
+  const positionStockCodes = livePositions.map((p: any) => p.stock_code);
 
   // 启动监控
   const handleStartMonitor = () => {
@@ -133,9 +156,26 @@ export default function Dashboard() {
     // 防抖定时器
     let positionsUpdateTimer: NodeJS.Timeout | null = null;
 
-    // 报价更新 - 交易信号（命名函数，供 off 精确移除）
+    // 报价更新 — 实时价格 + 交易信号
     const handleQuotesUpdate = (data: { quotes: QuoteData[]; trade_actions?: any[] }) => {
-      // 有新的交易信号时追加
+      // 1. 用实时报价更新持仓现价
+      if (data.quotes && Array.isArray(data.quotes) && data.quotes.length > 0) {
+        setRealtimePrices(prev => {
+          const next = { ...prev };
+          let changed = false;
+          for (const q of data.quotes) {
+            const code = q.stock_code || q.code;
+            const price = q.current_price || q.last_price;
+            if (code && price && price > 0 && prev[code] !== price) {
+              next[code] = price;
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
+
+      // 2. 有新的交易信号时追加
       if (data.trade_actions && Array.isArray(data.trade_actions) && data.trade_actions.length > 0) {
         setTradeSignals(prev => {
           const newSignals = data.trade_actions!.map((a: any, idx: number) => ({
@@ -234,7 +274,7 @@ export default function Dashboard() {
 
         {/* 右列：持仓 + 资金流 (2/5 宽度) */}
         <div className="xl:col-span-2 space-y-4 md:space-y-6">
-          <PositionsCard positions={positions} loading={positionsLoading} />
+          <PositionsCard positions={livePositions} loading={positionsLoading} />
           <PositionFlowCard data={positionsCapitalFlow} loading={positionsCapitalFlowLoading} />
         </div>
       </div>
