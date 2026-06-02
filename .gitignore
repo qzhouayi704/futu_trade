@@ -66,6 +66,9 @@ node_modules/
 /diagnose_*.py
 /clear_*.py
 /migrate_*.py
+/scratch_*.py
+/check_*.py
+/cleanup_db.py
 test_*.html
 
 # Backtest results
