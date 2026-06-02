@@ -104,13 +104,7 @@ class StockInsightService:
     # ==================== 数据读取 ====================
 
     def _get_stock_name(self, stock_code: str) -> str:
-        try:
-            rows = self.db.execute_query(
-                "SELECT name FROM stocks WHERE code = ?", (stock_code,)
-            )
-            return rows[0][0] if rows else stock_code
-        except Exception:
-            return stock_code
+        return self.db.stock_queries.get_stock_name(stock_code)
 
     def _load_klines(self, stock_code: str, limit: int = 30) -> list:
         """加载K线数据（排除当天未完成K线，技术指标只用已收盘数据）"""

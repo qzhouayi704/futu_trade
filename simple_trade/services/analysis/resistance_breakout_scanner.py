@@ -497,13 +497,7 @@ class ResistanceBreakoutScanner:
     # ==================== 辅助方法 ====================
 
     def _get_stock_name(self, stock_code: str) -> str:
-        try:
-            rows = self.db.execute_query(
-                "SELECT name FROM stocks WHERE code = ?", (stock_code,)
-            )
-            return rows[0][0] if rows else ""
-        except Exception:
-            return ""
+        return self.db.stock_queries.get_stock_name(stock_code)
 
     def _build_signal_note(self, daily: dict, intraday: dict, capital: dict) -> str:
         """生成可读的信号描述"""
