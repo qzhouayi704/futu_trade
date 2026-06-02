@@ -100,6 +100,13 @@ archive/
 /_*
 *_out.txt
 
+# One-off scripts in scripts/
+simple_trade/scripts/_*.py
+simple_trade/scripts/_*.txt
+simple_trade/scripts/analyze_*.py
+simple_trade/scripts/check_*.py
+simple_trade/scripts/query_*.py
+
 # Non-code project files
 FUNCTION.md
 TODO.md
