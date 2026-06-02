@@ -127,7 +127,9 @@ class IntradaySniper:
     async def start(self):
         """启动引擎（由 app.py 在启动时调用）"""
         self._running = True
-        logger.info("IntradaySniper 引擎已启动")
+        # 从 DB 恢复今日信号（重启不丢数据）
+        self._load_today_signals_from_db()
+        logger.info(f"IntradaySniper 引擎已启动, 从DB恢复 {len(self._today_signals)} 条今日信号")
         asyncio.create_task(self._scan_loop())
 
     async def stop(self):
@@ -305,6 +307,7 @@ class IntradaySniper:
                 pushed = 0
                 for sig in new_signals:
                     self._today_signals.append(sig)
+                    self._save_signal_to_db(sig)
                     if sig.stock_code in top_codes:
                         await self._push_signal(sig)
                         pushed += 1
@@ -535,6 +538,51 @@ class IntradaySniper:
         accel_min = mega_floor * 0.5   # accel阈值 = mega地板的一半
         reversal_min = mega_floor       # reversal阈值 = mega地板
         return accel_min, mega_floor, reversal_min
+
+    # ==================== DB 持久化 ====================
+
+    def _save_signal_to_db(self, signal: SniperSignal):
+        """将信号保存到数据库"""
+        db = getattr(self.container, 'db_manager', None)
+        if not db:
+            return
+        try:
+            today = date.today().isoformat()
+            db.execute_insert(
+                '''INSERT INTO sniper_signals
+                   (trade_date, time, stock_code, stock_name, signal_type,
+                    is_red, price, detail, action, severity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (today, signal.time, signal.stock_code, signal.stock_name,
+                 signal.signal_type, signal.is_red, signal.price,
+                 signal.detail, signal.action, signal.severity)
+            )
+        except Exception as e:
+            logger.debug(f"保存信号到DB失败: {e}")
+
+    def _load_today_signals_from_db(self):
+        """启动时从DB加载今日信号"""
+        db = getattr(self.container, 'db_manager', None)
+        if not db:
+            return
+        try:
+            today = date.today().isoformat()
+            rows = db.execute_query(
+                '''SELECT time, stock_code, stock_name, signal_type, is_red,
+                          price, detail, action, severity
+                   FROM sniper_signals
+                   WHERE trade_date = ?
+                   ORDER BY id ASC''',
+                (today,)
+            )
+            for r in rows:
+                self._today_signals.append(SniperSignal(
+                    time=r[0], stock_code=r[1], stock_name=r[2],
+                    signal_type=r[3], is_red=bool(r[4]), price=float(r[5] or 0),
+                    detail=r[6] or '', action=r[7] or '', severity=r[8] or 'high',
+                ))
+        except Exception as e:
+            logger.warning(f"从DB加载今日信号失败: {e}")
 
     # ==================== 推送 ====================
 

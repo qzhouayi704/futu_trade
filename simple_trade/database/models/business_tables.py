@@ -428,6 +428,29 @@ class BusinessTables:
         'CREATE INDEX IF NOT EXISTS idx_scalping_events_stock_date ON scalping_events(stock_code, trade_date)',
     ]
 
+    # 盘中狙击信号持久化表
+    SNIPER_SIGNALS_TABLE = '''
+        CREATE TABLE IF NOT EXISTS sniper_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            stock_code VARCHAR(20) NOT NULL,
+            stock_name VARCHAR(100),
+            signal_type VARCHAR(30) NOT NULL,
+            is_red BOOLEAN NOT NULL,
+            price DECIMAL(10,3),
+            detail TEXT,
+            action TEXT,
+            severity VARCHAR(10) DEFAULT 'high',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''
+
+    SNIPER_SIGNALS_INDEXES = [
+        'CREATE INDEX IF NOT EXISTS idx_sniper_signals_date ON sniper_signals(trade_date)',
+        'CREATE INDEX IF NOT EXISTS idx_sniper_signals_code ON sniper_signals(stock_code, trade_date)',
+    ]
+
     # 历史基准统计表（用于动态阈值自适应）
     MARKET_BASELINES_TABLE = '''
         CREATE TABLE IF NOT EXISTS market_baselines (

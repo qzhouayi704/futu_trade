@@ -167,6 +167,8 @@ class DatabaseSchema(BaseTables, BusinessTables):
             cls.SCALPING_EVENTS_TABLE,
             # === 盘后优选 ===
             cls.OVERNIGHT_SCREEN_RESULTS_TABLE,
+            # === 盘中狙击 ===
+            cls.SNIPER_SIGNALS_TABLE,
             # === 历史基准 ===
             cls.MARKET_BASELINES_TABLE,
             # === 分时数据 ===
@@ -191,6 +193,9 @@ class DatabaseSchema(BaseTables, BusinessTables):
         # 添加 CCASS 持仓索引
         if hasattr(cls, 'CCASS_HOLDINGS_INDEXES'):
             indexes.extend(cls.CCASS_HOLDINGS_INDEXES)
+        # 添加盘中狙击索引
+        if hasattr(cls, 'SNIPER_SIGNALS_INDEXES'):
+            indexes.extend(cls.SNIPER_SIGNALS_INDEXES)
         return indexes
 
 

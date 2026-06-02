@@ -807,9 +807,9 @@ async def _get_alert_stock_codes(container, db, source: str) -> list:
         # 从狙击信号 + 盘后优选收集股票
         focus_codes = set()
         try:
-            # 1. 今日信号管线中的股票（替代不存在的 sniper_signals 表）
+            # 1. 今日狙击信号股
             sniper_rows = await db.async_execute_query("""
-                SELECT DISTINCT stock_code FROM signal_pipeline
+                SELECT DISTINCT stock_code FROM sniper_signals
                 WHERE trade_date = DATE('now', 'localtime')
             """)
             if sniper_rows:
