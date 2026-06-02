@@ -112,14 +112,7 @@ async def get_recommendations(container=Depends(get_container)):
             else:
                 # 没有资金流/策略信号，但有大单数据的股票也纳入推荐
                 # 获取股票名称
-                name = ""
-                try:
-                    name_row = db.execute_query(
-                        "SELECT name FROM stocks WHERE code = ?", (code,)
-                    )
-                    name = name_row[0][0] if name_row else ""
-                except Exception:
-                    pass
+                name = db.stock_queries.get_stock_name(code)
                 stock_data[code] = {
                     "stock_code": code,
                     "stock_name": name,
@@ -369,11 +362,7 @@ async def pre_trade_check(stock_code: str, container=Depends(get_container)):
 
     try:
         # ---- 1. 股票名称 ----
-        name_rows = db.execute_query(
-            "SELECT name FROM stocks WHERE code = ? LIMIT 1", (stock_code,)
-        )
-        if name_rows:
-            result["stock_name"] = name_rows[0][0]
+        result["stock_name"] = db.stock_queries.get_stock_name(stock_code)
 
         # ---- 2. 资金流信号（今日） ----
         flow_rows = db.execute_query("""

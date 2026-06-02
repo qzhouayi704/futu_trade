@@ -211,10 +211,7 @@ class BreakoutScanner:
         )
 
         # 获取股票名称
-        name_row = self.db.execute_query(
-            "SELECT name FROM stocks WHERE code = ?", (stock_code,)
-        )
-        name = name_row[0][0] if name_row else ""
+        name = self.db.stock_queries.get_stock_name(stock_code)
 
         # 信号描述
         note = (

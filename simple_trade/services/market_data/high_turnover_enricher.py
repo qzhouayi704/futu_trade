@@ -406,15 +406,7 @@ class HighTurnoverEnricher:
                 str_val = strength
 
             # 获取股票名称
-            name = code
-            try:
-                name_rows = db.execute_query(
-                    "SELECT name FROM stocks WHERE code = ?", (code,)
-                )
-                if name_rows:
-                    name = name_rows[0][0] or code
-            except Exception:
-                pass
+            name = db.stock_queries.get_stock_name(code)
 
             # 获取换手率用于动态阈值（P3）
             avg_turnover = 1.0

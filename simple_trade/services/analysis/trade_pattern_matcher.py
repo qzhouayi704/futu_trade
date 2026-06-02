@@ -209,13 +209,7 @@ class TradePatternMatcher:
         pattern_id = self._classify_pattern(features)
 
         if not stock_name:
-            try:
-                rows = self.db.execute_query(
-                    "SELECT name FROM stocks WHERE code = ?", (code,)
-                )
-                stock_name = rows[0][0] if rows else code
-            except Exception:
-                stock_name = code
+            stock_name = self.db.stock_queries.get_stock_name(code)
 
         rise_info = self._get_post_buy_rise_info(code, buy_date, buy_price)
         pdef = PATTERN_DEFS.get(pattern_id, {})
