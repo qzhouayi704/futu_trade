@@ -807,25 +807,31 @@ async def _get_alert_stock_codes(container, db, source: str) -> list:
         # 从狙击信号 + 盘后优选收集股票
         focus_codes = set()
         try:
-            # 1. 今日狙击信号股
+            # 1. 今日信号管线中的股票（替代不存在的 sniper_signals 表）
             sniper_rows = await db.async_execute_query("""
-                SELECT DISTINCT stock_code FROM sniper_signals
-                WHERE DATE(created_at) = DATE('now', 'localtime')
+                SELECT DISTINCT stock_code FROM signal_pipeline
+                WHERE trade_date = DATE('now', 'localtime')
             """)
             if sniper_rows:
-                focus_codes.update(r[0] for r in sniper_rows)
+                focus_codes.update(r[0] for r in sniper_rows if r[0])
         except Exception:
             pass
         try:
-            # 2. 最新盘后优选股
+            # 2. 最新盘后优选股（从 candidates_json 解析，该表无 stock_code 列）
+            import json as _json
             overnight_rows = await db.async_execute_query("""
-                SELECT DISTINCT stock_code FROM overnight_screen_results
+                SELECT candidates_json FROM overnight_screen_results
                 WHERE screen_date = (
                     SELECT MAX(screen_date) FROM overnight_screen_results
                 )
             """)
-            if overnight_rows:
-                focus_codes.update(r[0] for r in overnight_rows)
+            if overnight_rows and overnight_rows[0][0]:
+                candidates = _json.loads(overnight_rows[0][0])
+                if isinstance(candidates, list):
+                    for c in candidates:
+                        code = c.get('stock_code', c.get('code', '')) if isinstance(c, dict) else ''
+                        if code:
+                            focus_codes.add(code)
         except Exception:
             pass
         # 3. 当前持仓股也纳入

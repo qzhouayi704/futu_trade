@@ -105,11 +105,46 @@ class DatabaseManager:
                 conn.commit()
 
             logging.info("数据库初始化完成（含表、迁移和索引）")
+
+            # 4. 自动清理旧数据（防止 DB 无限膨胀）
+            self._auto_cleanup_old_data()
+
             return True
 
         except Exception as e:
             logging.error(f"数据库初始化失败: {e}")
             return False
+
+    def _auto_cleanup_old_data(self):
+        """启动时自动清理过期数据（防止 DB 无限膨胀）
+
+        保留策略:
+        - ticker_data: 7 天（占 DB 90%+ 空间）
+        - big_order_tracking: 30 天
+        - signal_performance: 30 天
+        - capital_flow_cache: 30 天
+        """
+        import time
+        cleanup_rules = [
+            ('ticker_data', 'trade_date', 7),
+            ('big_order_tracking', 'timestamp', 30),
+            ('signal_performance', 'created_at', 30),
+            ('capital_flow_cache', 'timestamp', 30),
+        ]
+        for table, date_col, keep_days in cleanup_rules:
+            try:
+                cutoff = time.strftime('%Y-%m-%d', time.localtime(time.time() - keep_days * 86400))
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    # 先检查是否需要清理
+                    cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE {date_col} < ?", (cutoff,))
+                    old_count = cursor.fetchone()[0]
+                    if old_count > 0:
+                        cursor.execute(f"DELETE FROM {table} WHERE {date_col} < ?", (cutoff,))
+                        conn.commit()
+                        logging.info(f"[自动清理] {table}: 删除 {old_count:,} 条 {keep_days} 天前数据")
+            except Exception as e:
+                logging.warning(f"[自动清理] {table} 清理失败: {e}")
 
     def _run_auto_migrations(self):
         """自动运行数据库迁移（添加缺失的列）"""
@@ -264,7 +299,7 @@ class DatabaseManager:
                 )
                 return future.result(timeout=15.0)
             except Exception as e:
-                logging.error(f"写队列执行失败，降级直接写入: {e}")
+                logging.error(f"写队列execute_update超时({type(e).__name__}), 降级直写: {query[:80]}")
                 return self.system_queries.execute_update(query, params)
         return self.system_queries.execute_update(query, params)
 
@@ -277,7 +312,7 @@ class DatabaseManager:
                 )
                 return future.result(timeout=15.0)
             except Exception as e:
-                logging.error(f"写队列执行失败，降级直接写入: {e}")
+                logging.error(f"写队列execute_insert超时({type(e).__name__}), 降级直写: {query[:80]}")
                 return self.trade_queries.execute_insert(query, params)
         return self.trade_queries.execute_insert(query, params)
 
@@ -290,7 +325,7 @@ class DatabaseManager:
                 )
                 return future.result(timeout=30.0)
             except Exception as e:
-                logging.error(f"写队列执行失败，降级直接写入: {e}")
+                logging.error(f"写队列execute_many超时({type(e).__name__}, {len(params_list)}条), 降级直写: {query[:80]}")
                 return self.system_queries.execute_many(query, params_list)
         return self.system_queries.execute_many(query, params_list)
 
