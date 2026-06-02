@@ -1,4 +1,6 @@
-// Dashboard 首页
+// Dashboard 首页 — "战斗站"布局
+// 双列结构：左=信号流 | 右=持仓+资金流
+// 下方：推荐操作 + 可折叠市场概览
 
 "use client";
 
@@ -16,11 +18,11 @@ import {
   SignalsCard,
   PositionsCard,
   PlateAlertsCard,
-  SniperCard,
   SignalPipelineCard,
   SimulatedTradeCard,
   PositionFlowCard,
   OvernightScreenCard,
+  UnifiedSignalFeed,
 } from "./components/dashboard";
 import { AlertsCard } from "./components/dashboard/AlertsCard";
 import {
@@ -57,6 +59,12 @@ export default function Dashboard() {
 
   // 最后更新时间
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+
+  // 市场概览折叠状态
+  const [marketOverviewOpen, setMarketOverviewOpen] = useState(false);
+
+  // 持仓股票代码列表（传给 UnifiedSignalFeed 用于优先排序）
+  const positionStockCodes = positions.map((p: any) => p.stock_code);
 
   // 启动监控
   const handleStartMonitor = () => {
@@ -188,7 +196,7 @@ export default function Dashboard() {
 
 
   return (
-    <div className="container mx-auto px-3 md:px-4 py-4 md:py-6 max-w-7xl">
+    <div className="container mx-auto px-3 md:px-4 py-4 md:py-6 max-w-[1600px]">
       {/* 启动监控 Modal */}
       <MonitorStartModal
         isOpen={startModalOpen}
@@ -196,31 +204,7 @@ export default function Dashboard() {
         onSuccess={handleStartSuccess}
       />
 
-      {/* 页面标题 */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-4 md:mb-6">
-        <h1 className="text-xl md:text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <svg className="w-5 h-5 md:w-6 md:h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
-          系统概览
-        </h1>
-        <div className="flex items-center gap-2 md:gap-4">
-          <span className="text-xs md:text-sm text-gray-500">
-            {lastUpdate ? lastUpdate.toLocaleTimeString("zh-CN") : "--:--:--"}
-          </span>
-          <button
-            onClick={handleRefreshAll}
-            className="px-2.5 md:px-3 py-1 text-xs md:text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            刷新
-          </button>
-        </div>
-      </div>
-
-      {/* 系统状态 + 核心指标 */}
+      {/* ═══ 顶栏：系统状态 + 核心指标 ═══ */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 mb-4 md:mb-6">
         <SystemStatusCard
           status={systemStatus ?? null}
@@ -232,62 +216,84 @@ export default function Dashboard() {
         <StatsGrid stats={stats ?? null} positionCount={positions.length} className="lg:col-span-2" />
       </div>
 
-      {/* 策略面板 */}
+      {/* ═══ 策略面板 ═══ */}
       <div className="mb-4 md:mb-6">
         <StrategyPanel />
       </div>
 
-      {/* 盘后优选 */}
+      {/* ═══ 核心区域：双列布局 ═══ */}
+      {/* 左列=信号流 | 右列=持仓+资金流 */}
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4 md:gap-6 mb-4 md:mb-6">
+        {/* 左列：统一信号流 (3/5 宽度) */}
+        <div className="xl:col-span-3 space-y-4 md:space-y-6">
+          <UnifiedSignalFeed
+            positionStockCodes={positionStockCodes}
+            maxItems={25}
+          />
+        </div>
+
+        {/* 右列：持仓 + 资金流 (2/5 宽度) */}
+        <div className="xl:col-span-2 space-y-4 md:space-y-6">
+          <PositionsCard positions={positions} loading={positionsLoading} />
+          <PositionFlowCard data={positionsCapitalFlow} loading={positionsCapitalFlowLoading} />
+        </div>
+      </div>
+
+      {/* ═══ 推荐操作区：盘后优选 ═══ */}
       <div className="mb-4 md:mb-6">
         <OvernightScreenCard />
       </div>
 
-      {/* 盘中狙击 + 量价预警 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
-        <SniperCard />
-        <AlertsCard />
-      </div>
-
-      {/* 持仓概览 + 持仓资金流向 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
-        <PositionsCard positions={positions} loading={positionsLoading} />
-        <PositionFlowCard data={positionsCapitalFlow} loading={positionsCapitalFlowLoading} />
-      </div>
-
-      {/* 交易信号追踪 */}
+      {/* ═══ 市场概览（可折叠） ═══ */}
       <div className="mb-4 md:mb-6">
-        <SignalPipelineCard />
-      </div>
+        <button
+          onClick={() => setMarketOverviewOpen(!marketOverviewOpen)}
+          className="w-full flex items-center justify-between px-4 py-3 bg-card border border-border rounded-xl hover:bg-accent/30 transition-colors"
+        >
+          <span className="text-sm font-semibold text-foreground flex items-center gap-2">
+            📊 市场概览
+            <span className="text-xs font-normal text-muted-foreground">
+              板块热度 · 热门股 · 活跃个股 · 模拟交易 · 预警
+            </span>
+          </span>
+          <svg
+            className={`w-4 h-4 text-muted-foreground transition-transform duration-200 ${marketOverviewOpen ? "rotate-180" : ""}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
 
-      {/* 模拟交易记录 */}
-      <div className="mb-4 md:mb-6">
-        <SimulatedTradeCard />
-      </div>
+        {marketOverviewOpen && (
+          <div className="mt-4 space-y-4 md:space-y-6 animate-in slide-in-from-top-2 duration-200">
+            {/* 盘中狙击 + 量价预警（原始详情版） */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+              <AlertsCard />
+              <PlateAlertsCard />
+            </div>
 
-      {/* 板块预警 */}
-      <div className="mb-4 md:mb-6">
-        <PlateAlertsCard />
-      </div>
+            {/* 板块热度 + 热门股票 */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+              <PlateHeatCard plates={plates} loading={platesLoading} />
+              <HotStocksCard stocks={hotStocks} loading={hotStocksLoading} />
+            </div>
 
-      {/* 板块热度 + 热门股票 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
-        <PlateHeatCard plates={plates} loading={platesLoading} />
-        <HotStocksCard stocks={hotStocks} loading={hotStocksLoading} />
-      </div>
+            {/* 活跃个股 */}
+            <HighTurnoverCard stocks={highTurnoverStocks} loading={highTurnoverLoading} />
 
-      {/* 活跃个股 */}
-      <div className="mb-4 md:mb-6">
-        <HighTurnoverCard stocks={highTurnoverStocks} loading={highTurnoverLoading} />
-      </div>
+            {/* 交易信号追踪 */}
+            <SignalPipelineCard />
 
-      {/* 交易信号 */}
-      <div className="mb-4 md:mb-6">
-        <SignalsCard signals={tradeSignals} loading={signalsLoading} />
-      </div>
+            {/* 模拟交易记录 */}
+            <SimulatedTradeCard />
 
-      {/* 信号分组 */}
-      <div className="mb-4 md:mb-6">
-        <SignalTabs />
+            {/* 交易信号 */}
+            <SignalsCard signals={tradeSignals} loading={signalsLoading} />
+
+            {/* 信号分组 */}
+            <SignalTabs />
+          </div>
+        )}
       </div>
     </div>
   );

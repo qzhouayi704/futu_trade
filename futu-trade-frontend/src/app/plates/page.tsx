@@ -298,7 +298,7 @@ export default function PlatesPage() {
                                 {plate.leader_stocks?.map((stock) => (
                                   <Link
                                     key={stock.stock_code}
-                                    href={`/kline?code=${stock.stock_code}`}
+                                    href={`/stock-detail?code=${stock.stock_code}`}
                                     className="block p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all"
                                   >
                                     <div className="flex items-center justify-between">

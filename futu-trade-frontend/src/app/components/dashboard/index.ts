@@ -13,5 +13,6 @@ export { SimulatedTradeCard } from "./SimulatedTradeCard";
 export { SignalPipelineCard } from "./SignalPipelineCard";
 export { PositionFlowCard } from "./PositionFlowCard";
 export { OvernightScreenCard } from "./OvernightScreenCard";
+export { UnifiedSignalFeed } from "./UnifiedSignalFeed";
 
 

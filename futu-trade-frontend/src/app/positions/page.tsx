@@ -9,6 +9,16 @@ export default function PositionsPage() {
   const [positions, setPositions] = useState<BackendPosition[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedStocks, setExpandedStocks] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (code: string) => {
+    setExpandedStocks(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return next;
+    });
+  };
+
 
   const fetchPositions = useCallback(async () => {
     try {
@@ -116,37 +126,63 @@ export default function PositionsPage() {
       {/* 持仓股票资金走势网格 */}
       {!loading && positions.length > 0 && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {positions.map((pos) => (
+          {positions.map((pos) => {
+            const isExpanded = expandedStocks.has(pos.stock_code);
+            return (
             <div key={pos.stock_code} className="relative">
               {/* 持仓信息条 */}
-              <div className="bg-white border border-gray-200 rounded-t-lg px-3 md:px-4 py-2 flex flex-col md:flex-row md:items-center justify-between gap-1 md:gap-0">
+              <div className={`bg-white dark:bg-card border border-gray-200 dark:border-border ${isExpanded ? 'rounded-t-lg' : 'rounded-lg'} px-3 md:px-4 py-2 flex flex-col md:flex-row md:items-center justify-between gap-1 md:gap-0`}>
                 <div className="flex items-center gap-2 md:gap-3 flex-wrap">
-                  <span className="font-bold text-gray-800">{pos.stock_name}</span>
-                  <span className="text-xs text-gray-400">{pos.stock_code}</span>
-                  <span className="text-xs text-gray-500">
+                  <span className="font-bold text-gray-800 dark:text-foreground">{pos.stock_name}</span>
+                  <span className="text-xs text-gray-400 dark:text-muted-foreground">{pos.stock_code}</span>
+                  <span className="text-xs text-gray-500 dark:text-muted-foreground">
                     {pos.qty}股 · 成本 {pos.cost_price.toFixed(3)}
                   </span>
                 </div>
                 <div className="flex items-center gap-2 md:gap-3 text-sm">
-                  <span className="text-gray-500">
-                    现价 <span className="font-medium text-gray-800">{pos.nominal_price.toFixed(3)}</span>
+                  <span className="text-gray-500 dark:text-muted-foreground">
+                    现价 <span className="font-medium text-gray-800 dark:text-foreground">{pos.nominal_price.toFixed(3)}</span>
                   </span>
                   <span className={`font-bold ${pos.pl_val >= 0 ? 'text-red-600' : 'text-green-600'}`}>
                     {formatPL(pos.pl_val)} ({pos.pl_ratio >= 0 ? '+' : ''}{(pos.pl_ratio * 100).toFixed(2)}%)
                   </span>
+                  {/* 快速操作按钮 */}
+                  <div className="flex items-center gap-1">
+                    <a
+                      href={`/stock-detail?code=${pos.stock_code}`}
+                      className="text-[10px] px-2 py-1 rounded bg-gray-100 dark:bg-gray-800/50 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700/50 transition-colors font-medium"
+                    >
+                      🔍 分析
+                    </a>
+                    <a
+                      href={`/trading?stock=${pos.stock_code}`}
+                      className="text-[10px] px-2 py-1 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors font-medium"
+                    >
+                      📈 交易
+                    </a>
+                    <button
+                      onClick={() => toggleExpand(pos.stock_code)}
+                      className="text-[10px] px-2 py-1 rounded bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-800/30 transition-colors font-medium"
+                    >
+                      {isExpanded ? '收起' : '📊 资金'}
+                    </button>
+                  </div>
                 </div>
               </div>
-              {/* 复用 IntradayLevelsPanel */}
-              <div className="[&>div]:mt-0 [&>div]:rounded-t-none [&>div]:border-t-0">
-                <IntradayLevelsPanel
-                  stockCode={pos.stock_code}
-                  stockName={pos.stock_name}
-                  onClose={() => {}}
-                  showClose={false}
-                />
-              </div>
+              {/* IntradayLevelsPanel — 点击展开（懒加载） */}
+              {isExpanded && (
+                <div className="[&>div]:mt-0 [&>div]:rounded-t-none [&>div]:border-t-0">
+                  <IntradayLevelsPanel
+                    stockCode={pos.stock_code}
+                    stockName={pos.stock_name}
+                    onClose={() => toggleExpand(pos.stock_code)}
+                    showClose={false}
+                  />
+                </div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

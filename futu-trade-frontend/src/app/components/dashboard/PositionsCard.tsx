@@ -194,13 +194,33 @@ export function PositionsCard({ positions, loading = false }: PositionsCardProps
                         </div>
                       </div>
 
-                      {/* 第二行：持仓数据 */}
+                      {/* 第二行：持仓数据 + 快速操作 */}
                       <div className="flex items-center justify-between text-xs text-gray-600">
-                        <span>持仓: {position.quantity ?? 0}</span>
-                        <span>成本: {(position.avg_price ?? 0).toFixed(2)}</span>
-                        <span>现价: {(position.current_price ?? 0).toFixed(2)}</span>
-                        <span>市值: {(position.market_value ?? 0).toFixed(0)}</span>
+                        <div className="flex items-center gap-3">
+                          <span>持仓: {position.quantity ?? 0}</span>
+                          <span>成本: {(position.avg_price ?? 0).toFixed(2)}</span>
+                          <span>现价: {(position.current_price ?? 0).toFixed(2)}</span>
+                          <span>市值: {(position.market_value ?? 0).toFixed(0)}</span>
+                        </div>
+                        {/* 快速操作按钮 */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Link
+                            href={`/stock-detail?code=${position.stock_code}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-800/50 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700/50 transition-colors font-medium"
+                          >
+                            🔍分析
+                          </Link>
+                          <Link
+                            href={`/trading?stock=${position.stock_code}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors font-medium"
+                          >
+                            📈交易
+                          </Link>
+                        </div>
                       </div>
+
 
                       {/* 展开：操作建议详情 */}
                       {isExpanded && advice && (

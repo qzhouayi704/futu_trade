@@ -343,6 +343,33 @@ export default function TradePanel() {
                 </Button>
               </div>
 
+              {/* 内联Pre-check结果预览 */}
+              {checkingTrade && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700 flex items-center gap-2">
+                  <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                  正在检查交易条件...
+                </div>
+              )}
+              {preCheckResult && !checkingTrade && (
+                <div
+                  className={`rounded-lg p-3 border text-sm ${
+                    preCheckResult.verdict === "STOP"
+                      ? "bg-red-50 border-red-300 text-red-700"
+                      : preCheckResult.verdict === "CAUTION"
+                      ? "bg-yellow-50 border-yellow-300 text-yellow-700"
+                      : "bg-green-50 border-green-300 text-green-700"
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-bold text-xs">
+                    <span>
+                      {preCheckResult.verdict === "STOP" ? "🚫" : preCheckResult.verdict === "CAUTION" ? "⚠️" : "✅"}
+                    </span>
+                    {preCheckResult.verdict} · 评分 {preCheckResult.score}
+                  </div>
+                  <p className="text-[11px] mt-1 opacity-80">{preCheckResult.verdict_reason}</p>
+                </div>
+              )}
+
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm text-yellow-800">
                 <i className="fas fa-exclamation-triangle mr-1"></i>
                 交易将通过富途API执行，请确保富途客户端已登录
@@ -480,18 +507,50 @@ export default function TradePanel() {
                             {formatPercent(position.pl_ratio || 0)}
                           </td>
                           <td className="px-4 py-3 text-center">
-                            <button
-                              onClick={() =>
-                                setExpandedStock(
-                                  expandedStock === position.stock_code
-                                    ? null
-                                    : position.stock_code
-                                )
-                              }
-                              className="text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50"
-                            >
-                              {expandedStock === position.stock_code ? "收起" : "分仓"}
-                            </button>
+                            <div className="flex items-center justify-center gap-1">
+                              <a
+                                href={`/stock-detail?code=${position.stock_code}`}
+                                className="text-[10px] px-1.5 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors font-medium"
+                              >
+                                🔍
+                              </a>
+                              <button
+                                onClick={() => setTakeProfitTarget(position)}
+                                className="text-[10px] px-1.5 py-1 rounded bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors font-medium"
+                                title="设置止盈"
+                              >
+                                🎯
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSelectedStock({
+                                    stock_code: position.stock_code,
+                                    stock_name: position.stock_name,
+                                    signal_type: "sell",
+                                    signal_price: position.current_price || 0,
+                                    id: 0,
+                                  } as TradeSignal);
+                                  setTradeQuantity(position.qty || position.quantity || 0);
+                                  setTradeType("sell");
+                                }}
+                                className="text-[10px] px-1.5 py-1 rounded bg-green-50 text-green-700 hover:bg-green-100 transition-colors font-medium"
+                                title="快速卖出"
+                              >
+                                📤卖出
+                              </button>
+                              <button
+                                onClick={() =>
+                                  setExpandedStock(
+                                    expandedStock === position.stock_code
+                                      ? null
+                                      : position.stock_code
+                                  )
+                                }
+                                className="text-xs text-blue-600 hover:text-blue-800 px-1.5 py-1 rounded hover:bg-blue-50 transition-colors"
+                              >
+                                {expandedStock === position.stock_code ? "收起" : "分仓"}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                         {expandedStock === position.stock_code && (

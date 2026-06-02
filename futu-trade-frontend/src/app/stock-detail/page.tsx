@@ -133,13 +133,33 @@ export default function StockDetailPage() {
               </svg>
             </div>
           </form>
-          {stock && (
-            <span className="text-xs text-muted-foreground">
-              自动刷新 · 30s
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {stock && (
+              <span className="text-xs text-muted-foreground">
+                自动刷新 · 30s
+              </span>
+            )}
+            {/* 快速操作按钮 */}
+            {stockCode && (
+              <div className="flex items-center gap-1.5">
+                <a
+                  href={`/pre-check?code=${stockCode}`}
+                  className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-500/20 transition-colors font-medium flex items-center gap-1"
+                >
+                  ⚡ 快速检查
+                </a>
+                <a
+                  href={`/trading?stock=${stockCode}`}
+                  className="text-xs px-2.5 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors font-medium flex items-center gap-1"
+                >
+                  📈 下单
+                </a>
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
 
       {/* Dashboard 内容 */}
       <div className="p-5 space-y-5 max-w-[1600px] mx-auto">

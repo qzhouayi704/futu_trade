@@ -2,6 +2,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Search, TrendingUp, TrendingDown, RefreshCw, Sparkles, BarChart3, ShieldCheck, Activity } from "lucide-react";
@@ -198,6 +199,7 @@ function RecCard({ rec, onClick }: { rec: Recommendation; onClick: () => void })
         <div className="flex flex-wrap gap-1">
           {rec.reasons.slice(0, 3).map((r, i) => (
             <span key={i} className="text-xs text-gray-400">{r}</span>
+
           ))}
         </div>
         {strength !== 0 && (
@@ -227,6 +229,16 @@ export default function PreTradeCheckPage() {
   const [patterns, setPatterns] = useState<PatternData | null>(null);
   const [patternsLoading, setPatternsLoading] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
+  const searchParams = useSearchParams();
+
+  // URL参数自动检查（从 Dashboard 信号流点击进来）
+  useEffect(() => {
+    const urlCode = searchParams.get("code");
+    if (urlCode && !code) {
+      setCode(urlCode);
+      doCheck(urlCode);
+    }
+  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 加载推荐列表
   const loadRecs = useCallback(async () => {
@@ -302,14 +314,13 @@ export default function PreTradeCheckPage() {
 
   return (
     <div className="min-h-screen bg-[#f0f2f5] dark:bg-[#0a0a0f] text-gray-900 dark:text-gray-100">
-      {/* === Premium Header with gradient === */}
-      <header className="relative overflow-hidden border-b border-gray-200/80 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm">
-        <div className="absolute inset-0 bg-gradient-to-r from-blue-50/50 via-purple-50/30 to-emerald-50/50 dark:from-blue-900/10 dark:via-purple-900/10 dark:to-emerald-900/10" />
-        <div className="relative max-w-7xl mx-auto px-3 md:px-6 py-4 md:py-5 flex items-center justify-between">
+      <div className="max-w-[1600px] mx-auto px-3 md:px-6 py-4 md:py-6">
+        {/* 页面标题栏 */}
+        <div className="flex items-center justify-between mb-4 md:mb-6">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600
                           flex items-center justify-center shadow-lg shadow-blue-500/20">
-              <Activity className="w-5 h-5 text-white" />
+              <Activity className="w-4 h-4 text-white" />
             </div>
             <div>
               <h1 className="text-lg font-semibold tracking-tight text-gray-900 dark:text-white">交易决策中心</h1>
@@ -327,41 +338,39 @@ export default function PreTradeCheckPage() {
                 </Badge>
               </>
             )}
-            <ThemeToggle />
           </div>
         </div>
-      </header>
 
-      <div className="max-w-7xl mx-auto px-3 md:px-6 py-4 md:py-8 space-y-4 md:space-y-8">
+        {/* ═══ 双列布局：左=推荐+模式 | 右=检查结果(sticky) ═══ */}
+        <div className="grid grid-cols-1 xl:grid-cols-5 gap-4 md:gap-6">
+          {/* 左列：推荐 + 模式匹配 (3/5) */}
+          <div className="xl:col-span-3 space-y-4 md:space-y-6">
+
         {/* ===== KPI 概览卡片 ===== */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-5">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
           <div className="bg-white dark:bg-gray-900 rounded-xl md:rounded-2xl border border-gray-200 dark:border-gray-800 p-3 md:p-5 shadow-sm">
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">买入推荐</p>
             <p className="text-2xl md:text-3xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
               {recs?.buy_recommendations.length ?? "—"}
             </p>
-            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">实时信号</p>
           </div>
           <div className="bg-white dark:bg-gray-900 rounded-xl md:rounded-2xl border border-gray-200 dark:border-gray-800 p-3 md:p-5 shadow-sm">
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">卖出推荐</p>
             <p className="text-2xl md:text-3xl font-bold text-red-600 dark:text-red-400 tabular-nums">
               {recs?.sell_recommendations.length ?? "—"}
             </p>
-            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">持仓预警</p>
           </div>
           <div className="bg-white dark:bg-gray-900 rounded-xl md:rounded-2xl border border-gray-200 dark:border-gray-800 p-3 md:p-5 shadow-sm">
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">模式匹配</p>
             <p className="text-2xl md:text-3xl font-bold text-blue-600 dark:text-blue-400 tabular-nums">
               {patterns?.similar_stocks.length ?? "—"}
             </p>
-            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">符合历史模式</p>
           </div>
           <div className="bg-white dark:bg-gray-900 rounded-xl md:rounded-2xl border border-gray-200 dark:border-gray-800 p-3 md:p-5 shadow-sm">
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">参考案例</p>
             <p className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white tabular-nums">
               {patterns?.trade_patterns.length ?? "—"}
             </p>
-            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">历史成功记录</p>
           </div>
         </div>
 
@@ -622,7 +631,13 @@ export default function PreTradeCheckPage() {
           </CardContent>
         </Card>
 
-        {/* ===== 下半部分：单股检查 ===== */}
+          </div>{/* 左列结束 */}
+
+          {/* 右列：买入检查 (2/5, sticky) */}
+          <div className="xl:col-span-2">
+            <div className="xl:sticky xl:top-4 space-y-4">
+
+        {/* ===== 买入前检查 ===== */}
         <Card className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
           <CardHeader className="pb-3 pt-5 px-5">
             <CardTitle className="text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center gap-2 mb-3">
@@ -848,6 +863,10 @@ export default function PreTradeCheckPage() {
           )}
           </CardContent>
         </Card>
+
+            </div>{/* sticky end */}
+          </div>{/* 右列结束 */}
+        </div>{/* grid end */}
       </div>
     </div>
   );
