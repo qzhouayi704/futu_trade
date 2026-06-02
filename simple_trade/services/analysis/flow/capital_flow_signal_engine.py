@@ -57,6 +57,15 @@ class CapitalFlowSignalEngine:
 
         # 日均成交额缓存 {stock_code: amount}
         self._avg_turnover_cache: Dict[str, float] = {}
+        self._avg_turnover_cache_date: str = ""
+
+        # 资金流历史缓存 {stock_code: list} — 每日清空
+        self._flow_history_cache: Dict[str, List[dict]] = {}
+        self._flow_history_cache_date: str = ""
+
+        # K线位置缓存 {stock_code: (high, low)} — 每日清空，位置根据 current_price 动态计算
+        self._kline_range_cache: Dict[str, tuple] = {}
+        self._kline_range_cache_date: str = ""
 
         # 信号记录表初始化标记
         self._table_ensured = False
@@ -268,7 +277,15 @@ class CapitalFlowSignalEngine:
             return {}
 
     def _get_flow_history(self, stock_code: str) -> List[dict]:
-        """获取近5日资金流历史（从DB读取，不调API）"""
+        """获取近5日资金流历史（从 DB 读取，每日缓存）"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        if self._flow_history_cache_date != today:
+            self._flow_history_cache.clear()
+            self._flow_history_cache_date = today
+
+        if stock_code in self._flow_history_cache:
+            return self._flow_history_cache[stock_code]
+
         if not self._db:
             return []
         try:
@@ -278,11 +295,14 @@ class CapitalFlowSignalEngine:
                 WHERE stock_code = ? ORDER BY date DESC LIMIT 5
             """, (stock_code,))
             if not rows:
-                return []
-            return [
-                {'date': r[0], 'net_inflow': r[1], 'net_inflow_ratio': r[2]}
-                for r in rows
-            ]
+                result = []
+            else:
+                result = [
+                    {'date': r[0], 'net_inflow': r[1], 'net_inflow_ratio': r[2]}
+                    for r in rows
+                ]
+            self._flow_history_cache[stock_code] = result
+            return result
         except Exception:
             return []
 
@@ -332,7 +352,12 @@ class CapitalFlowSignalEngine:
         return None
 
     def _get_avg_daily_turnover(self, stock_code: str) -> float:
-        """获取近5日日均成交额（排除当天未完成数据）"""
+        """获取近5日日均成交额（排除当天未完成数据，每日缓存）"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        if self._avg_turnover_cache_date != today:
+            self._avg_turnover_cache.clear()
+            self._avg_turnover_cache_date = today
+
         if stock_code in self._avg_turnover_cache:
             return self._avg_turnover_cache[stock_code]
 
@@ -356,27 +381,41 @@ class CapitalFlowSignalEngine:
         return 0
 
     def _get_kline_position(self, stock_code: str, current_price: float) -> float | None:
-        """计算当前价格在近20日K线范围内的位置 (0=最低, 1=最高)"""
+        """计算当前价格在近20日K线范围内的位置 (0=最低, 1=最高)
+
+        K线范围（high/low）每日缓存，位置根据 current_price 动态计算。
+        """
         if not self._db or current_price <= 0:
             return None
-        try:
-            rows = self._db.execute_query("""
-                SELECT high_price, low_price FROM kline_data
-                WHERE stock_code = ?
-                ORDER BY time_key DESC LIMIT 20
-            """, (stock_code,))
-            if not rows or len(rows) < 5:
+
+        today = datetime.now().strftime('%Y-%m-%d')
+        if self._kline_range_cache_date != today:
+            self._kline_range_cache.clear()
+            self._kline_range_cache_date = today
+
+        if stock_code in self._kline_range_cache:
+            h, l = self._kline_range_cache[stock_code]
+        else:
+            try:
+                rows = self._db.execute_query("""
+                    SELECT high_price, low_price FROM kline_data
+                    WHERE stock_code = ?
+                    ORDER BY time_key DESC LIMIT 20
+                """, (stock_code,))
+                if not rows or len(rows) < 5:
+                    return None
+                highs = [r[0] for r in rows if r[0]]
+                lows = [r[1] for r in rows if r[1]]
+                if not highs or not lows:
+                    return None
+                h, l = max(highs), min(lows)
+                self._kline_range_cache[stock_code] = (h, l)
+            except Exception:
                 return None
-            highs = [r[0] for r in rows if r[0]]
-            lows = [r[1] for r in rows if r[1]]
-            if not highs or not lows:
-                return None
-            h, l = max(highs), min(lows)
-            if h <= l:
-                return 0.5
-            return round((current_price - l) / (h - l), 3)
-        except Exception:
-            return None
+
+        if h <= l:
+            return 0.5
+        return round((current_price - l) / (h - l), 3)
 
     # ========== 信号持久化 ==========
 

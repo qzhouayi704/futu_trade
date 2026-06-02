@@ -814,6 +814,7 @@ async def _enrich_stocks_batch(
     for s in stocks:
         code = s.code
         data = {}
+        klines = None  # 复用K线数据，避免重复DB查询
 
         # K线趋势摘要
         try:
@@ -840,12 +841,11 @@ async def _enrich_stocks_batch(
         except Exception:
             pass
 
-        # 多策略评分
+        # 多策略评分（复用上面已获取的 klines）
         try:
             quote = _get_stock_quote(container, code)
             if quote:
-                kls = _get_kline_data(container, code) if 'kline' not in data else klines
-                score = _get_score_result(container, code, quote, kls)
+                score = _get_score_result(container, code, quote, klines or [])
                 if score:
                     data['score'] = {
                         'total': score.get('total_score', 0),

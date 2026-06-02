@@ -49,6 +49,9 @@ class UnifiedTradeDecisionEngine:
         self._cooldown: Dict[str, datetime] = {}
         # 今日决策记录（供前端查询）
         self._today_decisions: List[TradeDecision] = []
+        # 持仓缓存（避免同一信号处理流程中重复调 Futu API）
+        self._positions_cache: Optional[dict] = None
+        self._positions_cache_ts: float = 0
 
         logger.info(
             f"[DecisionEngine] 初始化完成 (模式={'模拟' if simulate else '实盘'})"
@@ -327,7 +330,7 @@ class UnifiedTradeDecisionEngine:
                 logger.warning(f"[DecisionEngine] 交易服务未就绪，无法自动卖出 {event.stock_code}")
                 return
 
-            positions = futu_svc.get_positions()
+            positions = self._get_cached_positions(futu_svc)
             if not positions.get('success'):
                 return
 
@@ -468,7 +471,7 @@ class UnifiedTradeDecisionEngine:
                 return 100  # 无交易服务时返回最小单位
 
             # 1. 检查持仓数量
-            positions = futu_svc.get_positions()
+            positions = self._get_cached_positions(futu_svc)
             current_count = len(positions.get('positions', [])) if positions.get('success') else 0
             if current_count >= cfg['max_total_positions']:
                 logger.info(f"[DecisionEngine] 持仓已满 ({current_count}/{cfg['max_total_positions']})")
@@ -673,6 +676,23 @@ class UnifiedTradeDecisionEngine:
         if deadline:
             del self._cooldown[stock_code]
         return False
+
+    def _get_cached_positions(self, futu_svc=None) -> dict:
+        """获取持仓（5秒缓存，避免同一信号处理流程中重复调用 Futu API）"""
+        now = time.time()
+        if self._positions_cache is not None and (now - self._positions_cache_ts) < 5:
+            return self._positions_cache
+        if futu_svc is None:
+            futu_svc = getattr(self.container, 'futu_trade_service', None)
+        if not futu_svc:
+            return {'success': False, 'positions': []}
+        try:
+            result = futu_svc.get_positions()
+            self._positions_cache = result
+            self._positions_cache_ts = now
+            return result
+        except Exception:
+            return {'success': False, 'positions': []}
 
     def _cleanup_expired_signals(self, stock_code: str):
         """清理过期信号（保留最近30分钟）"""

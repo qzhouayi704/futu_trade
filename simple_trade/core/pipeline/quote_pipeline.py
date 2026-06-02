@@ -108,10 +108,11 @@ class QuotePipeline:
         if quote_cache:
             quote_cache.update_from_quotes(quotes)
 
-        # P2-1: 广播改为 fire-and-forget，避免广播卡顿阻塞下一轮拉取
-        task = asyncio.create_task(self._broadcaster.broadcast(quotes, [], []))
-        self._pending_tasks.add(task)
-        task.add_done_callback(self._pending_tasks.discard)
+        # P2-1: 仅在监控未启动时广播报价（监控启动时由 run_monitoring_cycle 统一广播，避免双重推送）
+        if not self.state_manager.is_running():
+            task = asyncio.create_task(self._broadcaster.broadcast(quotes, [], []))
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)
         self.state_manager.set_last_update()
 
         if self._loop_count % 12 == 1:
@@ -130,19 +131,22 @@ class QuotePipeline:
         if not quotes:
             return
 
-        await self._check_price_triggers(quotes)
+        # 一次性获取持仓，避免各子函数重复调用 Futu API
+        positions = await self._get_positions_dict()
+
+        await self._check_price_triggers(quotes, positions)
 
         # 日内高抛低吸信号检查（仅持仓股）
-        intraday_signals = await self._check_intraday_profit(quotes)
+        intraday_signals = await self._check_intraday_profit(quotes, positions)
         
         # 日内自动化防砸盘风控与真空区止盈（新增）
-        risk_actions = await self._check_intraday_risks(quotes)
+        risk_actions = await self._check_intraday_risks(quotes, positions)
 
         # 资金流向信号检查（与策略检测同频，每60s）
         flow_signals = []
         absorption_alerts = []
         if self._should_run_strategy():
-            flow_signals = await self._check_capital_flow_signals(quotes)
+            flow_signals = await self._check_capital_flow_signals(quotes, positions)
             absorption_alerts = await self._check_absorption(quotes)
 
         trade_actions: List[Dict] = []
@@ -177,10 +181,10 @@ class QuotePipeline:
                           price=a['price'], reason=a.get('reason', '')[:40])
             flow.end(signals=len(trade_actions))
             # 异步发送企业微信通知（不阻塞管道）
-            self._notify_trade_signals(trade_actions)
+            self._notify_trade_signals(trade_actions, positions)
 
-        if trade_actions or conditions or conditions_updated:
-            await self._broadcaster.broadcast(quotes, trade_actions, conditions)
+        # 始终广播报价（quote_cycle 在监控运行时不再广播，由此处统一负责）
+        await self._broadcaster.broadcast(quotes, trade_actions, conditions)
 
     async def run_pipeline(self):
         """执行完整管道（兼容方法，内部调用两个独立周期）"""
@@ -250,12 +254,12 @@ class QuotePipeline:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, func, *args)
 
-    async def _check_price_triggers(self, quotes: List[Dict]):
+    async def _check_price_triggers(self, quotes: List[Dict], positions: dict = None):
         """检查价格触发条件（委托给 RiskCoordinator 统一协调）"""
         try:
             if self.risk_coordinator:
-                # 获取持仓信息供动态止损和策略止损使用
-                positions = await self._get_positions_dict()
+                if positions is None:
+                    positions = await self._get_positions_dict()
                 await self._run_in_executor(
                     self.risk_coordinator.check_all_risks, quotes, positions
                 )
@@ -294,13 +298,14 @@ class QuotePipeline:
             await self._run_in_executor(svc.lot_order_take_profit_service.check_prices, quotes)
             await self._run_in_executor(svc.lot_order_take_profit_service.check_triggered_orders)
 
-    async def _check_intraday_profit(self, quotes: List[Dict]) -> List[Dict]:
+    async def _check_intraday_profit(self, quotes: List[Dict], positions: dict = None) -> List[Dict]:
         """检查日内高抛低吸信号（仅持仓股）"""
         taker = getattr(self.container, 'intraday_profit_taker', None)
         if not taker:
             return []
         try:
-            positions = await self._get_positions_dict()
+            if positions is None:
+                positions = await self._get_positions_dict()
             if not positions:
                 return []
             return await self._run_in_executor(taker.check, quotes, positions)
@@ -308,7 +313,7 @@ class QuotePipeline:
             logging.debug(f"日内高抛低吸检查异常: {e}")
             return []
 
-    async def _check_intraday_risks(self, quotes: List[Dict]) -> List[Dict]:
+    async def _check_intraday_risks(self, quotes: List[Dict], positions: dict = None) -> List[Dict]:
         """检查日内自动化风控（跌破强支撑/真空区止盈/大单骤降逃顶）"""
         actions = []
         try:
@@ -328,21 +333,26 @@ class QuotePipeline:
             if not self._intraday_risk_manager:
                 return actions
 
-            positions = await self._get_positions_dict()
+            if positions is None:
+                positions = await self._get_positions_dict()
             if not positions:
                 return actions
 
             # 资金流缓存用于大单占比监测
             capital_flow_engine = getattr(self.container, 'capital_flow_signal_engine', None)
-            
+            # 批量读取持仓股的资金流缓存（修复：原 engine.cache 属性不存在）
+            position_codes = [c for c in positions.keys()]
+            capital_flow_map = {}
+            if capital_flow_engine and position_codes:
+                try:
+                    capital_flow_map = capital_flow_engine._fetch_capital_flows(position_codes)
+                except Exception:
+                    pass
+
             for quote in quotes:
                 stock_code = quote.get('code')
                 if stock_code in positions:
-                    capital_flow = None
-                    if capital_flow_engine:
-                        cache = capital_flow_engine.cache.get(stock_code)
-                        if cache:
-                            capital_flow = cache.data
+                    capital_flow = capital_flow_map.get(stock_code)
                     
                     # check_risks 是 async 的，需要 await
                     new_actions = await self._intraday_risk_manager.check_risks(
@@ -410,13 +420,14 @@ class QuotePipeline:
             logging.debug(f"量价异常检查异常: {e}")
             return []
 
-    async def _check_capital_flow_signals(self, quotes: List[Dict]) -> List[Dict]:
+    async def _check_capital_flow_signals(self, quotes: List[Dict], positions: dict = None) -> List[Dict]:
         """检查资金流向信号（基于操盘规则）"""
         engine = getattr(self.container, 'capital_flow_signal_engine', None)
         if not engine:
             return []
         try:
-            positions = await self._get_positions_dict()
+            if positions is None:
+                positions = await self._get_positions_dict()
             return await self._run_in_executor(
                 engine.check_signals, quotes, positions
             )
@@ -541,7 +552,7 @@ class QuotePipeline:
             logging.error(f"【行情管道】多策略信号检测异常: {e}")
 
 
-    def _notify_trade_signals(self, trade_actions: List[Dict]):
+    def _notify_trade_signals(self, trade_actions: List[Dict], positions: dict = None):
         """异步发送交易信号的企业微信通知（保存 task 引用）
 
         持仓股卖出信号特殊处理：
@@ -552,23 +563,8 @@ class QuotePipeline:
         if not wechat or not wechat.enabled:
             return
 
-        # 获取当前持仓代码集（缓存，避免每次调API）
-        position_codes = set()
-        try:
-            if hasattr(self, '_cached_position_codes'):
-                position_codes = self._cached_position_codes
-            else:
-                futu_trade = getattr(self.container, 'futu_trade_service', None)
-                if futu_trade:
-                    result = futu_trade.get_positions()
-                    if result and result.get('success'):
-                        position_codes = {
-                            p['stock_code'] for p in result.get('positions', [])
-                            if p.get('qty', 0) > 0
-                        }
-                        self._cached_position_codes = position_codes
-        except Exception:
-            pass
+        # 复用上层传入的持仓数据，避免重复调用 Futu API
+        position_codes = set(positions.keys()) if positions else set()
 
         for action in trade_actions:
             stock_code = action.get('stock_code', '')

@@ -137,6 +137,7 @@ export function usePositionsCapitalFlow() {
       }
     },
     staleTime: 15000,
-    refetchInterval: 15000,
+    // 不设 refetchInterval，由 WebSocket positions_update 事件驱动刷新
+    // 避免轮询与 WS 事件同时触发导致重复请求
   });
 }

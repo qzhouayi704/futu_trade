@@ -256,15 +256,42 @@ class DatabaseManager:
         return self.system_queries.execute_query(query, params)
 
     def execute_update(self, query: str, params: tuple = None) -> int:
-        """执行更新语句，返回影响行数（失败返回-1）"""
+        """执行更新语句，通过 write_queue 序列化，返回影响行数（失败返回-1）"""
+        if self.write_queue.is_running:
+            try:
+                future = self.write_queue.submit(
+                    self.system_queries.execute_update, query, params
+                )
+                return future.result(timeout=15.0)
+            except Exception as e:
+                logging.error(f"写队列执行失败，降级直接写入: {e}")
+                return self.system_queries.execute_update(query, params)
         return self.system_queries.execute_update(query, params)
 
     def execute_insert(self, query: str, params: tuple = None) -> int:
-        """执行插入语句，返回新记录ID"""
+        """执行插入语句，通过 write_queue 序列化，返回新记录ID"""
+        if self.write_queue.is_running:
+            try:
+                future = self.write_queue.submit(
+                    self.trade_queries.execute_insert, query, params
+                )
+                return future.result(timeout=15.0)
+            except Exception as e:
+                logging.error(f"写队列执行失败，降级直接写入: {e}")
+                return self.trade_queries.execute_insert(query, params)
         return self.trade_queries.execute_insert(query, params)
 
     def execute_many(self, query: str, params_list: List[tuple]) -> int:
-        """批量执行语句，返回成功记录数（失败返回-1）"""
+        """批量执行语句，通过 write_queue 序列化，返回成功记录数（失败返回-1）"""
+        if self.write_queue.is_running:
+            try:
+                future = self.write_queue.submit(
+                    self.system_queries.execute_many, query, params_list
+                )
+                return future.result(timeout=30.0)
+            except Exception as e:
+                logging.error(f"写队列执行失败，降级直接写入: {e}")
+                return self.system_queries.execute_many(query, params_list)
         return self.system_queries.execute_many(query, params_list)
 
     # ==================== 异步查询方法 ====================

@@ -125,8 +125,8 @@ export default function Dashboard() {
     // 防抖定时器
     let positionsUpdateTimer: NodeJS.Timeout | null = null;
 
-    // 报价更新 - 交易信号
-    socket.on("quotes_update", (data: { quotes: QuoteData[]; trade_actions?: any[] }) => {
+    // 报价更新 - 交易信号（命名函数，供 off 精确移除）
+    const handleQuotesUpdate = (data: { quotes: QuoteData[]; trade_actions?: any[] }) => {
       // 有新的交易信号时追加
       if (data.trade_actions && Array.isArray(data.trade_actions) && data.trade_actions.length > 0) {
         setTradeSignals(prev => {
@@ -153,36 +153,39 @@ export default function Dashboard() {
           return deduped.slice(0, 30);
         });
       }
-    });
+    };
 
     // 持仓更新（防抖处理，避免频繁请求）
-    socket.on("positions_update", () => {
-      // 清除之前的定时器
+    const handlePositionsUpdate = () => {
       if (positionsUpdateTimer) {
         clearTimeout(positionsUpdateTimer);
       }
-      // 设置新的定时器，2秒后执行
       positionsUpdateTimer = setTimeout(() => {
         refetchPositions();
         refetchPositionsCapitalFlow();
       }, 2000);
-    });
+    };
 
     // 系统状态变化
-    socket.on("system_status", () => {
+    const handleSystemStatus = () => {
       refetchSystemStatus();
-    });
+    };
+
+    socket.on("quotes_update", handleQuotesUpdate);
+    socket.on("positions_update", handlePositionsUpdate);
+    socket.on("system_status", handleSystemStatus);
 
     return () => {
-      socket.off("quotes_update");
-      socket.off("positions_update");
-      socket.off("system_status");
+      socket.off("quotes_update", handleQuotesUpdate);
+      socket.off("positions_update", handlePositionsUpdate);
+      socket.off("system_status", handleSystemStatus);
       // 清理定时器
       if (positionsUpdateTimer) {
         clearTimeout(positionsUpdateTimer);
       }
     };
   }, [socket, refetchPositions, refetchPositionsCapitalFlow, refetchSystemStatus]);
+
 
   return (
     <div className="container mx-auto px-3 md:px-4 py-4 md:py-6 max-w-7xl">
