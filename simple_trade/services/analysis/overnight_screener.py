@@ -396,8 +396,16 @@ class OvernightScreener:
         if high > 0 and low > 0 and last > 0:
             indicators['day_amplitude'] = stock.get('amplitude', 0) or ((high - low) / last * 100)
 
-        # 量比
+        # 量比: 优先用实时数据，缺失时从K线成交量计算
         indicators['vol_ratio'] = stock.get('volume_ratio', None) or None
+        if indicators['vol_ratio'] is None and klines and len(klines) >= 6:
+            # 用最后一根K线成交量 / 前5日均量
+            today_vol = klines[-1].get('volume', 0) or 0
+            prev_vols = [k['volume'] for k in klines[-6:-1] if k.get('volume', 0) > 0]
+            if today_vol > 0 and prev_vols:
+                avg_vol = sum(prev_vols) / len(prev_vols)
+                if avg_vol > 0:
+                    indicators['vol_ratio'] = round(today_vol / avg_vol, 2)
 
         # ticker_power: 优先用逐笔数据，回退到资金流
         ticker_power = None
@@ -481,6 +489,19 @@ class OvernightScreener:
         if stock.get('leader_rank', 0) == 1:
             bonus += 5
             reasons.append("板块龙头")
+
+        # 资金评分强势加分 (最多+15分)
+        # 修复大盘股因量比/逐笔力量丢分导致的系统性低估
+        cap_data = self._get_cached_capital(code)
+        if cap_data:
+            cap_score = cap_data.get('capital_score', 50)
+            main_inflow = cap_data.get('main_net_inflow', 0)
+            if cap_score >= 85 and main_inflow > 0:
+                bonus += 15
+                reasons.append(f"资金强势流入(评分{cap_score:.0f})")
+            elif cap_score >= 70 and main_inflow > 0:
+                bonus += 10
+                reasons.append(f"资金偏多(评分{cap_score:.0f})")
 
         return {'total': bonus, 'reasons': reasons}
 
