@@ -289,8 +289,10 @@ class SignalTracker:
 
         # 单次提交所有更新到 write_queue（大幅减少队列竞争）
         def _batch_write():
+            # 注意：此函数在 write_queue worker 线程内执行
+            # 必须直接调用底层 SQL，不能再调 execute_update（会死锁）
             for sql, params in pending_updates:
-                self.db_manager.execute_update(sql, params)
+                self.db_manager.system_queries.execute_update(sql, params)
 
         try:
             future = self.db_manager.write_queue.submit(_batch_write)
@@ -299,7 +301,7 @@ class SignalTracker:
             )
         except Exception as e:
             logging.warning(
-                f"批量更新追踪记录失败({len(pending_updates)}条): {e}"
+                f"批量更新追踪记录失败({len(pending_updates)}条): {type(e).__name__}"
             )
 
     def _compute_track_update(
