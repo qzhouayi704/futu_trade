@@ -108,6 +108,7 @@ export function usePositions() {
       return [];
     },
     staleTime: 30000,
+    refetchInterval: 60000, // 每60秒自动刷新，确保收盘后显示最新价
     retry: 1,
   });
 }
