@@ -83,9 +83,9 @@ async def get_signal_resonance(
             _get_strategy_dimension, container, stock_code
         )
 
-        # 2. 成交力量（从ticker分析）
-        ticker_dim = await asyncio.to_thread(
-            _get_ticker_dimension, container, stock_code
+        # 2+5. 成交力量 + 量能（合并查询 ticker_data，减少 DB 请求）
+        ticker_dim, volume_dim = await asyncio.to_thread(
+            _get_ticker_and_volume_dimensions, container, stock_code
         )
 
         # 3. 资金流向
@@ -96,11 +96,6 @@ async def get_signal_resonance(
         # 4. 盘口数据
         orderbook_dim = await asyncio.to_thread(
             _get_orderbook_dimension, db, stock_code
-        )
-
-        # 5. 量能可信度
-        volume_dim = await asyncio.to_thread(
-            _get_volume_dimension, db, stock_code
         )
 
         dimensions = [strategy_dim, ticker_dim, capital_dim, orderbook_dim, volume_dim]
@@ -373,6 +368,42 @@ def _get_strategy_dimension(container, stock_code: str) -> dict:
     except Exception as e:
         logger.debug(f"策略评分获取失败 {stock_code}: {e}")
     return dim
+
+
+def _get_ticker_and_volume_dimensions(container, stock_code: str) -> tuple:
+    """成交力量 + 量能强弱维度（合并查询 ticker_data，减少 DB 请求）"""
+    ticker_dim = {"name": "成交力量", "icon": "⚡", "score": None, "label": "-"}
+    volume_dim = {"name": "量能强弱", "icon": "📐", "score": None, "label": "-"}
+    try:
+        db = container.db_manager
+        today = datetime.now().strftime('%Y-%m-%d')
+        rows = db.execute_query(
+            """SELECT
+                 SUM(CASE WHEN direction='BUY' THEN volume ELSE 0 END) as buy_vol,
+                 SUM(volume) as total_vol,
+                 SUM(CASE WHEN direction='BUY' THEN turnover ELSE 0 END) as buy_amt,
+                 SUM(CASE WHEN direction='SELL' THEN turnover ELSE 0 END) as sell_amt
+               FROM ticker_data
+               WHERE stock_code = ? AND trade_date = ?""",
+            (stock_code, today)
+        )
+        if rows and rows[0][1] and rows[0][1] > 0:
+            buy_vol = rows[0][0] or 0
+            total_vol = rows[0][1]
+            vol_ratio = buy_vol / total_vol
+            ticker_dim["score"] = int(vol_ratio * 100)
+            ticker_dim["label"] = "看多" if vol_ratio >= 0.55 else ("偏空" if vol_ratio < 0.45 else "均衡")
+
+            buy_amt = rows[0][2] or 0
+            sell_amt = rows[0][3] or 0
+            total_amt = buy_amt + sell_amt
+            if total_amt > 0:
+                amt_ratio = buy_amt / total_amt
+                volume_dim["score"] = int(amt_ratio * 100)
+                volume_dim["label"] = "买强" if amt_ratio >= 0.55 else ("卖强" if amt_ratio < 0.45 else "均衡")
+    except Exception as e:
+        logger.debug(f"成交力量/量能获取失败 {stock_code}: {e}")
+    return ticker_dim, volume_dim
 
 
 def _get_ticker_dimension(container, stock_code: str) -> dict:

@@ -135,28 +135,9 @@ async def clear_cache(
 # ==================== 辅助函数 ====================
 
 def _get_stock_quote(container, stock_code: str) -> dict:
-    """从缓存或实时查询获取股票行情"""
-    # 优先从缓存获取
-    from ...core import get_state_manager
-    state = get_state_manager()
-    if state:
-        quotes = state.get_cached_quotes() or []
-        for q in quotes:
-            if q.get('code', '') == stock_code:
-                return q
-
-    # 缓存没有，尝试实时查询
-    realtime = getattr(container, 'realtime_query', None) or \
-               getattr(getattr(container, 'data', None), 'realtime_query', None)
-    if realtime:
-        try:
-            result = realtime.get_realtime_quotes([stock_code])
-            if result.get('success') and result.get('quotes'):
-                return result['quotes'][0]
-        except Exception as e:
-            logger.warning(f"实时查询 {stock_code} 行情失败: {e}")
-
-    return {}
+    """从缓存或实时查询获取股票行情（委托共享实现）"""
+    from ..data.helpers.quote_helpers import get_stock_quote
+    return get_stock_quote(container, stock_code)
 
 
 def _get_kline_data(container, stock_code: str) -> list:
@@ -305,18 +286,32 @@ def _get_plate_info(container, stock_code: str) -> str:
     return ""
 
 
+# 模块级持仓缓存（避免每次单股分析都调用 Futu API）
+_positions_cache = None
+_positions_cache_ts = 0
+
+
 def _get_position_info(container, stock_code: str) -> dict:
-    """获取持仓信息（如果是持仓股票）"""
+    """获取持仓信息（如果是持仓股票），使用 10 秒缓存避免重复 API 调用"""
+    import time
+    global _positions_cache, _positions_cache_ts
+
     trade_svc = container.futu_trade_service
     if not trade_svc:
         return {}
     try:
-        positions_result = trade_svc.get_positions()
-        positions = []
-        if isinstance(positions_result, dict) and positions_result.get('success'):
-            positions = positions_result.get('positions', [])
-        elif isinstance(positions_result, list):
-            positions = positions_result
+        now = time.time()
+        if _positions_cache is None or (now - _positions_cache_ts) > 10:
+            positions_result = trade_svc.get_positions()
+            positions = []
+            if isinstance(positions_result, dict) and positions_result.get('success'):
+                positions = positions_result.get('positions', [])
+            elif isinstance(positions_result, list):
+                positions = positions_result
+            _positions_cache = positions
+            _positions_cache_ts = now
+        else:
+            positions = _positions_cache
 
         for pos in positions:
             code = pos.get('stock_code', pos.get('code', ''))

@@ -13,10 +13,11 @@ interface StatsData {
 
 interface StatsGridProps {
   stats: StatsData | null;
+  positionCount?: number;
   className?: string;
 }
 
-export function StatsGrid({ stats, className = "" }: StatsGridProps) {
+export function StatsGrid({ stats, positionCount, className = "" }: StatsGridProps) {
   const statItems = [
     {
       label: "股票池总数",
@@ -52,7 +53,7 @@ export function StatsGrid({ stats, className = "" }: StatsGridProps) {
     },
     {
       label: "持仓数量",
-      value: stats?.positionCount || 0,
+      value: positionCount ?? stats?.positionCount ?? 0,
       icon: (
         <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />

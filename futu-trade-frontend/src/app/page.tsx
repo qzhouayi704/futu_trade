@@ -229,7 +229,7 @@ export default function Dashboard() {
           onStopMonitor={handleStopMonitor}
           loading={loading}
         />
-        <StatsGrid stats={stats ?? null} className="lg:col-span-2" />
+        <StatsGrid stats={stats ?? null} positionCount={positions.length} className="lg:col-span-2" />
       </div>
 
       {/* 策略面板 */}

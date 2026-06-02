@@ -21,16 +21,14 @@ export function useStats() {
   return useQuery({
     queryKey: ["stats"],
     queryFn: async () => {
-      const [h, p] = await Promise.all([
-        systemApi.getMonitorHealth(),
-        tradeApi.getPositions(),
-      ]);
+      const h = await systemApi.getMonitorHealth();
       if (h.success && h.data) {
         return {
           stockPoolCount: h.data.stock_pool?.total_count || 0,
           subscribedCount: h.data.subscription?.subscribed_count || 0,
           hotStockCount: 0,
-          positionCount: p.data?.length || 0,
+          // positionCount 由 usePositions() 提供，不再重复请求
+          positionCount: 0,
         } as Stats;
       }
       return null;

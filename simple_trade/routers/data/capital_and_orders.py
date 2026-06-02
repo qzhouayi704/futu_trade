@@ -198,39 +198,9 @@ def _get_market_avg_change(container) -> float:
 
 
 def _get_stock_quote(container, stock_code: str) -> dict:
-    """从 state_manager 获取单只股票的实时报价，缓存为空时 fallback 到 API"""
-    quote = {}
-    try:
-        from ...core import get_state_manager
-        state = get_state_manager()
-        quotes = state.get_cached_quotes() or []
-        for q in quotes:
-            code = q.get('code', '') or q.get('stock_code', '')
-            if code == stock_code:
-                quote = q
-                break
-    except Exception:
-        pass
-
-    # 缓存为空时，fallback 到 realtime_query API
-    if not quote:
-        try:
-            rq = container.realtime_query
-            result = rq.get_realtime_quotes([stock_code])
-            if result.get('success') and result.get('quotes'):
-                quote = result['quotes'][0]
-        except Exception as e:
-            logging.warning(f"fallback 获取报价失败 {stock_code}: {e}")
-
-    # 确保 change_rate 字段存在（量价分析依赖此字段）
-    if quote and 'change_rate' not in quote:
-        quote['change_rate'] = (
-            quote.get('change_percent', 0)
-            or quote.get('change_pct', 0)
-            or 0
-        )
-
-    return quote
+    """从 state_manager 获取单只股票的实时报价（委托共享实现）"""
+    from .helpers.quote_helpers import get_stock_quote
+    return get_stock_quote(container, stock_code)
 
 async def _enrich_quote_with_kline(container, stock_code: str, quote: dict) -> dict:
     """用 K 线历史数据补充 volume_ratio 和 price_position 到 quote 中
