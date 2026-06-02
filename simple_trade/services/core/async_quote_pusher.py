@@ -186,13 +186,17 @@ class AsyncQuotePusher:
                 quotes = await self.quote_pipeline.run_quote_cycle()
                 fetch_ms = (time.time() - t0) * 1000
 
-                # 2. 仅在监控启动时执行监控周期
+                # 2. 仅在监控启动 且 有市场正在交易时执行监控周期
                 t1 = time.time()
                 if self.state_manager.is_running() and quotes:
-                    try:
-                        await self.quote_pipeline.run_monitoring_cycle(quotes)
-                    except Exception as e:
-                        logging.error(f"监控周期异常（不影响报价获取）: {e}", exc_info=True)
+                    if MarketTimeHelper.is_any_market_trading():
+                        try:
+                            await self.quote_pipeline.run_monitoring_cycle(quotes)
+                        except Exception as e:
+                            logging.error(f"监控周期异常（不影响报价获取）: {e}", exc_info=True)
+                    elif self._loop_count % 60 == 1:
+                        # 收盘后每5分钟打一次日志（60*5s=300s）
+                        logging.info("【行情推送】所有市场已收盘，暂停策略监控，仅保持报价获取")
                 broadcast_ms = (time.time() - t1) * 1000
 
                 # P1-1: 记录每轮指标
