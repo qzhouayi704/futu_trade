@@ -405,7 +405,11 @@ class OvernightScreener:
             if today_vol > 0 and prev_vols:
                 avg_vol = sum(prev_vols) / len(prev_vols)
                 if avg_vol > 0:
-                    indicators['vol_ratio'] = round(today_vol / avg_vol, 2)
+                    calc_vr = round(today_vol / avg_vol, 2)
+                    # 仅当量比>=1.5时才填入(加分)，低量比留None走中性分
+                    # 大盘股量比天然偏低(0.6-1.3)，填入反而扣分
+                    if calc_vr >= 1.5:
+                        indicators['vol_ratio'] = calc_vr
 
         # ticker_power: 优先用逐笔数据，回退到资金流
         ticker_power = None

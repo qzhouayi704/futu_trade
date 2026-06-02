@@ -94,22 +94,30 @@ for code in BIG_CAPS:
 
     old_score, _ = scorer._score_trend(old_indicators)
 
-    # 新模式: vol_ratio从K线计算
+    # 新模式: vol_ratio从K线计算(仅>=1.5时填入)
     new_indicators = dict(old_indicators)
+    calc_vr = None
     if len(klines) >= 6:
         today_vol = klines[-1].get('volume', 0) or 0
         prev_vols = [k['volume'] for k in klines[-6:-1] if k.get('volume', 0) > 0]
         if today_vol > 0 and prev_vols:
             avg_vol = sum(prev_vols) / len(prev_vols)
             if avg_vol > 0:
-                new_indicators['vol_ratio'] = round(today_vol / avg_vol, 2)
+                calc_vr = round(today_vol / avg_vol, 2)
+                if calc_vr >= 1.5:
+                    new_indicators['vol_ratio'] = calc_vr
 
     new_score, new_details = scorer._score_trend(new_indicators)
 
     vol_old = 'None→12'
     vol_new_val = new_indicators.get('vol_ratio')
     vol_new_detail = next((d for d in new_details if d.dimension == '量比'), None)
-    vol_new = f'{vol_new_val:.1f}→{vol_new_detail.score}' if vol_new_val and vol_new_detail else 'None→12'
+    if vol_new_val and vol_new_detail:
+        vol_new = f'{vol_new_val:.1f}→{vol_new_detail.score}'
+    elif calc_vr:
+        vol_new = f'({calc_vr:.1f})<1.5→12'
+    else:
+        vol_new = 'None→12'
 
     # 资金加分
     cap_bonus = 0
