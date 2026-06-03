@@ -48,6 +48,8 @@ class AsyncQuotePusher:
         self._last_pool_scan_time: float = 0  # 上次全池扫描时间
         self._pool_scan_interval: int = 180  # 全池扫描间隔（秒），3分钟
         self._pool_scanner = None  # 延迟初始化
+        self._market_was_closed: bool = True  # 跟踪非交易→交易切换，初始True确保首次开盘触发
+        self._pending_open_refilter: float = 0  # 开盘首筛计划执行时间，0=无计划
 
         # 从配置获取推送间隔
         if container.config:
@@ -183,11 +185,27 @@ class AsyncQuotePusher:
             try:
                 # 0. 收盘后暂停一切：不获取报价，不执行监控
                 if not MarketTimeHelper.is_any_market_trading():
+                    self._market_was_closed = True
                     if self._loop_count % 60 == 1:
                         logging.info("【行情推送】所有市场已收盘，暂停报价获取和策略监控")
                     await asyncio.sleep(60)  # 收盘后每60秒检查一次是否开盘
                     self._loop_count += 1
                     continue
+
+                # 开盘首筛：检测非交易→交易时段切换
+                if self._market_was_closed:
+                    self._market_was_closed = False
+                    delay = 90  # 等待90秒让开盘成交数据积累
+                    self._pending_open_refilter = time.time() + delay
+                    logging.info(
+                        f"【开盘筛选】市场从休市→开盘，{delay}秒后触发活跃度首筛"
+                    )
+
+                # 开盘首筛：延迟到期后执行
+                if (self._pending_open_refilter > 0
+                        and time.time() >= self._pending_open_refilter):
+                    self._pending_open_refilter = 0
+                    self._trigger_market_open_refilter()
 
                 # 1. 始终执行报价获取周期
                 t0 = time.time()
@@ -288,6 +306,34 @@ class AsyncQuotePusher:
 
         except Exception as e:
             logging.error(f"【定时重筛】触发失败: {e}", exc_info=True)
+
+    def _trigger_market_open_refilter(self):
+        """开盘时触发活跃度重筛
+
+        清空盘前/集合竞价期间的无效缓存数据，触发后台重新筛选，
+        并重置30分钟定时器避免重复触发。
+        """
+        try:
+            from ...routers.data.activity_refilter import trigger_refilter_async
+            from datetime import date
+
+            # 清空当天缓存（盘前/集合竞价的数据无效）
+            today = date.today().strftime('%Y-%m-%d')
+            cleared = self.container.db_manager.stock_activity_queries.clear_daily_activity_records(today)
+            logging.info(f"【开盘筛选】已清空 {cleared} 条盘前活跃度缓存")
+
+            # 重置30分钟定时器，避免开盘后很快又触发定时重筛
+            self._last_refilter_time = time.time()
+
+            # 触发异步重筛（后台线程执行，不阻塞推送循环）
+            started = trigger_refilter_async(self.container)
+            if started:
+                logging.info("【开盘筛选】后台重筛任务已启动")
+            else:
+                logging.info("【开盘筛选】跳过（重筛任务已在进行中）")
+
+        except Exception as e:
+            logging.error(f"【开盘筛选】触发失败: {e}", exc_info=True)
 
     async def _check_pool_scan(self):
         """每3分钟执行全池快照扫描，发现异动股 → 评分 → 预警/交易"""
