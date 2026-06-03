@@ -1,11 +1,11 @@
 """查询富途API交易数据"""
-from futu import OpenSecTradeContext, TrdMarket, TrdEnv
+from futu import OpenSecTradeContext, TrdMarket, TrdEnv, SecurityFirm
 from datetime import datetime, timedelta
 
 def main():
     trd_ctx = OpenSecTradeContext(
         host="127.0.0.1", port=11111, 
-        filter_trdmarket=TrdMarket.HK, security_firm=None
+        filter_trdmarket=TrdMarket.HK, security_firm=SecurityFirm.FUTUSECURITIES
     )
     
     # 1. 查看当前真实持仓
