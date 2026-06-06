@@ -57,7 +57,7 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
       const costTotal = p.avg_price * p.quantity;
       const newMarketValue = livePrice * p.quantity;
       const newPL = newMarketValue - costTotal;
-      const newPLPct = costTotal > 0 ? newPL / costTotal : 0;
+      const newPLPct = costTotal > 0 ? (newPL / costTotal) * 100 : 0;
       return {
         ...p,
         current_price: livePrice,
@@ -112,7 +112,7 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                         [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600">
             {livePositions.map((pos) => {
               const ts = trailingStatus[pos.stock_code];
-              const plPct = pos.profit_loss_pct * 100;
+              const plPct = pos.profit_loss_pct;
               const isProfit = plPct >= 0;
 
               // Sniper状态指示
