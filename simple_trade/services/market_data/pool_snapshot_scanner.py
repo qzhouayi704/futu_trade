@@ -258,15 +258,18 @@ class PoolSnapshotScanner:
         涨幅越低得分越高，但资金特别强的股票即使涨5%也能排进来。
         当天有mega_sell信号的股票降分（回测: 有mega_sell的D2胜率0%）。
         """
-        # 获取当天有mega_sell的股票集合（从Sniper内存读取，无DB开销）
-        mega_sell_codes = set()
+        # 获取当天Sniper信号统计（从Sniper内存读取，无DB开销）
+        sniper_stats = {}  # stock_code -> {'sell': count, 'buy': count}
         try:
             sniper = getattr(self.container, 'intraday_sniper', None)
             if sniper and hasattr(sniper, '_today_signals'):
-                mega_sell_codes = {
-                    s.stock_code for s in sniper._today_signals
-                    if s.signal_type == 'mega_sell'
-                }
+                for s in sniper._today_signals:
+                    if s.signal_type in ('mega_buy', 'mega_sell'):
+                        stats = sniper_stats.setdefault(s.stock_code, {'sell': 0, 'buy': 0})
+                        if s.signal_type == 'mega_sell':
+                            stats['sell'] += 1
+                        else:
+                            stats['buy'] += 1
         except Exception:
             pass
 
@@ -288,8 +291,20 @@ class PoolSnapshotScanner:
             else:
                 position_score = 10  # 涨≥5%仍可入选，但排名靠后
 
-            # Sniper预警降分：当天有mega_sell → 扣30分
-            sniper_penalty = 30 if stock.get('code', '') in mega_sell_codes else 0
+            # Sniper预警降分：按信号数量递增
+            # 回测: 5+信号D1胜率13%, 买卖交替=主力对倒/出货
+            code = stock.get('code', '')
+            stats = sniper_stats.get(code)
+            sniper_penalty = 0
+            if stats:
+                sell_n = stats['sell']
+                total_n = stats['sell'] + stats['buy']
+                if total_n >= 5:
+                    sniper_penalty = 50   # 信号频繁交替 → 重罚
+                elif sell_n >= 3:
+                    sniper_penalty = 40   # 多次砸盘
+                elif sell_n >= 1:
+                    sniper_penalty = 20   # 有砸盘信号
 
             # 综合得分 = 资金评分(50%) + 入场位置(30%) + 净流入额外(20%) - Sniper降分
             return cap_score * 0.5 + position_score * 0.3 + cap_score * 0.2 - sniper_penalty
