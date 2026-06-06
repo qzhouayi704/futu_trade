@@ -312,6 +312,15 @@ class IntradaySniper:
                         await self._push_signal(sig)
                         pushed += 1
 
+                    # 转发持仓股的mega信号给RiskCoordinator（驱动盘中止盈）
+                    if sig.signal_type in ('mega_buy', 'mega_sell'):
+                        try:
+                            rc = getattr(self.container, 'risk_coordinator', None)
+                            if rc and hasattr(rc, 'on_sniper_signal'):
+                                rc.on_sniper_signal(sig.stock_code, sig.signal_type)
+                        except Exception as e:
+                            logger.debug(f"RiskCoordinator转发失败: {e}")
+
                 if new_signals:
                     logger.info(
                         f"本次扫描产生 {len(new_signals)} 条信号, "

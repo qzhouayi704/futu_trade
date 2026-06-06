@@ -72,8 +72,15 @@ class RiskCoordinator:
 
         # 移动止盈：追踪每只持仓股的峰值价格
         self._peak_prices: Dict[str, float] = {}  # stock_code -> peak_price
-        self._TRAILING_ACTIVATE_PCT = 5.0   # 涨超5%后激活移动止盈
-        self._TRAILING_STOP_PCT = 3.0       # 从峰值回撤3%卖出
+
+        # 移动止盈参数
+        self._TRAILING_ACTIVATE_PCT = 5.0   # 默认：涨超5%后激活移动止盈
+        self._TRAILING_STOP_PCT = 3.0       # 默认：从峰值回撤3%卖出
+
+        # Sniper驱动的移动止盈参数（回测验证: mega_buy后中位高点+2.89%）
+        self._SNIPER_TRAILING_STOP_PCT = 2.5      # mega_buy激活: 回撤2.5%卖出
+        self._SNIPER_CONSECUTIVE_STOP_PCT = 3.0   # 连续mega_buy: 放宽到3.0%
+        self._sniper_activated: Dict[str, dict] = {}  # stock_code -> {activated_at, mega_buy_count}
 
         # 已触发订单成交确认的频率控制（30秒间隔 + 启动冷却）
         self._TRIGGERED_ORDER_CHECK_INTERVAL: float = 30.0
@@ -339,6 +346,32 @@ class RiskCoordinator:
         except Exception as e:
             self.logger.error(f"【风险协调】策略趋势止损检查异常: {e}", exc_info=True)
 
+    def on_sniper_signal(self, stock_code: str, signal_type: str):
+        """接收Sniper信号，驱动移动止盈
+
+        mega_buy: 激活移动止盈追踪（从当前价开始记录峰值）
+        mega_sell: 标记立即止盈（下次检查时触发卖出）
+        """
+        if signal_type == 'mega_buy':
+            if stock_code in self._sniper_activated:
+                self._sniper_activated[stock_code]['mega_buy_count'] += 1
+                self.logger.info(
+                    f"【Sniper止盈】{stock_code} 连续mega_buy "
+                    f"#{self._sniper_activated[stock_code]['mega_buy_count']} → 回撤放宽到{self._SNIPER_CONSECUTIVE_STOP_PCT}%"
+                )
+            else:
+                self._sniper_activated[stock_code] = {
+                    'activated_at': time.time(),
+                    'mega_buy_count': 1,
+                    'mega_sell': False,
+                }
+                self.logger.info(f"【Sniper止盈】{stock_code} mega_buy → 激活移动止盈追踪")
+
+        elif signal_type == 'mega_sell':
+            if stock_code in self._sniper_activated:
+                self._sniper_activated[stock_code]['mega_sell'] = True
+                self.logger.info(f"【Sniper止盈】{stock_code} mega_sell → 标记立即止盈")
+
     def _check_trailing_stop(
         self,
         quotes: List[Dict[str, Any]],
@@ -346,15 +379,23 @@ class RiskCoordinator:
         decisions: List[RiskDecision],
         triggered_stocks: set,
     ):
-        """移动止盈检查：涨超激活阈值后，从峰值回撤X%卖出"""
+        """移动止盈检查（Sniper增强版）
+
+        双模式：
+          Sniper模式: mega_buy激活 → 回撤2.5%卖出 / mega_sell → 立即卖出
+          默认模式:   涨超5%激活 → 回撤3%卖出
+        """
         if not positions:
             return
         try:
-            # 清理不再持仓的峰值记录
+            # 清理不再持仓的记录
             held_codes = set(positions.keys())
             for code in list(self._peak_prices.keys()):
                 if code not in held_codes:
                     del self._peak_prices[code]
+            for code in list(self._sniper_activated.keys()):
+                if code not in held_codes:
+                    del self._sniper_activated[code]
 
             for quote in quotes:
                 code = quote.get('code', '')
@@ -373,12 +414,77 @@ class RiskCoordinator:
                     self._peak_prices[code] = current_price
                     prev_peak = current_price
 
-                # 计算收益率和回撤
                 peak_gain = (prev_peak / cost_price - 1) * 100
                 drawdown = (1 - current_price / prev_peak) * 100 if prev_peak > 0 else 0
                 current_gain = (current_price / cost_price - 1) * 100
 
-                # 激活条件: 峰值涨幅 >= 5% 且 从峰值回撤 >= 3%
+                sniper_state = self._sniper_activated.get(code)
+
+                # === Sniper模式: mega_sell立即止盈 ===
+                if sniper_state and sniper_state.get('mega_sell'):
+                    triggered_stocks.add(code)
+                    decisions.append(RiskDecision(
+                        stock_code=code,
+                        action='TRAILING_STOP',
+                        source='RiskCoordinator.SniperStop',
+                        urgency=8,  # 高于默认移动止盈
+                        details={
+                            'stock_code': code,
+                            'cost_price': cost_price,
+                            'peak_price': round(prev_peak, 3),
+                            'current_price': current_price,
+                            'peak_gain_pct': round(peak_gain, 1),
+                            'current_gain_pct': round(current_gain, 1),
+                            'reason': (
+                                f"Sniper止盈: mega_sell触发立即卖出 "
+                                f"(当前{current_gain:+.1f}%)"
+                            ),
+                        },
+                    ))
+                    self.logger.info(
+                        f"【Sniper止盈】{code} mega_sell → 立即卖出 "
+                        f"当前{current_gain:+.1f}%"
+                    )
+                    continue
+
+                # === Sniper模式: mega_buy激活的回撤止盈 ===
+                if sniper_state and drawdown > 0:
+                    buy_count = sniper_state.get('mega_buy_count', 1)
+                    # 连续mega_buy放宽回撤
+                    stop_pct = (self._SNIPER_CONSECUTIVE_STOP_PCT
+                                if buy_count >= 2
+                                else self._SNIPER_TRAILING_STOP_PCT)
+
+                    if drawdown >= stop_pct:
+                        triggered_stocks.add(code)
+                        decisions.append(RiskDecision(
+                            stock_code=code,
+                            action='TRAILING_STOP',
+                            source='RiskCoordinator.SniperStop',
+                            urgency=7,
+                            details={
+                                'stock_code': code,
+                                'cost_price': cost_price,
+                                'peak_price': round(prev_peak, 3),
+                                'current_price': current_price,
+                                'peak_gain_pct': round(peak_gain, 1),
+                                'drawdown_pct': round(drawdown, 1),
+                                'current_gain_pct': round(current_gain, 1),
+                                'mega_buy_count': buy_count,
+                                'reason': (
+                                    f"Sniper止盈: 峰值+{peak_gain:.1f}% "
+                                    f"回撤{drawdown:.1f}%>={stop_pct}% "
+                                    f"(mega_buy×{buy_count}, 当前{current_gain:+.1f}%)"
+                                ),
+                            },
+                        ))
+                        self.logger.info(
+                            f"【Sniper止盈】{code} 峰值+{peak_gain:.1f}% "
+                            f"回撤{drawdown:.1f}% >= {stop_pct}% → 卖出"
+                        )
+                        continue
+
+                # === 默认模式: 涨超5%激活，回撤3%卖出 ===
                 if peak_gain >= self._TRAILING_ACTIVATE_PCT and drawdown >= self._TRAILING_STOP_PCT:
                     triggered_stocks.add(code)
                     decisions.append(RiskDecision(
