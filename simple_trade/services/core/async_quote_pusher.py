@@ -46,7 +46,7 @@ class AsyncQuotePusher:
         self._last_refilter_time: float = time.time()  # 上次活跃度重筛时间
         self._refilter_interval: int = 1800  # 活跃度重筛间隔（秒），默认30分钟
         self._last_pool_scan_time: float = 0  # 上次全池扫描时间
-        self._pool_scan_interval: int = 180  # 全池扫描间隔（秒），3分钟
+        self._pool_scan_interval: int = 60  # 全池扫描间隔（秒），1分钟
         self._pool_scanner = None  # 延迟初始化
         self._market_was_closed: bool = True  # 跟踪非交易→交易切换，初始True确保首次开盘触发
         self._pending_open_refilter: float = 0  # 开盘首筛计划执行时间，0=无计划
@@ -460,13 +460,24 @@ class AsyncQuotePusher:
                             'trade_params': result.trade_params.to_dict()
                             if result.trade_params else None,
                             'detected_at': anomaly.detected_at,
+                            'cap_tier': getattr(anomaly, 'cap_tier', ''),
+                            'capital_score': getattr(anomaly, 'capital_score', 0),
+                            'signal_change': getattr(anomaly, 'signal_change', 0),
                         })
 
-                        logging.info(
-                            f"【异动评分】{code} {anomaly.name} "
-                            f"涨{anomaly.change_rate:+.1f}% 量比{anomaly.volume_ratio:.1f} "
-                            f"→ {result.mode}模式 {result.total_score}分 ✓通过"
-                        )
+                        # 资金驱动信号显示资金评分，传统信号显示量比
+                        if anomaly.anomaly_type in ('capital_inflow', 'big_buy_driven'):
+                            logging.info(
+                                f"【异动评分】{code} {anomaly.name} "
+                                f"涨{anomaly.change_rate:+.1f}% 资金{getattr(anomaly, 'capital_score', 0):.0f}分 "
+                                f"→ {result.mode}模式 {result.total_score}分 ✓通过"
+                            )
+                        else:
+                            logging.info(
+                                f"【异动评分】{code} {anomaly.name} "
+                                f"涨{anomaly.change_rate:+.1f}% 量比{anomaly.volume_ratio:.1f} "
+                                f"→ {result.mode}模式 {result.total_score}分 ✓通过"
+                            )
 
                 except Exception as e:
                     logging.debug(f"【异动评分】{code} 评分失败: {e}")
