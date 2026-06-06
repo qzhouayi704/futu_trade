@@ -1,15 +1,21 @@
-// 复盘中心 — 盘后复盘（Tab式整合）
+// 复盘中心 — 盘后复盘（Tab式整合现有页面）
 
 "use client";
 
 import { useState, Suspense, lazy } from "react";
 
-type TabKey = "trades" | "pipeline" | "performance" | "news";
+// 懒加载现有页面
+const SimulatedTradesPage = lazy(() => import("@/app/simulated-trades/page"));
+const SniperSignalsPage = lazy(() => import("@/app/sniper-signals/page"));
+const NewsPage = lazy(() => import("@/app/news/page"));
+const PreCheckPage = lazy(() => import("@/app/pre-check/page"));
+
+type TabKey = "trades" | "signals" | "precheck" | "news";
 
 const TABS: { key: TabKey; label: string; emoji: string }[] = [
-  { key: "trades", label: "今日交易", emoji: "💰" },
-  { key: "pipeline", label: "信号追踪", emoji: "📊" },
-  { key: "performance", label: "绩效分析", emoji: "📈" },
+  { key: "trades", label: "模拟交易", emoji: "💰" },
+  { key: "signals", label: "信号总览", emoji: "🔫" },
+  { key: "precheck", label: "交易决策", emoji: "⚡" },
   { key: "news", label: "热点新闻", emoji: "📰" },
 ];
 
@@ -30,7 +36,7 @@ export default function ReviewPage() {
       {/* 标题 */}
       <div className="mb-5">
         <h1 className="text-xl font-bold text-foreground">📊 复盘中心</h1>
-        <p className="text-sm text-muted-foreground mt-1">交易记录 · 信号追踪 · 绩效分析</p>
+        <p className="text-sm text-muted-foreground mt-1">模拟交易 · 信号总览 · 交易决策 · 热点新闻</p>
       </div>
 
       {/* Tab 导航 */}
@@ -52,30 +58,10 @@ export default function ReviewPage() {
 
       {/* Tab 内容 */}
       <Suspense fallback={<TabLoading />}>
-        {activeTab === "trades" && (
-          <div className="text-center py-20 text-muted-foreground">
-            <p className="text-lg mb-2">💰 模拟交易记录</p>
-            <p className="text-sm">现有模拟交易页面将整合到此处</p>
-          </div>
-        )}
-        {activeTab === "pipeline" && (
-          <div className="text-center py-20 text-muted-foreground">
-            <p className="text-lg mb-2">📊 信号→决策→执行 全链路</p>
-            <p className="text-sm">现有信号追踪页面将整合到此处</p>
-          </div>
-        )}
-        {activeTab === "performance" && (
-          <div className="text-center py-20 text-muted-foreground">
-            <p className="text-lg mb-2">📈 绩效分析</p>
-            <p className="text-sm">胜率、收益率、Sharpe比率、回撤曲线</p>
-          </div>
-        )}
-        {activeTab === "news" && (
-          <div className="text-center py-20 text-muted-foreground">
-            <p className="text-lg mb-2">📰 热点新闻</p>
-            <p className="text-sm">现有新闻页面将整合到此处</p>
-          </div>
-        )}
+        {activeTab === "trades" && <SimulatedTradesPage />}
+        {activeTab === "signals" && <SniperSignalsPage />}
+        {activeTab === "precheck" && <PreCheckPage />}
+        {activeTab === "news" && <NewsPage />}
       </Suspense>
     </div>
   );

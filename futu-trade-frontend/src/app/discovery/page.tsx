@@ -1,20 +1,23 @@
-// 选股台 — 盘前/盘后选股研究（Tab式整合）
+// 选股台 — 盘前/盘后选股研究（Tab式整合现有页面）
 
 "use client";
 
 import { useState, Suspense, lazy } from "react";
 
-// 懒加载现有页面组件
+// 懒加载现有页面（直接复用，零改造）
 const OvernightScreenCard = lazy(() =>
   import("@/app/components/dashboard/OvernightScreenCard").then(m => ({ default: m.OvernightScreenCard }))
 );
+const PlatesPage = lazy(() => import("@/app/plates/page"));
+const StockPickerPage = lazy(() => import("@/app/stock-picker/page"));
+const StockDetailPage = lazy(() => import("@/app/stock-detail/page"));
 
-type TabKey = "overnight" | "plates" | "pool" | "detail";
+type TabKey = "overnight" | "plates" | "picker" | "detail";
 
 const TABS: { key: TabKey; label: string; emoji: string }[] = [
   { key: "overnight", label: "盘后优选", emoji: "🌙" },
   { key: "plates", label: "板块热度", emoji: "🔥" },
-  { key: "pool", label: "股票池", emoji: "📋" },
+  { key: "picker", label: "选股工作台", emoji: "🎯" },
   { key: "detail", label: "个股分析", emoji: "🔍" },
 ];
 
@@ -58,24 +61,9 @@ export default function DiscoveryPage() {
       {/* Tab 内容 */}
       <Suspense fallback={<TabLoading />}>
         {activeTab === "overnight" && <OvernightScreenCard />}
-        {activeTab === "plates" && (
-          <div className="text-center py-20 text-muted-foreground">
-            <p className="text-lg mb-2">🔥 板块热度</p>
-            <p className="text-sm">现有板块热度页面将整合到此处</p>
-          </div>
-        )}
-        {activeTab === "pool" && (
-          <div className="text-center py-20 text-muted-foreground">
-            <p className="text-lg mb-2">📋 股票池管理</p>
-            <p className="text-sm">现有股票池页面将整合到此处</p>
-          </div>
-        )}
-        {activeTab === "detail" && (
-          <div className="text-center py-20 text-muted-foreground">
-            <p className="text-lg mb-2">🔍 个股深度分析</p>
-            <p className="text-sm">选择股票后展示K线 + 资金流 + AI分析</p>
-          </div>
-        )}
+        {activeTab === "plates" && <PlatesPage />}
+        {activeTab === "picker" && <StockPickerPage />}
+        {activeTab === "detail" && <StockDetailPage />}
       </Suspense>
     </div>
   );
