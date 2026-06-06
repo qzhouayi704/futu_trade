@@ -188,3 +188,34 @@ async def get_screening_analysis(stock_code: str):
         "success": True,
         "data": analysis,
     }
+
+
+@router.get("/trailing-status")
+async def get_trailing_status():
+    """获取Sniper驱动的止盈追踪状态（持仓股）"""
+    container = get_container()
+    rc = getattr(container, 'risk_coordinator', None)
+    if not rc:
+        return {"success": False, "message": "RiskCoordinator 未初始化", "data": {}}
+
+    result = {}
+    for code, state in getattr(rc, '_sniper_activated', {}).items():
+        peak = rc._peak_prices.get(code, 0)
+        buy_count = state.get('mega_buy_count', 0)
+        stop_pct = (rc._SNIPER_CONSECUTIVE_STOP_PCT
+                    if buy_count >= 2
+                    else rc._SNIPER_TRAILING_STOP_PCT)
+        result[code] = {
+            'activated': True,
+            'mega_buy_count': buy_count,
+            'mega_sell': state.get('mega_sell', False),
+            'peak_price': round(peak, 3) if peak else 0,
+            'stop_pct': stop_pct,
+            'activated_at': state.get('activated_at', 0),
+        }
+
+    return {
+        "success": True,
+        "message": f"{len(result)} 只持仓有Sniper追踪",
+        "data": result,
+    }

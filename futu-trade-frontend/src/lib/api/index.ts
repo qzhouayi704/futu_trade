@@ -10,3 +10,4 @@ export { systemApi } from "./system";
 export { configApi } from "./config";
 export { analysisApi } from "./analysis";
 export { positionOrderApi } from "./position-order";
+export { sniperApi } from "./sniper";
