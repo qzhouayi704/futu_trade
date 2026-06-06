@@ -150,9 +150,10 @@ class UnifiedTradeDecisionEngine:
         await self.on_signal(event)
 
     async def on_anomaly_signal(self, alert: dict):
-        """PoolSnapshotScanner 异动信号的便捷入口
+        """PoolSnapshotScanner 资金建仓信号的便捷入口
 
         将评分通过的异动股 alert dict 转换为 TradeSignalEvent。
+        资金流通道：跳过共振判断，直接进入门卫。
         """
         event = TradeSignalEvent(
             source='anomaly',
@@ -161,8 +162,9 @@ class UnifiedTradeDecisionEngine:
             direction='BUY',
             strength=min(alert.get('score', 0), 100),
             price=alert.get('price', 0),
-            reason=f"异动评分{alert.get('score', 0)}分 ({alert.get('mode', '')}模式)",
+            reason=f"资金建仓{alert.get('score', 0)}分 ({alert.get('mode', '')}模式)",
             scorer_score=alert.get('score', 0),
+            capital_score=alert.get('capital_score', 0),
             trade_params=alert.get('trade_params'),
         )
         await self.on_signal(event)
@@ -170,7 +172,12 @@ class UnifiedTradeDecisionEngine:
     # ==================== 买入信号处理 ====================
 
     async def _handle_buy_signal(self, event: TradeSignalEvent):
-        """处理买入信号 → 共振判断 → 门卫 → 仓位 → 执行（含流水记录）"""
+        """处理买入信号
+
+        双通道设计：
+          资金流通道(anomaly): Scanner+StockScorer已双层验证 → 跳过共振 → 门卫 → 执行
+          Sniper通道:       共振判断 → 门卫 → 执行
+        """
         pipeline = {
             'source': event.source,
             'direction': event.direction,
@@ -185,16 +192,30 @@ class UnifiedTradeDecisionEngine:
             self._save_pipeline_record(event, 'rejected', '冷却期内', {}, {}, pipeline)
             return
 
-        # 2. 共振判断
-        decision = self._evaluate_buy_resonance(event.stock_code)
-        resonance_info = {
-            'matched': decision is not None,
-            'type': decision.resonance_type if decision else None,
-            'reason': decision.reason if decision else '未满足共振条件',
-        }
-        if decision is None:
-            self._save_pipeline_record(event, 'waiting', '等待共振确认', resonance_info, {}, pipeline)
-            return
+        # 2. 通道分流
+        if event.source == 'anomaly':
+            # 资金流通道：Scanner+StockScorer已双层验证，跳过共振
+            decision = self._build_direct_decision(event)
+            resonance_info = {
+                'matched': True,
+                'type': 'capital_direct',
+                'reason': f'资金流直通: 资金评分{event.capital_score:.0f} + 评分{event.scorer_score}',
+            }
+            logger.info(
+                f"[DecisionEngine] ✓ 资金流直通 {event.stock_code} {event.stock_name} "
+                f"capital={event.capital_score:.0f} scorer={event.scorer_score}"
+            )
+        else:
+            # Sniper等其他来源走原共振逻辑
+            decision = self._evaluate_buy_resonance(event.stock_code)
+            resonance_info = {
+                'matched': decision is not None,
+                'type': decision.resonance_type if decision else None,
+                'reason': decision.reason if decision else '未满足共振条件',
+            }
+            if decision is None:
+                self._save_pipeline_record(event, 'waiting', '等待共振确认', resonance_info, {}, pipeline)
+                return
 
         # 3. 门卫检查
         guard_result = self._run_all_guards(event.stock_code, event.price)
@@ -219,6 +240,29 @@ class UnifiedTradeDecisionEngine:
         # 5. 执行
         await self._execute_decision(decision)
         self._save_pipeline_record(event, 'executed', f"{decision.resonance_type}: 执行{decision.direction}", resonance_info, guard_info, pipeline)
+
+    def _build_direct_decision(self, event: TradeSignalEvent) -> TradeDecision:
+        """资金流通道：直接构建交易决策（跳过共振）
+
+        Scanner已验证资金建仓 + StockScorer已评分通过，
+        无需等待第二个信号源。
+        """
+        trade_params = event.trade_params or {}
+        return TradeDecision(
+            stock_code=event.stock_code,
+            stock_name=event.stock_name,
+            direction='BUY',
+            price=event.price,
+            quantity=0,  # 稍后由 _calculate_position 计算
+            reason=event.reason,
+            sources=['anomaly'],
+            resonance_type='capital_direct',
+            simulated=self._simulate,
+            buy_dip_pct=trade_params.get('buy_dip_pct', 1.0),
+            take_profit_pct=trade_params.get('take_profit_pct', 5.0),
+            trailing_stop_pct=trade_params.get('trailing_stop_pct', 3.0),
+            stop_loss_pct=trade_params.get('stop_loss_pct', 3.0),
+        )
 
     def _evaluate_buy_resonance(self, stock_code: str) -> Optional[TradeDecision]:
         """共振判断 — 检查是否满足交易条件"""

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-全池快照扫描器 — 盘中异动发现
+全池快照扫描器 — 盘中资金建仓发现
 
-每3分钟扫描全部目标股票池（~560只），通过 get_market_snapshot
-发现涨幅+量比异常的股票，再结合历史K线验证是否有缩量蓄势形态，
-过滤掉无延续性的纯游资炒作。
+每1分钟扫描全部目标股票池（~560只），通过 get_market_snapshot + capital_flow_cache
+发现资金正在建仓的股票（资金评分≥75 + 净流入≥3% + 涨幅<3%），
+再结合历史K线补充形态标签。
 
 触发条件（两层过滤）：
-  第一层（快照）：涨幅 ≥ 7% + 量比 ≥ 3，或涨幅 ≥ 15%
-  第二层（K线验证）：前3日缩量 + 前5日振幅收窄 + 突破近期高点
+  第一层（资金流）：资金评分≥75+净流入≥3%+涨幅<3%，或大单买≥60%+涨幅<3%，或涨幅≥15%
+  第二层（K线标签）：缩量蓄势标注（仅作为信息标签，不阻止通过）
 """
 
 import logging
@@ -30,23 +30,30 @@ class AnomalyStock:
     volume_ratio: float     # 量比
     turnover_rate: float    # 当前换手率 %
     price: float            # 当前价格
-    anomaly_type: str       # "breakout_surge" / "extreme_volume" / "limit_up"
+    anomaly_type: str       # "capital_inflow" / "big_buy_driven" / "limit_up"
     has_shrinkage: bool     # 是否有缩量蓄势形态
     detected_at: str        # 发现时间
     detail: str = ""        # 补充说明
+    cap_tier: str = ""      # "large" / "mid" / "small" — 供策略层决定止盈方式
+    capital_score: float = 0.0   # 资金评分 0-100
+    signal_change: float = 0.0   # 信号时涨幅 %
 
 
 class PoolSnapshotScanner:
     """全池快照扫描器"""
 
-    # 第一层：快照异动阈值
-    SURGE_CHANGE_PCT = 7.0       # 放量异动最低涨幅 %
-    SURGE_VOLUME_RATIO = 3.0     # 放量异动最低量比
-    STRONG_SURGE_CHANGE_PCT = 10.0  # 强势异动涨幅(不要求量比)
-    EXTREME_VOLUME_RATIO = 5.0   # 极端放量量比（不论涨幅）
-    LIMIT_UP_CHANGE_PCT = 15.0   # 涨停级涨幅 %
+    # 第一层：资金流驱动阈值（所有入口必须经过资金验证）
+    CAPITAL_SCORE_MIN = 75       # 资金评分最低分
+    NET_INFLOW_RATIO_MIN = 0.03  # 净流入占比最低 3%
+    BIG_BUY_RATIO_MIN = 0.60     # 大单买比最低 60%
+    MAX_SIGNALS = 15             # 每次扫描最多推送信号数
 
-    # 第二层：缩量蓄势验证阈值
+    # 成交额分层阈值
+    TURNOVER_LARGE = 1e8         # 大盘股成交额 ≥ 1亿
+    TURNOVER_MID = 3e7           # 中盘股成交额 ≥ 3千万
+    TURNOVER_MIN = 1e7           # 最低成交额 1千万
+
+    # 第二层：缩量蓄势验证阈值（仅作标签）
     SHRINKAGE_TR_MAX = 2.0       # 前3日换手率上限 %
     SHRINKAGE_RANGE_MAX = 15.0   # 前5日振幅上限 %
     SHRINKAGE_DAYS = 3           # 检查缩量的天数
@@ -182,27 +189,134 @@ class PoolSnapshotScanner:
         return all_data
 
     def _filter_by_snapshot(self, data: List[Dict]) -> List[Dict]:
-        """第一层：快照异动筛选"""
+        """第一层：资金流驱动筛选（所有入口必须经过资金验证）
+
+        通过条件（满足任一）：
+          A. 资金评分≥75 + 净流入≥3%
+          B. 大单买≥60%
+        涨幅不设硬限制，通过排序自然降权。
+        """
+        # 批量获取所有股票的资金流数据
+        codes = [s['code'] for s in data]
+        capital_map = self._batch_get_capital_flow(codes)
+
         candidates = []
         for stock in data:
+            code = stock['code']
             chg = stock['change_rate']
-            vr = stock['volume_ratio']
 
+            # 最低成交额过滤
+            est_turnover = stock.get('volume', 0) * stock.get('last_price', 0)
+            if est_turnover < self.TURNOVER_MIN:
+                continue
+
+            # 分层标签
+            if est_turnover >= self.TURNOVER_LARGE:
+                cap_tier = "large"
+            elif est_turnover >= self.TURNOVER_MID:
+                cap_tier = "mid"
+            else:
+                cap_tier = "small"
+
+            # 资金流验证（唯一入口）
+            cf = capital_map.get(code)
+            if not cf:
+                continue
+
+            cap_score = cf.get('capital_score', 0)
+            net_ratio = cf.get('net_inflow_ratio', 0)
+            big_buy = cf.get('big_order_buy_ratio', 0)
             anomaly_type = None
-            if chg >= self.LIMIT_UP_CHANGE_PCT:
-                anomaly_type = "limit_up"
-            elif chg >= self.STRONG_SURGE_CHANGE_PCT:
-                anomaly_type = "strong_surge"  # 涨幅≥10%无需量比
-            elif chg >= self.SURGE_CHANGE_PCT and vr >= self.SURGE_VOLUME_RATIO:
-                anomaly_type = "breakout_surge"
-            elif vr >= self.EXTREME_VOLUME_RATIO and chg > 0:
-                anomaly_type = "extreme_volume"
+
+            # 入口A: 资金评分+净流入
+            if (cap_score >= self.CAPITAL_SCORE_MIN and
+                    net_ratio >= self.NET_INFLOW_RATIO_MIN):
+                anomaly_type = "capital_inflow"
+
+            # 入口B: 大单买比
+            elif big_buy >= self.BIG_BUY_RATIO_MIN:
+                anomaly_type = "big_buy_driven"
+                cap_score = cap_score or 50  # 保底评分
 
             if anomaly_type:
                 stock['anomaly_type'] = anomaly_type
+                stock['cap_tier'] = cap_tier
+                stock['capital_score'] = cap_score
+                stock['signal_change'] = chg
                 candidates.append(stock)
 
+        # 按资金强度排序，取TOP N
+        if len(candidates) > self.MAX_SIGNALS:
+            candidates = self._rank_by_capital_strength(candidates)
+
         return candidates
+
+    def _rank_by_capital_strength(self, candidates: List[Dict]) -> List[Dict]:
+        """按资金强度综合评分排序，取TOP MAX_SIGNALS
+
+        涨幅不设硬限制，通过入场位置得分自然降权：
+        涨幅越低得分越高，但资金特别强的股票即使涨5%也能排进来。
+        """
+
+        def score_fn(stock):
+            cap_score = stock.get('capital_score', 0)
+            chg = stock.get('signal_change', 0)
+
+            # 入场位置得分：涨幅越低越好（软降权，不硬排除）
+            if 0 <= chg < 1:
+                position_score = 100
+            elif 1 <= chg < 2:
+                position_score = 80
+            elif chg < 0:
+                position_score = 60
+            elif 2 <= chg < 3:
+                position_score = 40
+            elif 3 <= chg < 5:
+                position_score = 20
+            else:
+                position_score = 10  # 涨≥5%仍可入选，但排名靠后
+
+            # 综合得分 = 资金评分(50%) + 入场位置(30%) + 净流入额外(20%)
+            return cap_score * 0.5 + position_score * 0.3 + cap_score * 0.2
+
+        candidates.sort(key=score_fn, reverse=True)
+        return candidates[:self.MAX_SIGNALS]
+
+    def _batch_get_capital_flow(self, codes: List[str]) -> Dict[str, dict]:
+        """批量从 capital_flow_cache 获取最新资金流数据（3分钟内有效）"""
+        if not codes:
+            return {}
+
+        try:
+            db = self._container.db_manager
+            placeholders = ','.join('?' * len(codes))
+
+            rows = db.execute_query(f"""
+                SELECT stock_code, capital_score, net_inflow_ratio,
+                       big_order_buy_ratio, main_net_inflow
+                FROM capital_flow_cache
+                WHERE stock_code IN ({placeholders})
+                  AND timestamp > datetime('now', '-3 minutes')
+                ORDER BY timestamp DESC
+            """, codes)
+
+            result = {}
+            if rows:
+                for row in rows:
+                    code = row[0]
+                    if code not in result:  # 只取最新一条
+                        result[code] = {
+                            'capital_score': row[1] or 0,
+                            'net_inflow_ratio': row[2] or 0,
+                            'big_order_buy_ratio': row[3] or 0,
+                            'main_net_inflow': row[4] or 0,
+                        }
+            return result
+
+        except Exception as e:
+            logger.warning(f"[异动扫描] 批量查询资金流失败: {e}")
+            return {}
+
 
     def _apply_cooldown(self, candidates: List[Dict]) -> List[Dict]:
         """冷却期过滤：同一股票30分钟内不重复触发"""
@@ -287,6 +401,9 @@ class PoolSnapshotScanner:
                 has_shrinkage=has_shrinkage,
                 detected_at=datetime.now().strftime('%H:%M:%S'),
                 detail=detail,
+                cap_tier=stock.get('cap_tier', ''),
+                capital_score=stock.get('capital_score', 0.0),
+                signal_change=stock.get('signal_change', 0.0),
             ))
 
         return confirmed

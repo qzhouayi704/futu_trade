@@ -99,6 +99,7 @@ class TradeSignalEvent:
 
     # 评分/异动 专用
     scorer_score: int = 0
+    capital_score: float = 0.0  # 资金评分（Scanner传入）
     trade_params: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
