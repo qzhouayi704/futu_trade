@@ -345,9 +345,6 @@ export default function NewsPage() {
           <Button onClick={() => handleCrawl(false)} disabled={crawling}>
             {crawling ? "抓取中..." : "抓取新闻"}
           </Button>
-          <Button onClick={() => handleCrawl(true)} disabled={crawling} variant="secondary">
-            调试抓取
-          </Button>
         </div>
       </div>
 

@@ -19,17 +19,17 @@ RESONANCE_RULES = {
     # 双源共振：2个以上不同 source 的买入信号
     'dual_source': {
         'min_sources': 2,
-        'window_minutes': 15,
+        'window_minutes': 20,       # 回测优化: 15→20 (75%胜率, PF 4.57)
     },
     # 单源强信号：strength ≥ 80 且 StockScorer 评分 ≥ 80
     'strong_single': {
         'min_strength': 80,
         'min_score': 80,
     },
-    # 多重绿色（仅 Sniper）：15分钟内2种以上不同 sniper_signal_type
+    # 多重绿色（仅 Sniper）：20分钟内2种以上不同 sniper_signal_type
     'multi_green': {
         'min_distinct_types': 2,
-        'window_minutes': 15,
+        'window_minutes': 20,       # 回测优化: 15→20
     },
 }
 
@@ -135,8 +135,8 @@ class TradeDecision:
     # 交易参数（传递给 AutoTradeService）
     buy_dip_pct: float = 1.0
     take_profit_pct: float = 5.0       # 激活移动止盈的阈值
-    trailing_stop_pct: float = 3.0     # 从峰值回撤X%卖出（移动止盈）
-    stop_loss_pct: float = 3.0         # 固定止损: -3%
+    trailing_stop_pct: float = 2.0     # 回测优化: 3%→2% (锁利更紧, PF 1.90→4.57)
+    stop_loss_pct: float = 5.0         # 回测优化: 3%→5% (避免误杀好股票)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

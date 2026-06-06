@@ -298,8 +298,8 @@ class UnifiedTradeDecisionEngine:
             resonance_type='',
             simulated=self._simulate,
             buy_dip_pct=trade_params.get('buy_dip_pct', 1.0),
-            take_profit_pct=trade_params.get('take_profit_pct', 10.0),
-            stop_loss_pct=trade_params.get('stop_loss_pct', 8.0),
+            take_profit_pct=trade_params.get('take_profit_pct', 5.0),   # 修复: 原10.0与默认值矛盾
+            stop_loss_pct=trade_params.get('stop_loss_pct', 5.0),       # 修复: 原8.0, 回测优化→5.0
         )
 
         # 规则1: 双源共振
