@@ -38,7 +38,7 @@ class OvernightCandidate:
             'rank': self.rank,
             'verdict': self.verdict,
             'category': self.category,
-            'scores': {k: round(v, 1) for k, v in self.scores.items()},
+            'scores': {k: round(v, 1) if isinstance(v, (int, float)) else v for k, v in self.scores.items()},
             'reasons': self.reasons,
             'key_metrics': self.key_metrics,
             'excluded': self.excluded,

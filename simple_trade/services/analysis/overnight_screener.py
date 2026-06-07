@@ -106,18 +106,32 @@ class OvernightScreener:
             klines = all_klines_cache.get(code) or self._get_klines(code, 25)
             indicators = self._build_scorer_indicators(stock, klines, code)
 
-            # --- TREND 候选 ---
+            # --- 全模式评分候选 (TREND + BREAKOUT + MOMENTUM) ---
             excluded_trend, reason_trend = self._check_exclusions(stock, code, mode='TREND')
             if not excluded_trend and indicators:
                 c_t = OvernightCandidate(stock_code=code, stock_name=name)
                 c_t.key_metrics = self._collect_metrics(stock, code)
-                c_t.category = "趋势追涨"
 
                 from ..strategy.stock_scorer import StockScorer, PASSING_SCORE
                 scorer = StockScorer()
-                trend_score, trend_details = scorer._score_trend(indicators)
-                c_t.scores['scorer_trend'] = trend_score
-                c_t.total_score = trend_score
+                all_results = scorer.score_all_strategies(code, name, indicators)
+                best = all_results['best']
+
+                # 根据最佳模式设置分类
+                mode_category = {
+                    'TREND': '趋势追涨',
+                    'BREAKOUT': '蓄势突破',
+                    'MOMENTUM': '动量接力',
+                }
+                c_t.category = mode_category.get(best.mode, '趋势追涨')
+                c_t.scores['scorer_best'] = best.total_score
+                c_t.scores['scorer_mode'] = best.mode
+                c_t.scores['scorer_trend'] = all_results['trend'].total_score
+                if all_results['breakout_triggered']:
+                    c_t.scores['scorer_breakout'] = all_results['breakout'].total_score
+                if all_results['momentum_triggered']:
+                    c_t.scores['scorer_momentum'] = all_results['momentum'].total_score
+                c_t.total_score = best.total_score
 
                 bonus = self._overnight_bonus(stock, code)
                 c_t.total_score += bonus['total']
@@ -462,6 +476,36 @@ class OvernightScreener:
                     period_low = min(recent_lows)
                     if period_low > 0:
                         indicators['rise_from_low'] = (last - period_low) / period_low * 100
+
+            # --- BREAKOUT 指标: 突破级别与幅度 ---
+            if len(klines) >= 6:
+                prev_highs_5 = [k['high_price'] for k in klines[-6:-1] if k.get('high_price', 0) > 0]
+                prev_highs_10 = [k['high_price'] for k in klines[-11:-1] if k.get('high_price', 0) > 0] if len(klines) >= 11 else prev_highs_5
+                prev_highs_20 = [k['high_price'] for k in klines[-21:-1] if k.get('high_price', 0) > 0] if len(klines) >= 21 else prev_highs_10
+                h5 = max(prev_highs_5) if prev_highs_5 else 0
+                h10 = max(prev_highs_10) if prev_highs_10 else 0
+                h20 = max(prev_highs_20) if prev_highs_20 else 0
+                if high > 0:
+                    if h20 > 0 and high > h20:
+                        indicators['breakout_level'] = '20日高'
+                        indicators['breakout_pct'] = (last - h20) / h20 * 100 if h20 > 0 else 0
+                    elif h10 > 0 and high > h10:
+                        indicators['breakout_level'] = '10日高'
+                        indicators['breakout_pct'] = (last - h10) / h10 * 100 if h10 > 0 else 0
+                    elif h5 > 0 and high > h5:
+                        indicators['breakout_level'] = '5日高'
+                        indicators['breakout_pct'] = (last - h5) / h5 * 100 if h5 > 0 else 0
+
+            # --- MOMENTUM 指标: 反包力度 ---
+            if high > 0 and low > 0 and high != low and last > 0:
+                indicators['recovery_ratio'] = (last - low) / (high - low)
+
+        # --- BREAKOUT 资金指标 ---
+        cap_data = self._get_cached_capital(code)
+        if cap_data:
+            indicators['net_inflow_ratio'] = cap_data.get('net_inflow_ratio', 0)
+            indicators['big_order_buy_ratio'] = cap_data.get('big_order_buy_ratio', 0)
+        indicators['capital_continuity_days'] = self._get_capital_continuity_days(code)
 
         return indicators
 

@@ -55,6 +55,8 @@ class AsyncQuotePusher:
         if container.config:
             self.push_interval = getattr(container.config, 'quote_push_interval', 5)
 
+        self._loop_count = 0
+
     async def start(self) -> Dict[str, Any]:
         """启动行情推送服务
 
