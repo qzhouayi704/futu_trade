@@ -538,6 +538,29 @@ async def get_dashboard_data(container=Depends(get_container)):
         except Exception:
             pass
 
+        # 2.5 补充获取缺失股票的实时行情（优选股不在订阅列表中时 quote_cache 无数据）
+        missing_codes = [c.get('stock_code', '') for c in candidates
+                         if c.get('stock_code') and c.get('stock_code') not in quote_map]
+        if missing_codes:
+            try:
+                futu_client = getattr(container, 'futu_client', None)
+                if futu_client and futu_client.is_available():
+                    ret, data = futu_client.get_market_snapshot(missing_codes)
+                    if ret == 0 and data is not None and not data.empty:
+                        for _, row in data.iterrows():
+                            code = row.get('code', '')
+                            if code:
+                                quote_map[code] = {
+                                    'last_price': float(row.get('last_price', 0)),
+                                    'cur_price': float(row.get('last_price', 0)),
+                                    'change_rate': float(row.get('change_rate', 0)),
+                                    'change_percent': float(row.get('change_rate', 0)),
+                                    'volume_ratio': float(row.get('volume_ratio', 0) or 0),
+                                }
+                        logger.info(f"[盘后Dashboard] 补充获取 {len(missing_codes)} 只缺失股票的实时行情")
+            except Exception as e:
+                logger.debug(f"[盘后Dashboard] 补充行情获取失败: {e}")
+
         # 3. 批量查资金流 + 大单
         codes = [c.get('stock_code', '') for c in candidates if c.get('stock_code')]
         capital_map = {}
