@@ -8,6 +8,7 @@ import Link from "next/link";
 import { Card } from "@/components/common";
 import { useSocket } from "@/lib/socket";
 import apiClient from "@/lib/api/client";
+import { QuickOrderPopover } from "./QuickOrderPopover";
 
 // ── 类型定义 ──────────────────────────────────────
 
@@ -421,13 +422,12 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20 }: Un
                       >
                         🔍分析
                       </Link>
-                      <Link
-                        href={`/trading?stock=${sig.stock_code}`}
-                        onClick={(e) => { e.stopPropagation(); }}
-                        className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors font-medium"
-                      >
-                        📈下单
-                      </Link>
+                      <QuickOrderPopover
+                        stockCode={sig.stock_code}
+                        stockName={sig.stock_name}
+                        price={sig.price}
+                        direction={sig.is_red ? "sell" : "buy"}
+                      />
                     </div>
                   </div>
                 </div>
