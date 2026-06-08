@@ -257,20 +257,19 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning(f"Ticker推送处理器容器注入失败: {e}")
 
-            # 自动恢复监控：如果上次关闭前监控在运行，则自动重启
-            if state_manager.was_running_before_shutdown():
-                async def _auto_resume_monitoring():
-                    """后台自动恢复监控"""
-                    try:
-                        # 等待行情推送启动完成（给 3 秒缓冲）
-                        await asyncio.sleep(3)
-                        print_status("【自动恢复】检测到上次监控未正常关闭，正在自动恢复...", "info")
-                        await system_coordinator.start()
-                        print_status("【自动恢复】监控已自动恢复", "ok")
-                    except Exception as e:
-                        logging.error(f"自动恢复监控失败: {e}", exc_info=True)
-                        print_status(f"【自动恢复】监控恢复失败: {e}", "error")
-                _track(_auto_resume_monitoring(), name="auto_resume_monitoring")
+            # 自动启动监控：每次后端启动后自动开启监控
+            async def _auto_start_monitoring():
+                """后台自动启动监控"""
+                try:
+                    # 等待行情推送启动完成（给 3 秒缓冲）
+                    await asyncio.sleep(3)
+                    print_status("【自动启动】正在启动监控...", "info")
+                    await system_coordinator.start()
+                    print_status("【自动启动】监控已启动", "ok")
+                except Exception as e:
+                    logging.error(f"自动启动监控失败: {e}", exc_info=True)
+                    print_status(f"【自动启动】监控启动失败: {e}", "error")
+            _track(_auto_start_monitoring(), name="auto_start_monitoring")
 
             # 发送企业微信启动通知
             if hasattr(container, 'wechat_alert_service') and container.wechat_alert_service:

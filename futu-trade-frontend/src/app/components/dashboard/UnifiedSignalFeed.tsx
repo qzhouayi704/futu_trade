@@ -87,9 +87,10 @@ const PRIMARY_SNIPER_TYPES = new Set(["mega_buy", "mega_sell", "distribution_tra
 interface UnifiedSignalFeedProps {
   positionStockCodes?: string[];   // 持仓股票代码列表（用于优先排序）
   maxItems?: number;
+  sourceFilter?: "all" | "sniper" | "alert" | "pipeline";  // 信号源筛选
 }
 
-export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20 }: UnifiedSignalFeedProps) {
+export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sourceFilter = "all" }: UnifiedSignalFeedProps) {
   const { socket } = useSocket();
   const [sniperSignals, setSniperSignals] = useState<SniperSignal[]>([]);
   const [vpAlerts, setVpAlerts] = useState<VolumePriceAlert[]>([]);
@@ -258,9 +259,10 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20 }: Un
       });
     }
 
-    // 3. 策略追踪 → 只取已执行的
+    // 3. 策略追踪 → 已执行 + 策略广播
     for (const rec of pipelineRecords) {
-      if (rec.final_action !== "executed") continue;
+      if (rec.final_action !== "executed" && rec.final_action !== "broadcast") continue;
+      const isBroadcast = rec.final_action === "broadcast";
       const isBuy = rec.direction === "BUY";
       items.push({
         id: `pipe-${rec.id || rec.timestamp}`,
@@ -268,10 +270,12 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20 }: Un
         time: rec.timestamp?.slice(11, 16) || "",
         stock_code: rec.stock_code,
         stock_name: rec.stock_name,
-        emoji: isBuy ? "✅" : "🔻",
-        label: `策略${isBuy ? "买入" : "卖出"}`,
+        emoji: isBroadcast ? "📡" : isBuy ? "✅" : "🔻",
+        label: isBroadcast
+          ? `${isBuy ? "买入机会" : rec.direction === "SELL" ? "防守触发" : "风险预警"}`
+          : `策略${isBuy ? "买入" : "卖出"}`,
         detail: rec.final_reason,
-        urgency: 50,
+        urgency: isBroadcast ? 55 : 50,
         is_red: !isBuy,
         bgColor: isBuy
           ? "bg-emerald-50/60 border-emerald-200/50 dark:bg-emerald-950/20 dark:border-emerald-900/30"
@@ -294,8 +298,13 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20 }: Un
       return b.time.localeCompare(a.time);
     });
 
-    return items.slice(0, maxItems);
-  }, [sniperSignals, vpAlerts, pipelineRecords, positionSet, maxItems]);
+    // 按 source 筛选
+    const filtered = sourceFilter && sourceFilter !== "all"
+      ? items.filter(s => s.source === sourceFilter)
+      : items;
+
+    return filtered.slice(0, maxItems);
+  }, [sniperSignals, vpAlerts, pipelineRecords, positionSet, maxItems, sourceFilter]);
 
   // ── 统计 ──────────────────────────────────
 

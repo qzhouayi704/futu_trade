@@ -44,6 +44,7 @@ export function SignalFeed({ positionStockCodes }: SignalFeedProps) {
       <UnifiedSignalFeed
         positionStockCodes={positionStockCodes}
         maxItems={30}
+        sourceFilter={filter}
       />
     </div>
   );

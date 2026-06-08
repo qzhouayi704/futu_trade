@@ -68,8 +68,13 @@ class PipelineBroadcast:
             return []
 
     async def _broadcast_strategy_signals(self, trade_actions: List[Dict]):
-        """广播策略信号到前端（关键信号含重试）"""
+        """广播策略信号到前端（关键信号含重试）+ 持久化到数据库"""
         import asyncio
+        import json
+        from datetime import date
+
+        today = date.today().isoformat()
+
         for action in trade_actions:
             signal_data = {
                 'stock_code': action['stock_code'],
@@ -99,6 +104,30 @@ class PipelineBroadcast:
                             f"策略信号广播失败(3次均失败) "
                             f"{action['stock_code']}: {e}"
                         )
+
+            # 持久化到 signal_pipeline 表
+            try:
+                db = getattr(self.container, 'db_manager', None)
+                if db:
+                    signal_type = action.get('signal_type', 'BUY').upper()
+                    direction = signal_type if signal_type in ('BUY', 'SELL') else 'WARN'
+                    source = action.get('strategy_id', 'strategy')
+                    ts = action.get('timestamp', datetime.now().isoformat())
+
+                    db.execute_update(
+                        '''INSERT INTO signal_pipeline
+                           (trade_date, timestamp, stock_code, stock_name, source,
+                            direction, strength, resonance_result, guard_result,
+                            final_action, final_reason, raw_detail)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        (today, ts, action['stock_code'], action['stock_name'],
+                         source, direction, 0,
+                         '{}', '{}',
+                         'broadcast', action.get('reason', ''),
+                         json.dumps(action, ensure_ascii=False, default=str)),
+                    )
+            except Exception as e:
+                logging.debug(f"策略信号持久化失败: {e}")
 
     async def _broadcast_conditions_page(self):
         """广播数据到交易条件页面（格式与 HTTP API /quotes/conditions 一致）"""

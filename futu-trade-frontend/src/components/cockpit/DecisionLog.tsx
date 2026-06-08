@@ -20,7 +20,9 @@ interface PipelineRecord {
 
 const ACTION_STYLES: Record<string, { emoji: string; color: string }> = {
   executed: { emoji: "✅", color: "text-emerald-500" },
+  broadcast: { emoji: "📡", color: "text-blue-500" },
   rejected: { emoji: "❌", color: "text-red-400" },
+  waiting: { emoji: "⏳", color: "text-amber-500" },
   skipped: { emoji: "⏭️", color: "text-muted-foreground" },
   pending: { emoji: "⏳", color: "text-amber-500" },
 };
@@ -29,6 +31,11 @@ const SOURCE_LABELS: Record<string, string> = {
   anomaly: "资金流",
   sniper: "Sniper",
   scalping: "短线",
+  strategy: "策略",
+  absorption_scanner: "量价",
+  capital_flow: "资金流",
+  intraday_profit: "日内",
+  intraday_risk: "风控",
 };
 
 export function DecisionLog() {
