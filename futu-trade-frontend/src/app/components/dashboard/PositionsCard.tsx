@@ -57,6 +57,11 @@ export function PositionsCard({ positions, loading = false }: PositionsCardProps
   const [adviceMap, setAdviceMap] = useState<Record<string, PositionAdvice>>({});
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [adviceLoading, setAdviceLoading] = useState(false);
+  const [aiResults, setAiResults] = useState<Record<string, {
+    loading: boolean;
+    data?: { action: string; confidence: number; reasoning: string; key_factors: string[]; risk_warning: string; target_price: number | null; stop_loss_price: number | null; time_horizon: string };
+    error?: string;
+  }>>({});
 
   // 加载操作建议
   const loadAdvice = useCallback(async () => {
@@ -83,6 +88,23 @@ export function PositionsCard({ positions, loading = false }: PositionsCardProps
       loadAdvice();
     }
   }, [positions.length, loadAdvice]);
+
+  // AI 分析持仓股
+  const analyzePosition = async (stockCode: string) => {
+    setAiResults(prev => ({ ...prev, [stockCode]: { loading: true } }));
+    setExpandedCode(stockCode);
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const res: any = await apiClient.post(`/ai-analysis/position/${stockCode}`);
+      if (res.success && res.data) {
+        setAiResults(prev => ({ ...prev, [stockCode]: { loading: false, data: res.data } }));
+      } else {
+        setAiResults(prev => ({ ...prev, [stockCode]: { loading: false, error: res.message || '分析失败' } }));
+      }
+    } catch (e) {
+      setAiResults(prev => ({ ...prev, [stockCode]: { loading: false, error: '请求失败' } }));
+    }
+  };
 
   // 计算统计数据
   const totalMarketValue = positions.reduce((sum, pos) => sum + (pos.market_value ?? 0), 0);
@@ -204,6 +226,17 @@ export function PositionsCard({ positions, loading = false }: PositionsCardProps
                         </div>
                         {/* 快速操作按钮 */}
                         <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); analyzePosition(position.stock_code); }}
+                            disabled={aiResults[position.stock_code]?.loading}
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-medium transition-colors ${
+                              aiResults[position.stock_code]?.loading
+                                ? 'bg-purple-100 text-purple-400 cursor-wait'
+                                : 'bg-purple-50 text-purple-600 hover:bg-purple-100 dark:bg-purple-900/30 dark:text-purple-400'
+                            }`}
+                          >
+                            {aiResults[position.stock_code]?.loading ? '⏳分析中...' : '🤖AI诊断'}
+                          </button>
                           <Link
                             href={`/stock-detail?code=${position.stock_code}`}
                             onClick={(e) => e.stopPropagation()}
@@ -223,7 +256,7 @@ export function PositionsCard({ positions, loading = false }: PositionsCardProps
 
 
                       {/* 展开：操作建议详情 */}
-                      {isExpanded && advice && (
+                      {isExpanded && advice && !aiResults[position.stock_code]?.data && (
                         <div className="mt-2 pt-2 border-t border-gray-200/60 space-y-1.5">
                           {/* 价位建议 */}
                           <div className="flex items-center gap-3 text-[10px]">
@@ -261,6 +294,76 @@ export function PositionsCard({ positions, loading = false }: PositionsCardProps
                           </div>
                         </div>
                       )}
+
+                      {/* AI 分析结果 */}
+                      {isExpanded && aiResults[position.stock_code]?.loading && (
+                        <div className="mt-2 pt-2 border-t border-purple-200/60 text-center py-4">
+                          <div className="text-sm text-purple-500 animate-pulse">🤖 AI 正在分析持仓数据...</div>
+                          <div className="text-[10px] text-gray-400 mt-1">聚合行情/资金流/信号/策略等 15 个维度</div>
+                        </div>
+                      )}
+                      {isExpanded && aiResults[position.stock_code]?.error && (
+                        <div className="mt-2 pt-2 border-t border-red-200/60 text-center py-3">
+                          <div className="text-xs text-red-500">❌ {aiResults[position.stock_code].error}</div>
+                        </div>
+                      )}
+                      {isExpanded && aiResults[position.stock_code]?.data && (() => {
+                        const ai = aiResults[position.stock_code].data!;
+                        const aiActionCfg: Record<string, { emoji: string; label: string; color: string }> = {
+                          STRONG_BUY: { emoji: '🟢', label: '强烈买入', color: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
+                          BUY: { emoji: '🟢', label: '买入', color: 'bg-emerald-50 text-emerald-600 border-emerald-200' },
+                          HOLD: { emoji: '🔵', label: '持有', color: 'bg-blue-50 text-blue-600 border-blue-200' },
+                          REDUCE: { emoji: '🟡', label: '减仓', color: 'bg-amber-50 text-amber-700 border-amber-200' },
+                          SELL: { emoji: '🔴', label: '卖出', color: 'bg-red-50 text-red-600 border-red-200' },
+                          STRONG_SELL: { emoji: '🔴', label: '强烈卖出', color: 'bg-red-100 text-red-700 border-red-300' },
+                        };
+                        const cfg = aiActionCfg[ai.action] || aiActionCfg.HOLD;
+                        return (
+                          <div className="mt-2 pt-2 border-t border-purple-200/60 space-y-2">
+                            {/* 操作建议标签 */}
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs px-2 py-0.5 rounded-full border font-bold ${cfg.color}`}>
+                                {cfg.emoji} AI: {cfg.label}
+                              </span>
+                              <span className="text-[10px] text-gray-500">置信度 <span className="font-bold text-indigo-600">{ai.confidence}%</span></span>
+                              {ai.time_horizon && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">{ai.time_horizon}</span>
+                              )}
+                            </div>
+                            {/* 止损/止盈 */}
+                            {(ai.stop_loss_price || ai.target_price) && (
+                              <div className="flex items-center gap-3 text-[10px]">
+                                {ai.stop_loss_price && (
+                                  <span className="text-gray-500">止损 <span className="font-bold text-green-600">{ai.stop_loss_price.toFixed(2)}</span></span>
+                                )}
+                                {ai.target_price && (
+                                  <span className="text-gray-500">目标 <span className="font-bold text-red-600">{ai.target_price.toFixed(2)}</span></span>
+                                )}
+                              </div>
+                            )}
+                            {/* 分析摘要 */}
+                            <div className="text-[11px] text-gray-700 dark:text-gray-300 leading-relaxed">
+                              {ai.reasoning}
+                            </div>
+                            {/* 关键因素 */}
+                            {ai.key_factors?.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                {ai.key_factors.map((f, i) => (
+                                  <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-100">
+                                    {f}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {/* 风险提示 */}
+                            {ai.risk_warning && (
+                              <div className="text-[10px] text-amber-600 bg-amber-50 border border-amber-100 rounded px-2 py-1">
+                                ⚠️ {ai.risk_warning}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}

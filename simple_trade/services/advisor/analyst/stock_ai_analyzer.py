@@ -148,6 +148,8 @@ class StockAIAnalyzer:
         capital_flow_summary: Optional[Dict] = None,
         intraday_levels_data: Optional[Dict] = None,
         sniper_data: Optional[Dict] = None,
+        pipeline_records: Optional[List[Dict]] = None,
+        sniper_history: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         """对单只股票执行 AI 分析
 
@@ -182,6 +184,7 @@ class StockAIAnalyzer:
                 stock_code, stock_name, quote, klines,
                 score_result, plate_info, position_info, news_data, flow_data,
                 capital_flow_summary, intraday_levels_data, sniper_data,
+                pipeline_records, sniper_history,
             )
             logger.info(f"[AI分析] {stock_code} Prompt 构建完成，长度: {len(prompt)} 字符，K线: {len(klines) if klines else 0} 条")
 
@@ -230,6 +233,8 @@ class StockAIAnalyzer:
         capital_flow_summary: Optional[Dict] = None,
         intraday_levels_data: Optional[Dict] = None,
         sniper_data: Optional[Dict] = None,
+        pipeline_records: Optional[List[Dict]] = None,
+        sniper_history: Optional[List[Dict]] = None,
     ) -> str:
         """构建完整的分析 Prompt"""
 
@@ -612,6 +617,37 @@ class StockAIAnalyzer:
                     label = type_labels.get(sig.get('signal_type', ''), sig.get('signal_type', ''))
                     prompt += f"- {sig.get('emoji', '')} [{sig.get('time', '')}] {label}: {sig.get('detail', '')}\n"
             prompt += "\n"
+
+        # 14. 策略 Pipeline 记录（系统自身的策略判断）
+        if pipeline_records:
+            prompt += f"\n## 今日策略引擎记录（系统已产生的信号）\n"
+            prompt += "| 时间 | 策略来源 | 方向 | 决策 | 原因 |\n"
+            prompt += "|------|---------|------|------|------|\n"
+            for rec in pipeline_records[-10:]:
+                ts = (rec.get('timestamp', '') or '')[:16]
+                prompt += (
+                    f"| {ts} | {rec.get('source', '')} | {rec.get('direction', '')} | "
+                    f"{rec.get('final_action', '')} | {(rec.get('final_reason', '') or '')[:60]} |\n"
+                )
+            prompt += "\n> ⚠️ 注意：如果策略引擎已发出 SELL 信号（如触达止盈线），请在分析中重点评估。\n"
+
+        # 15. 近3日 Sniper 信号历史（多日模式识别）
+        if sniper_history:
+            type_labels = {
+                'mega_sell': '巨量砸盘', 'mega_buy': '巨量抢筹',
+                'reversal_bear': '资金转负', 'reversal_bull': '资金转正',
+                'accel_in': '资金加速', 'sustained_out': '持续流出',
+                'distribution_trap': '出货陷阱', 'accumulation_signal': '主力吸筹',
+            }
+            prompt += f"\n## 近3日狙击手信号历史（{len(sniper_history)}条）\n"
+            prompt += "| 日期时间 | 信号类型 | 价格 |\n"
+            prompt += "|---------|---------|------|\n"
+            for sig in sniper_history[-20:]:
+                ts = sig.get('created_at', sig.get('time', ''))[:16]
+                stype = sig.get('signal_type', '')
+                label = type_labels.get(stype, stype)
+                prompt += f"| {ts} | {label} | {sig.get('price', 0):.3f} |\n"
+            prompt += "\n> 💡 关注多日模式：如果前几天持续 mega_sell/sustained_out 而今天出现 mega_buy/reversal_bull，可能是底部反转信号。\n"
 
         return prompt
 

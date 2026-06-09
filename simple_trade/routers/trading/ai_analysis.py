@@ -118,18 +118,92 @@ async def analyze_stock(
         return APIResponse(success=False, message=f"分析异常: {str(e)}")
 
 
+@router.post("/position/{stock_code}", response_model=APIResponse)
+async def analyze_position(
+    stock_code: str,
+    container=Depends(get_container),
+):
+    """持仓股 AI 止盈止损分析 — 专用于持仓监控面板
+
+    聚合持仓信息 + 全维度数据（含策略 Pipeline 记录和近3日 Sniper 历史），
+    发给 Gemini 判断是否应该止盈/止损/继续持有。
+    """
+    analyzer = container.stock_ai_analyzer
+    if not analyzer or not analyzer.is_available():
+        return APIResponse(success=False, message="AI 分析服务不可用")
+
+    try:
+        # 1. 验证是否为持仓股
+        position_info = _get_position_info(container, stock_code)
+        if not position_info:
+            return APIResponse(success=False, message=f"{stock_code} 不在持仓中")
+
+        # 2. 聚合全维度数据（复用现有函数）
+        quote = _get_stock_quote(container, stock_code)
+        if not quote:
+            return APIResponse(success=False, message=f"无法获取 {stock_code} 实时行情")
+
+        stock_name = quote.get('name', quote.get('stock_name', stock_code))
+        klines = _get_kline_data(container, stock_code)
+        score_result = _get_score_result(container, stock_code, quote, klines)
+        plate_info = _get_plate_info(container, stock_code)
+        flow_data = _get_intraday_flow_data(container, stock_code)
+        capital_flow_summary = await _get_capital_flow_summary(container, stock_code)
+        intraday_levels_data = await _get_intraday_levels_data(container, stock_code)
+        sniper_data = _get_sniper_data(container, stock_code)
+
+        # 3. 新增：策略 Pipeline 记录 + 近3日 Sniper 历史
+        pipeline_records = _get_pipeline_records(container, stock_code)
+        sniper_history = _get_sniper_history(container, stock_code)
+
+        logger.info(
+            f"[AI持仓分析] {stock_code} 数据聚合完成 | "
+            f"持仓: ✓ | Pipeline: {len(pipeline_records)}条 | "
+            f"Sniper历史: {len(sniper_history)}条"
+        )
+
+        # 4. 执行 AI 分析
+        result = await analyzer.analyze_stock(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            quote=quote,
+            klines=klines,
+            score_result=score_result,
+            plate_info=plate_info,
+            position_info=position_info,
+            flow_data=flow_data,
+            capital_flow_summary=capital_flow_summary,
+            intraday_levels_data=intraday_levels_data,
+            sniper_data=sniper_data,
+            pipeline_records=pipeline_records,
+            sniper_history=sniper_history,
+        )
+
+        if result.get('success'):
+            return APIResponse(
+                success=True,
+                data=result.get('data'),
+                message=f"持仓 AI 分析完成{'（缓存）' if result.get('from_cache') else ''}",
+            )
+        return APIResponse(success=False, message=result.get('error', 'AI 分析失败'))
+
+    except Exception as e:
+        logger.error(f"持仓 AI 分析异常 {stock_code}: {e}", exc_info=True)
+        return APIResponse(success=False, message=f"分析异常: {str(e)}")
+
+
 @router.delete("/cache", response_model=APIResponse)
 async def clear_cache(
     stock_code: str = Query(None, description="股票代码（空则清除全部）"),
     container=Depends(get_container),
 ):
-    """\u6e05\u9664 AI \u5206\u6790\u7f13\u5b58"""
+    """清除 AI 分析缓存"""
     analyzer = container.stock_ai_analyzer
     if analyzer:
         analyzer.clear_cache(stock_code)
-    target = stock_code or "\u5168\u90e8"
-    logger.info(f"[AI\u5206\u6790API] \u7f13\u5b58\u5df2\u6e05\u9664: {target}")
-    return APIResponse(success=True, message="\u7f13\u5b58\u5df2\u6e05\u9664")
+    target = stock_code or "全部"
+    logger.info(f"[AI分析API] 缓存已清除: {target}")
+    return APIResponse(success=True, message="缓存已清除")
 
 
 # ==================== 辅助函数 ====================
@@ -658,6 +732,64 @@ def _get_sniper_data(container, stock_code: str) -> dict:
         logger.debug(f"获取 {stock_code} 狙击手数据失败: {e}")
 
     return result
+
+
+def _get_pipeline_records(container, stock_code: str) -> list:
+    """获取今日策略 Pipeline 记录（系统已产生的策略信号）"""
+    db = getattr(container, 'db_manager', None)
+    if not db:
+        return []
+    try:
+        from datetime import date
+        today = date.today().isoformat()
+        rows = db.execute_query(
+            '''SELECT source, direction, strength, final_action, final_reason, timestamp
+               FROM signal_pipeline
+               WHERE stock_code = ? AND trade_date = ?
+               ORDER BY timestamp''',
+            (stock_code, today),
+        )
+        if not rows:
+            return []
+        return [
+            {
+                'source': r[0], 'direction': r[1], 'strength': r[2],
+                'final_action': r[3], 'final_reason': r[4], 'timestamp': r[5],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.debug(f"获取 {stock_code} Pipeline 记录失败: {e}")
+        return []
+
+
+def _get_sniper_history(container, stock_code: str, days: int = 3) -> list:
+    """获取近N日 Sniper 信号历史（用于多日模式识别）"""
+    db = getattr(container, 'db_manager', None)
+    if not db:
+        return []
+    try:
+        from datetime import date, timedelta
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        rows = db.execute_query(
+            '''SELECT stock_code, stock_name, signal_type, price, created_at
+               FROM sniper_signals
+               WHERE stock_code = ? AND created_at >= ?
+               ORDER BY created_at''',
+            (stock_code, cutoff),
+        )
+        if not rows:
+            return []
+        return [
+            {
+                'stock_code': r[0], 'stock_name': r[1], 'signal_type': r[2],
+                'price': r[3], 'created_at': r[4],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.debug(f"获取 {stock_code} Sniper 历史失败: {e}")
+        return []
 
 
 # ==================== AI 智选 ====================
