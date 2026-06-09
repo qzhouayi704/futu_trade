@@ -504,7 +504,7 @@ class UnifiedTradeDecisionEngine:
             # 4. 出货陷阱检测
             try:
                 from ...services.analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
-                bf = BrokerConsistencyFilter(self.container)
+                bf = BrokerConsistencyFilter(self.container.futu_client)
                 trap_result = bf.check_distribution_trap(stock_code, change_pct=0)
                 if trap_result.is_trap:
                     return {
@@ -889,7 +889,7 @@ class UnifiedTradeDecisionEngine:
             # ③ 经纪商一致性
             try:
                 from ...services.analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
-                bf = BrokerConsistencyFilter(self.container)
+                bf = BrokerConsistencyFilter(self.container.futu_client)
                 trap = bf.check_distribution_trap(stock_code, change_pct=0)
                 result['stages']['broker'] = {
                     'is_trap': trap.is_trap,

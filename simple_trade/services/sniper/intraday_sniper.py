@@ -258,7 +258,7 @@ class IntradaySniper:
                         if sig.signal_type == 'mega_buy':
                             try:
                                 from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
-                                bf = BrokerConsistencyFilter(self.container)
+                                bf = BrokerConsistencyFilter(self.container.futu_client)
                                 trap_res = bf.check_distribution_trap(stock_code, change_pct=change_pct)
                                 acc_res = bf.check_accumulation_signal(stock_code, change_pct=change_pct)
                                 broker_checked = True
@@ -284,7 +284,7 @@ class IntradaySniper:
                     if not broker_checked and len(timeline) - last_trap >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
                         try:
                             from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
-                            bf = BrokerConsistencyFilter(self.container)
+                            bf = BrokerConsistencyFilter(self.container.futu_client)
                             trap_result = bf.check_distribution_trap(stock_code, change_pct=change_pct)
                             if trap_result.is_trap and trap_result.trap_confidence >= 0.5:
                                 price = timeline[-1]['price'] if timeline else 0
@@ -311,7 +311,7 @@ class IntradaySniper:
                     if not broker_checked and len(timeline) - last_acc >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
                         try:
                             from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
-                            bf = BrokerConsistencyFilter(self.container)
+                            bf = BrokerConsistencyFilter(self.container.futu_client)
                             acc_result = bf.check_accumulation_signal(stock_code, change_pct=change_pct)
                             if acc_result.is_trap and acc_result.trap_confidence >= 0.5:
                                 price = timeline[-1]['price'] if timeline else 0
