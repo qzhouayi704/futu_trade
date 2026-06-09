@@ -20,6 +20,8 @@ interface SniperSignal {
   detail: string;
   action: string;
   severity: string;
+  strength?: number;
+  strength_label?: string;
 }
 
 interface RankItem {
@@ -224,12 +226,22 @@ export function SniperCard() {
                           <span className={`text-[9px] px-1 py-px rounded font-medium shrink-0 ${badgeColor}`}>
                             {typeLabels[sig.signal_type] || sig.signal_type}
                           </span>
+                          {sig.signal_type === "mega_buy" && sig.strength != null && sig.strength > 0 && (
+                            <span className={`text-[9px] px-1 py-px rounded font-bold shrink-0 tabular-nums ${
+                              sig.strength >= 81 ? "bg-amber-300/80 text-amber-900" :
+                              sig.strength >= 61 ? "bg-orange-200/80 text-orange-800" :
+                              sig.strength >= 31 ? "bg-sky-200/70 text-sky-800" :
+                              "bg-gray-200/70 text-gray-600"
+                            }`}>
+                              {sig.strength_label?.split(" ")[0]} {sig.strength}
+                            </span>
+                          )}
                         </div>
                         <span className="text-xs font-bold tabular-nums text-gray-600 shrink-0 ml-2">
                           {sig.price.toFixed(3)}
                         </span>
                       </div>
-                      <div className={`text-[10px] ${textColor} opacity-70 mt-0.5 truncate`}>{sig.detail}</div>
+                      <div className={`text-[10px] ${textColor} opacity-70 mt-0.5 line-clamp-2`}>{sig.detail}</div>
                     </div>
                   );
                 })}
