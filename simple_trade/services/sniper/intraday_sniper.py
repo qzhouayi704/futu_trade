@@ -87,8 +87,8 @@ class SniperSignal:
 
 # 通用参数
 SCAN_INTERVAL_MINUTES = 3      # 扫描间隔
-ACCEL_THRESHOLD = 1.5          # 回测优化: 3→1.5 (P&L +216%, 胜率90%, PF 6.62)
-MEGA_MULTIPLIER = 5            # 回测优化: 3→5 (更严格mega信号, 减少噪音)
+ACCEL_THRESHOLD = 3.0          # 回退: 1.5→3 (tick回放验证旧参数更优, 73%胜率+2.62% vs 64%胜率-0.74%)
+MEGA_MULTIPLIER = 3            # 回退: 5→3 (MEGA=3检测到更多有效mega_buy信号)
 SUSTAINED_RATIO = 0.35         # 持续流出强度比例
 SUSTAINED_MINUTES = 20         # 持续流出检查窗口
 COOLDOWN_MINUTES = 15          # 同类信号冷却期
