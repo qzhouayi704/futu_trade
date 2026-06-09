@@ -442,6 +442,7 @@ class BusinessTables:
             detail TEXT,
             action TEXT,
             severity VARCHAR(10) DEFAULT 'high',
+            strength INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     '''

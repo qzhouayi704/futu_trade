@@ -46,13 +46,15 @@ class SniperSignal:
     detail: str             # 人类可读描述
     action: str             # 建议动作
     severity: str = "high"  # high / medium
+    strength: int = 0       # 信号强度评分 (0-100)，仅 mega_buy 使用
+    strength_label: str = ""  # 强度标签，如 "★★★ 强"
 
     @property
     def emoji(self) -> str:
         return "🔴" if self.is_red else "🟢"
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "time": self.time,
             "stock_code": self.stock_code,
             "stock_name": self.stock_name,
@@ -64,11 +66,16 @@ class SniperSignal:
             "action": self.action,
             "severity": self.severity,
         }
+        if self.strength > 0:
+            d["strength"] = self.strength
+            d["strength_label"] = self.strength_label
+        return d
 
     def to_wechat_text(self) -> str:
+        strength_line = f"\n- 强度：**{self.strength_label}** ({self.strength}/100)" if self.strength > 0 else ""
         return (
             f"**{self.emoji} {self.stock_name}({self.stock_code})**\n"
-            f"- 价格：**{self.price:.3f}**\n"
+            f"- 价格：**{self.price:.3f}**{strength_line}\n"
             f"- 信号：{self.detail}\n"
             f"- 建议：{self.action}"
         )
@@ -256,6 +263,8 @@ class IntradaySniper:
                     broker_checked = False  # 标记：避免下方独立检测重复调用
                     for sig in signals:
                         if sig.signal_type == 'mega_buy':
+                            broker_acc_conf = 0.0
+                            broker_trap_conf = 0.0
                             try:
                                 from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
                                 bf = BrokerConsistencyFilter(self.container.futu_client)
@@ -266,14 +275,43 @@ class IntradaySniper:
                                 if trap_res.is_trap:
                                     sig.detail += f" (⚠️席位警示: 存在出货迹象, 置信度{trap_res.trap_confidence:.0%})"
                                     sig.severity = "medium"
+                                    broker_trap_conf = trap_res.trap_confidence
                                 elif acc_res.is_trap:
                                     sig.detail += f" (🔥席位确认: 机构吸筹中, 置信度{acc_res.trap_confidence:.0%})"
                                     sig.severity = "high"
+                                    broker_acc_conf = acc_res.trap_confidence
                                 else:
                                     sig.detail += " (⚠️席位确认: 散户/未知席位主导，警惕拉高出货)"
                                     sig.severity = "medium"
                             except Exception as e:
                                 logger.debug(f"验证mega_buy席位失败: {e}")
+
+                            # 计算强度评分
+                            try:
+                                # 从 detail 提取倍数 (格式: "日均X倍")
+                                import re
+                                mult_match = re.search(r'日均(\d+)倍', sig.detail)
+                                sig_mult = float(mult_match.group(1)) if mult_match else 0.0
+
+                                strength, label, ctx = self._calc_mega_buy_strength(
+                                    stock_code, sig_mult, timeline,
+                                    broker_acc_confidence=broker_acc_conf,
+                                    broker_trap_confidence=broker_trap_conf,
+                                    change_pct=change_pct,
+                                )
+                                sig.strength = strength
+                                sig.strength_label = label
+                                if ctx:
+                                    sig.detail += f" [{label} {strength}分: {ctx}]"
+                                else:
+                                    sig.detail += f" [{label} {strength}分]"
+                                logger.info(
+                                    f"📡 {sig.emoji} {sig.stock_name} "
+                                    f"巨量抢筹 {label}({strength}/100)"
+                                    + (f" | {ctx}" if ctx else "")
+                                )
+                            except Exception as e:
+                                logger.debug(f"强度评分计算失败: {stock_code}: {e}")
 
                     new_signals.extend(signals)
 
@@ -588,6 +626,175 @@ class IntradaySniper:
         reversal_min = mega_floor       # reversal阈值 = mega地板
         return accel_min, mega_floor, reversal_min
 
+    # ==================== 强度评分 ====================
+
+    def _calc_mega_buy_strength(
+        self,
+        stock_code: str,
+        mult: float,
+        timeline: List[dict],
+        broker_acc_confidence: float = 0.0,
+        broker_trap_confidence: float = 0.0,
+        change_pct: float = 0.0,
+    ) -> Tuple[int, str, str]:
+        """计算 mega_buy 信号的综合强度评分 (0-100)
+
+        Returns:
+            (score, label, context_note)
+            - score: 0-100 整数评分
+            - label: "★★★ 强" 等标签
+            - context_note: 多日上下文说明，如 "前2日连续砸盘后首日反弹"
+        """
+        score = 0.0
+        context_parts = []
+
+        # ========== 当日维度 (最高60分) ==========
+
+        # 1. 净买入倍数 (最高30分)
+        if mult >= 15:
+            score += 30
+        elif mult >= 8:
+            score += 20
+        elif mult >= 5:
+            score += 10
+        else:
+            score += max(0, mult * 2)  # 低倍数给少量分
+
+        # 2. 席位画像 (最高20分)
+        if broker_acc_confidence > 0:
+            # 吸筹确认：置信度 × 20
+            score += min(20, broker_acc_confidence * 20)
+        if broker_trap_confidence > 0:
+            # 出货陷阱：扣分
+            score -= min(10, broker_trap_confidence * 10)
+
+        # 3. 当日累计资金流向 (最高10分)
+        if timeline:
+            cum_net = timeline[-1].get('cum_net', 0)
+            if cum_net > 0:
+                score += min(10, cum_net / 100)  # 每100万给1分，上限10
+            elif cum_net < 0:
+                score -= min(5, abs(cum_net) / 200)  # 累计为负轻微扣分
+
+        # ========== 多日上下文维度 (最高40分) ==========
+
+        # 4. 前N日信号模式 — 洗盘→反弹加成 (最高20分)
+        prior_context = self._get_prior_days_context(stock_code, days=3)
+        if prior_context:
+            sell_ratio = prior_context.get('sell_signal_ratio', 0)
+            prior_mega_sell_count = prior_context.get('mega_sell_count', 0)
+            prior_sustained_out_count = prior_context.get('sustained_out_count', 0)
+            prior_mega_buy_count = prior_context.get('mega_buy_count', 0)
+
+            # 前几天以卖出信号为主（洗盘模式）
+            if sell_ratio >= 0.7 and prior_mega_sell_count >= 2:
+                score += 20
+                context_parts.append(
+                    f"前{prior_context['days_with_data']}日"
+                    f"砸盘{prior_mega_sell_count}次+持续流出{prior_sustained_out_count}次"
+                    f"→今日首次反弹"
+                )
+            elif sell_ratio >= 0.5:
+                score += 10
+                context_parts.append(f"前几日空方偏多(卖出占{sell_ratio:.0%})")
+
+            # 如果前几天也有大量 mega_buy，说明持续建仓
+            if prior_mega_buy_count >= 3:
+                score += 5
+                context_parts.append(f"连续多日出现建仓信号(共{prior_mega_buy_count}次)")
+
+        # 5. 当日连续 mega_buy 加成 (最高10分)
+        today_mega_buy_count = sum(
+            1 for s in self._today_signals
+            if s.stock_code == stock_code and s.signal_type == 'mega_buy'
+        )
+        if today_mega_buy_count >= 3:
+            score += 10
+            context_parts.append(f"今日第{today_mega_buy_count + 1}次巨量抢筹")
+        elif today_mega_buy_count >= 1:
+            score += 5
+            context_parts.append(f"今日第{today_mega_buy_count + 1}次巨量抢筹")
+
+        # 6. 价格位置 (最高10分)
+        if timeline and len(timeline) >= 5:
+            prices = [p['price'] for p in timeline if p['price'] > 0]
+            if prices:
+                cur = prices[-1]
+                # 用近5日高低点（如果有prior_context的话）
+                hi = prior_context.get('price_high', max(prices)) if prior_context else max(prices)
+                lo = prior_context.get('price_low', min(prices)) if prior_context else min(prices)
+                if hi > lo:
+                    pos = (cur - lo) / (hi - lo)
+                    if pos < 0.3:
+                        score += 10
+                        context_parts.append(f"价格处于近期低位({pos:.0%})")
+                    elif pos < 0.5:
+                        score += 5
+                    elif pos > 0.8:
+                        score -= 5
+                        context_parts.append(f"价格处于近期高位({pos:.0%})")
+
+        # ========== 最终裁定 ==========
+        final_score = max(0, min(100, int(score)))
+
+        if final_score >= 81:
+            label = "★★★★ 极强"
+        elif final_score >= 61:
+            label = "★★★ 强"
+        elif final_score >= 31:
+            label = "★★ 中"
+        else:
+            label = "★ 弱"
+
+        context_note = "；".join(context_parts) if context_parts else ""
+        return final_score, label, context_note
+
+    def _get_prior_days_context(self, stock_code: str, days: int = 3) -> Optional[dict]:
+        """查询前N个交易日的 sniper_signals 统计，用于多日上下文判断"""
+        db = getattr(self.container, 'db_manager', None)
+        if not db:
+            return None
+
+        today = date.today().isoformat()
+        try:
+            rows = db.execute_query(
+                """SELECT signal_type, price, trade_date
+                   FROM sniper_signals
+                   WHERE stock_code = ?
+                   AND trade_date < ?
+                   AND trade_date >= date(?, '-' || ? || ' days')
+                   ORDER BY trade_date, id""",
+                (stock_code, today, today, str(days))
+            )
+            if not rows:
+                return None
+
+            sell_types = {'mega_sell', 'sustained_out', 'reversal_bear'}
+            buy_types = {'mega_buy', 'accel_in', 'reversal_bull'}
+
+            sell_count = sum(1 for r in rows if r[0] in sell_types)
+            buy_count = sum(1 for r in rows if r[0] in buy_types)
+            total = sell_count + buy_count
+            if total == 0:
+                return None
+
+            prices = [float(r[1]) for r in rows if r[1] and float(r[1]) > 0]
+            dates_set = {r[2] for r in rows}
+
+            return {
+                'sell_signal_ratio': sell_count / total,
+                'mega_sell_count': sum(1 for r in rows if r[0] == 'mega_sell'),
+                'sustained_out_count': sum(1 for r in rows if r[0] == 'sustained_out'),
+                'mega_buy_count': sum(1 for r in rows if r[0] == 'mega_buy'),
+                'price_high': max(prices) if prices else 0,
+                'price_low': min(prices) if prices else 0,
+                'days_with_data': len(dates_set),
+                'total_signals': total,
+            }
+        except Exception as e:
+            logger.debug(f"查询前N日信号上下文失败: {stock_code}: {e}")
+            return None
+
     # ==================== DB 持久化 ====================
 
     def _save_signal_to_db(self, signal: SniperSignal):
@@ -600,11 +807,11 @@ class IntradaySniper:
             db.execute_insert(
                 '''INSERT INTO sniper_signals
                    (trade_date, time, stock_code, stock_name, signal_type,
-                    is_red, price, detail, action, severity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    is_red, price, detail, action, severity, strength)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                 (today, signal.time, signal.stock_code, signal.stock_name,
                  signal.signal_type, signal.is_red, signal.price,
-                 signal.detail, signal.action, signal.severity)
+                 signal.detail, signal.action, signal.severity, signal.strength)
             )
         except Exception as e:
             logger.debug(f"保存信号到DB失败: {e}")
@@ -618,17 +825,31 @@ class IntradaySniper:
             today = date.today().isoformat()
             rows = db.execute_query(
                 '''SELECT time, stock_code, stock_name, signal_type, is_red,
-                          price, detail, action, severity
+                          price, detail, action, severity,
+                          COALESCE(strength, 0) as strength
                    FROM sniper_signals
                    WHERE trade_date = ?
                    ORDER BY id ASC''',
                 (today,)
             )
             for r in rows:
+                strength_val = int(r[9]) if len(r) > 9 and r[9] else 0
+                # 从 strength 值推导 label
+                if strength_val >= 81:
+                    s_label = "★★★★ 极强"
+                elif strength_val >= 61:
+                    s_label = "★★★ 强"
+                elif strength_val >= 31:
+                    s_label = "★★ 中"
+                elif strength_val > 0:
+                    s_label = "★ 弱"
+                else:
+                    s_label = ""
                 self._today_signals.append(SniperSignal(
                     time=r[0], stock_code=r[1], stock_name=r[2],
                     signal_type=r[3], is_red=bool(r[4]), price=float(r[5] or 0),
                     detail=r[6] or '', action=r[7] or '', severity=r[8] or 'high',
+                    strength=strength_val, strength_label=s_label,
                 ))
         except Exception as e:
             logger.warning(f"从DB加载今日信号失败: {e}")
