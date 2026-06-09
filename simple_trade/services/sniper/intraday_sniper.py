@@ -935,7 +935,7 @@ class IntradaySniper:
             if engine:
                 await engine.on_sniper_signal(signal)
         except Exception as e:
-            logger.debug(f"决策引擎通知失败: {e}")
+            logger.warning(f"决策引擎通知失败: {e}", exc_info=True)
 
     # ==================== 双窗口评分排行 ====================
 

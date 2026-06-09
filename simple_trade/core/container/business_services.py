@@ -83,6 +83,17 @@ class BusinessServices:
         self._stock_ai_analyzer = None
         self._trade_decision_engine = None
 
+    def __getattr__(self, name: str):
+        """代理到 core/data 子容器，使 DecisionEngine 等服务能访问 db_manager 等"""
+        for attr in ('core', 'data'):
+            try:
+                sub = object.__getattribute__(self, attr)
+                if sub is not None:
+                    return getattr(sub, name)
+            except AttributeError:
+                continue
+        raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+
     def initialize(self):
         """初始化业务服务（仅核心服务即时创建）"""
         logging.info("开始初始化业务服务...")

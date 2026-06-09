@@ -113,7 +113,7 @@ class OvernightScreener:
                 c_t.key_metrics = self._collect_metrics(stock, code)
 
                 from ..strategy.stock_scorer import StockScorer, PASSING_SCORE
-                scorer = StockScorer()
+                scorer = getattr(self.container, 'stock_scorer', None) or StockScorer()
                 all_results = scorer.score_all_strategies(code, name, indicators)
                 best = all_results['best']
 
