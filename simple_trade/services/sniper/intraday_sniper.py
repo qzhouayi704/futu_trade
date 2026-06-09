@@ -427,8 +427,8 @@ class IntradaySniper:
         if stock_code not in self._stock_states:
             self._stock_states[stock_code] = {
                 'prev_cum_direction': 'neutral',
-                'cooldown': {},      # signal_type -> last_trigger_index
-                'recent_signals': [],  # [(time, is_red, index)]
+                'cooldown': {},      # signal_type -> last_trigger_time (HH:MM)
+                'recent_signals': [],  # [(time_str, is_red)]
                 'last_processed_index': -1,
             }
 
@@ -451,30 +451,38 @@ class IntradaySniper:
 
         for i in range(start_idx, len(timeline)):
             point = timeline[i]
-            minute = point['time']
+            minute = point['time']  # HH:MM format
             is_scan_point = (i % SCAN_INTERVAL_MINUTES == 0 and i > 0)
 
             # --- 辅助函数 ---
+            def _time_diff_minutes(t1: str, t2: str) -> int:
+                """计算两个 HH:MM 时间差（分钟）"""
+                h1, m1 = int(t1[:2]), int(t1[3:])
+                h2, m2 = int(t2[:2]), int(t2[3:])
+                return (h2 * 60 + m2) - (h1 * 60 + m1)
+
             def can_emit(sig_type: str, is_red: bool) -> bool:
-                # 冷却检查
+                # 冷却检查 — 使用真实时间差而非索引
                 if sig_type in state['cooldown']:
-                    if i - state['cooldown'][sig_type] < COOLDOWN_MINUTES:
+                    last_time = state['cooldown'][sig_type]
+                    gap = _time_diff_minutes(last_time, minute)
+                    if gap < COOLDOWN_MINUTES:
                         return False
-                # 冲突检查
-                cutoff = max(0, i - CONFLICT_WINDOW_MINUTES)
-                for _, r_is_red, r_idx in state['recent_signals']:
-                    if r_idx >= cutoff:
+                # 冲突检查 — 使用真实时间窗口
+                for sig_time, r_is_red in state['recent_signals']:
+                    gap = _time_diff_minutes(sig_time, minute)
+                    if 0 <= gap < CONFLICT_WINDOW_MINUTES:
                         if (is_red and not r_is_red) or (not is_red and r_is_red):
                             return False
                 return True
 
             def emit(sig_type: str, is_red: bool, detail: str, action: str):
-                state['cooldown'][sig_type] = i
-                state['recent_signals'].append((minute, is_red, i))
-                # 清理过期记录
-                cutoff = max(0, i - CONFLICT_WINDOW_MINUTES * 2)
+                state['cooldown'][sig_type] = minute  # 记录真实时间
+                state['recent_signals'].append((minute, is_red))
+                # 清理过期记录（超过2倍冲突窗口）
                 state['recent_signals'] = [
-                    r for r in state['recent_signals'] if r[2] >= cutoff
+                    r for r in state['recent_signals']
+                    if _time_diff_minutes(r[0], minute) < CONFLICT_WINDOW_MINUTES * 2
                 ]
                 signals.append(SniperSignal(
                     time=minute, stock_code=stock_code, stock_name=stock_name,
@@ -724,7 +732,7 @@ class IntradaySniper:
                 hi = prior_context.get('price_high', max(prices)) if prior_context else max(prices)
                 lo = prior_context.get('price_low', min(prices)) if prior_context else min(prices)
                 if hi > lo:
-                    pos = (cur - lo) / (hi - lo)
+                    pos = max(0.0, min(1.0, (cur - lo) / (hi - lo)))
                     if pos < 0.3:
                         score += 10
                         context_parts.append(f"价格处于近期低位({pos:.0%})")
@@ -798,12 +806,31 @@ class IntradaySniper:
     # ==================== DB 持久化 ====================
 
     def _save_signal_to_db(self, signal: SniperSignal):
-        """将信号保存到数据库"""
+        """将信号保存到数据库（去重: 同日同股同类型同分钟只保留一条）"""
         db = getattr(self.container, 'db_manager', None)
         if not db:
             return
         try:
             today = date.today().isoformat()
+            # 先检查是否已存在相同信号（防止重启导致重复）
+            existing = db.execute_query(
+                '''SELECT id FROM sniper_signals
+                   WHERE trade_date = ? AND stock_code = ? AND signal_type = ? AND time = ?
+                   LIMIT 1''',
+                (today, signal.stock_code, signal.signal_type, signal.time)
+            )
+            if existing:
+                # 已存在，用最新的信息更新（强度评分可能更完整）
+                db.execute_update(
+                    '''UPDATE sniper_signals
+                       SET detail = ?, severity = ?, strength = ?, price = ?
+                       WHERE trade_date = ? AND stock_code = ? AND signal_type = ? AND time = ?
+                       AND id = ?''',
+                    (signal.detail, signal.severity, signal.strength, signal.price,
+                     today, signal.stock_code, signal.signal_type, signal.time,
+                     existing[0][0])
+                )
+                return
             db.execute_insert(
                 '''INSERT INTO sniper_signals
                    (trade_date, time, stock_code, stock_name, signal_type,
@@ -851,6 +878,23 @@ class IntradaySniper:
                     detail=r[6] or '', action=r[7] or '', severity=r[8] or 'high',
                     strength=strength_val, strength_label=s_label,
                 ))
+                # 恢复冷却状态（防止重启后重复检测同一分钟的信号）
+                sig_time = r[0]   # HH:MM
+                sig_code = r[1]
+                sig_type = r[3]
+                sig_is_red = bool(r[4])
+                if sig_code not in self._stock_states:
+                    self._stock_states[sig_code] = {
+                        'prev_cum_direction': 'neutral',
+                        'cooldown': {},
+                        'recent_signals': [],
+                        'last_processed_index': -1,
+                    }
+                st = self._stock_states[sig_code]
+                # 用最新的信号时间更新冷却记录
+                if sig_type not in st['cooldown'] or sig_time > st['cooldown'][sig_type]:
+                    st['cooldown'][sig_type] = sig_time
+                st['recent_signals'].append((sig_time, sig_is_red))
         except Exception as e:
             logger.warning(f"从DB加载今日信号失败: {e}")
 
