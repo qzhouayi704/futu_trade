@@ -196,7 +196,14 @@ class QuotePipeline:
 
         启动预热期（前 180 秒 / 36 个循环）跳过策略检测，
         避免 fetch_kline 与 CentralScheduler 同时竞争 OpenD 资源。
+        非交易时段跳过策略检测，避免用陈旧数据反复产生无意义信号。
         """
+        # 非交易时段守卫：无活跃市场时跳过策略评估
+        from ...utils.market_helper import MarketTimeHelper
+        active_markets = MarketTimeHelper.get_current_active_markets()
+        if not active_markets:
+            return False
+
         # 启动预热：前 36 个周期 (约 180 秒) 不执行策略，等 OpenD 稳定
         warmup_cycles = max(1, 180 // self.push_interval)
         if self._loop_count <= warmup_cycles:

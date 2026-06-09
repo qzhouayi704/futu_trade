@@ -105,7 +105,7 @@ class PipelineBroadcast:
                             f"{action['stock_code']}: {e}"
                         )
 
-            # 持久化到 signal_pipeline 表
+            # 持久化到 signal_pipeline 表（去重：同一股票+策略+方向 10分钟内不重复写入）
             try:
                 db = getattr(self.container, 'db_manager', None)
                 if db:
@@ -113,6 +113,19 @@ class PipelineBroadcast:
                     direction = signal_type if signal_type in ('BUY', 'SELL') else 'WARN'
                     source = action.get('strategy_id', 'strategy')
                     ts = action.get('timestamp', datetime.now().isoformat())
+
+                    # 去重检查：10分钟内是否已有相同的 broadcast 记录
+                    from datetime import timedelta
+                    cutoff = (datetime.now() - timedelta(minutes=10)).isoformat()
+                    with db.get_connection() as conn:
+                        existing = conn.execute(
+                            '''SELECT COUNT(*) FROM signal_pipeline
+                               WHERE stock_code=? AND source=? AND direction=?
+                               AND final_action='broadcast' AND timestamp>?''',
+                            (action['stock_code'], source, direction, cutoff)
+                        ).fetchone()
+                    if existing and existing[0] > 0:
+                        continue  # 跳过重复信号
 
                     db.execute_update(
                         '''INSERT INTO signal_pipeline
