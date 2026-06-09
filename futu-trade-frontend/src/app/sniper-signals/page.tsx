@@ -20,6 +20,8 @@ interface SniperSignal {
   detail: string;
   action: string;
   severity: string;
+  strength?: number;
+  strength_label?: string;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -391,6 +393,17 @@ export default function SniperSignalsPage() {
                             🔗 {card.confirmCount}个确认
                           </span>
                         )}
+                        {/* 巨量抢筹强度评分 */}
+                        {p.signal_type === "mega_buy" && p.strength != null && p.strength > 0 && (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold tabular-nums shrink-0 ${
+                            p.strength >= 81 ? "bg-amber-300/80 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100" :
+                            p.strength >= 61 ? "bg-orange-200/80 text-orange-800 dark:bg-orange-800/50 dark:text-orange-200" :
+                            p.strength >= 31 ? "bg-sky-200/70 text-sky-800 dark:bg-sky-800/50 dark:text-sky-200" :
+                            "bg-gray-200/70 text-gray-600 dark:bg-gray-700/50 dark:text-gray-300"
+                          }`}>
+                            {p.strength_label?.split(" ")[0]} {p.strength}
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-2 shrink-0 ml-2">
                         <span className="text-xs font-bold tabular-nums text-foreground/70">
@@ -401,7 +414,7 @@ export default function SniperSignalsPage() {
                         </svg>
                       </div>
                     </div>
-                    <div className="text-[11px] text-muted-foreground/80 mt-1 truncate">
+                    <div className="text-[11px] text-muted-foreground/80 mt-1 line-clamp-2">
                       {p.detail}
                     </div>
                   </Link>
