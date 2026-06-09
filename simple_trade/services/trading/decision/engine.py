@@ -137,6 +137,24 @@ class UnifiedTradeDecisionEngine:
             strength = strength * 0.5
             reason_suffix = f" [高涨幅砸盘降级: 已涨{gain_pct:.1f}%, 假信号概率高]"
 
+        # === 席位验证与持仓优先权调整 ===
+        if signal.signal_type == 'mega_buy':
+            futu_svc = getattr(self.container, 'futu_trade_service', None)
+            is_held = False
+            if futu_svc:
+                try:
+                    pos_res = self._get_cached_positions(futu_svc)
+                    if pos_res.get('success'):
+                        is_held = any(p.get('code') == signal.stock_code for p in pos_res.get('positions', []))
+                except Exception as e:
+                    logger.debug(f"检查持仓股异常: {e}")
+
+            # 如果不是持仓股，且席位验证不是高置信度（散户主导或出货警示），则降级信号强度，使其不能单独触发交易
+            sig_severity = getattr(signal, 'severity', 'high')
+            if not is_held and sig_severity != 'high':
+                strength = 50.0
+                reason_suffix += " [席位降级: 非持仓股且无机构席位确认]"
+
         event = TradeSignalEvent(
             source='sniper',
             stock_code=signal.stock_code,

@@ -244,16 +244,48 @@ class IntradaySniper:
                         avg_turnover, day_total,
                         accel_min, mega_min, reversal_min,
                     )
+
+                    # 席位交叉验证：对 mega_buy 信号进行画像核验
+                    # 计算当日实际涨幅（用于 BrokerConsistencyFilter 的涨幅加成判断）
+                    change_pct = 0.0
+                    if len(timeline) >= 2 and timeline[0]['price'] > 0:
+                        change_pct = round(
+                            (timeline[-1]['price'] - timeline[0]['price']) / timeline[0]['price'] * 100, 2
+                        )
+
+                    broker_checked = False  # 标记：避免下方独立检测重复调用
+                    for sig in signals:
+                        if sig.signal_type == 'mega_buy':
+                            try:
+                                from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
+                                bf = BrokerConsistencyFilter(self.container)
+                                trap_res = bf.check_distribution_trap(stock_code, change_pct=change_pct)
+                                acc_res = bf.check_accumulation_signal(stock_code, change_pct=change_pct)
+                                broker_checked = True
+
+                                if trap_res.is_trap:
+                                    sig.detail += f" (⚠️席位警示: 存在出货迹象, 置信度{trap_res.trap_confidence:.0%})"
+                                    sig.severity = "medium"
+                                elif acc_res.is_trap:
+                                    sig.detail += f" (🔥席位确认: 机构吸筹中, 置信度{acc_res.trap_confidence:.0%})"
+                                    sig.severity = "high"
+                                else:
+                                    sig.detail += " (⚠️席位确认: 散户/未知席位主导，警惕拉高出货)"
+                                    sig.severity = "medium"
+                            except Exception as e:
+                                logger.debug(f"验证mega_buy席位失败: {e}")
+
                     new_signals.extend(signals)
 
                     # 出货陷阱检测（每只股票每15分钟最多触发一次）
+                    # 如果 mega_buy 席位校验已执行过，跳过重复调用
                     trap_cooldown_key = f"trap:{stock_code}"
                     last_trap = self._stock_states.get(stock_code, {}).get('last_trap_idx', -999)
-                    if len(timeline) - last_trap >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
+                    if not broker_checked and len(timeline) - last_trap >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
                         try:
                             from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
                             bf = BrokerConsistencyFilter(self.container)
-                            trap_result = bf.check_distribution_trap(stock_code, change_pct=0)
+                            trap_result = bf.check_distribution_trap(stock_code, change_pct=change_pct)
                             if trap_result.is_trap and trap_result.trap_confidence >= 0.5:
                                 price = timeline[-1]['price'] if timeline else 0
                                 trap_sig = SniperSignal(
@@ -274,12 +306,13 @@ class IntradaySniper:
                             logger.debug(f"出货陷阱检测异常: {stock_code}: {e}")
 
                     # 吸筹信号检测（镜像：买方机构+卖方散户）
+                    # 如果 mega_buy 席位校验已执行过，跳过重复调用
                     last_acc = self._stock_states.get(stock_code, {}).get('last_acc_idx', -999)
-                    if len(timeline) - last_acc >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
+                    if not broker_checked and len(timeline) - last_acc >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
                         try:
                             from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
                             bf = BrokerConsistencyFilter(self.container)
-                            acc_result = bf.check_accumulation_signal(stock_code, change_pct=0)
+                            acc_result = bf.check_accumulation_signal(stock_code, change_pct=change_pct)
                             if acc_result.is_trap and acc_result.trap_confidence >= 0.5:
                                 price = timeline[-1]['price'] if timeline else 0
                                 acc_sig = SniperSignal(
@@ -302,13 +335,20 @@ class IntradaySniper:
                 # 先更新 TOP 排行榜（用于过滤信号）
                 self._update_ranking(conn, watch_codes, today)
 
-                # 只推送排行榜前5的股票的信号
+                # 推送逻辑：在TOP 5排行榜内，或者属于强机构确认信号（主力吸筹、机构确认的巨量抢筹）均进行实时推送
                 top_codes = {s['stock_code'] for s in self._top_ranking.get('opportunity', [])}
                 pushed = 0
                 for sig in new_signals:
                     self._today_signals.append(sig)
                     self._save_signal_to_db(sig)
-                    if sig.stock_code in top_codes:
+                    
+                    # 识别机构资金信号
+                    is_inst_signal = (
+                        sig.signal_type == 'accumulation_signal' or 
+                        (sig.signal_type == 'mega_buy' and sig.severity == 'high')
+                    )
+                    
+                    if sig.stock_code in top_codes or is_inst_signal:
                         await self._push_signal(sig)
                         pushed += 1
 
