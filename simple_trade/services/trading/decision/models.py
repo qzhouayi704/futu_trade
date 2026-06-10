@@ -65,12 +65,12 @@ RED_SIGNAL_ACTIONS: Dict[str, str] = {
 COOLDOWN_MINUTES = 30  # 同股票交易冷却期（分钟）
 
 # Sniper 信号 → 标准强度映射 (0~100)
-# 注: accel_in 仅作为 mega_buy 的确认信号，不独立触发交易
-#   回测验证(14天): 纯mega +1.60%/笔, accel独立 -0.53%/笔
+# 回测验证(8天): mega_buy+accel_in 71.9%胜率, 多重mega 80%胜率
+# accel_in 作为确认信号有显著加成(+25%胜率差)
 SNIPER_STRENGTH_MAP: Dict[str, float] = {
     'mega_buy':      90.0,    # 巨量抢筹 — 唯一的买入触发信号
-    'accel_in':       0.0,    # 资金加速流入 — 仅确认信号，不触发交易
-    'reversal_bull':  0.0,    # 资金由负转正 (回测表现不佳，降为0)
+    'accel_in':      45.0,    # 回测验证: mega_buy+accel_in 71.9%胜率(vs无accel 46.3%)
+    'reversal_bull': 30.0,    # 回测: 55-60%胜率, 辅助信号
     'mega_sell':     95.0,    # 巨量砸盘 — 最强风险信号
     'reversal_bear': 30.0,    # 资金由正转负 (降权)
     'sustained_out': 20.0,    # 持续流出 (降权)

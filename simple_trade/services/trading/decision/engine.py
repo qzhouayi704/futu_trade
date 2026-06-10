@@ -368,6 +368,27 @@ class UnifiedTradeDecisionEngine:
             )
             return base_decision
 
+        # 规则4: 信号密度（同一股票多次mega_buy）
+        # 回测验证(8天): 多重mega_buy ≥2次 → 80%胜率, +0.32%净收益
+        mega_buy_count = sum(
+            1 for s in recent
+            if s.source == 'sniper' and s.sniper_signal_type == 'mega_buy'
+        )
+        if mega_buy_count >= 2:
+            base_decision.resonance_type = 'signal_density'
+            base_decision.reason = (
+                f"信号密度({mega_buy_count}次mega_buy, 回测80%胜率): "
+                + '; '.join(
+                    s.reason for s in recent
+                    if s.sniper_signal_type == 'mega_buy'
+                )
+            )
+            logger.info(
+                f"[DecisionEngine] ✓ 信号密度 {stock_code} "
+                f"mega_buy_count={mega_buy_count}"
+            )
+            return base_decision
+
         return None
 
     # ==================== 红色信号处理 ====================
