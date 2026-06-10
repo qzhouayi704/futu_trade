@@ -8,7 +8,7 @@ import { useSocket } from "@/lib/socket";
 import { systemApi } from "@/lib/api";
 import { useToast } from "@/components/common/Toast";
 import { MonitorStartModal, StrategyPanel } from "@/components/monitor";
-import { StatusBar, SignalFeed, PositionPanel, DecisionLog } from "@/components/cockpit";
+import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel } from "@/components/cockpit";
 import { usePositions } from "./hooks/useDashboard";
 import type { QuoteData } from "@/types/socket";
 
@@ -114,6 +114,11 @@ export default function CockpitPage() {
       {/* ═══ 策略面板 ═══ */}
       <div className="mb-4 md:mb-5">
         <StrategyPanel />
+      </div>
+
+      {/* ═══ 信号强度 TOP 5 排名 ═══ */}
+      <div className="mb-4 md:mb-5">
+        <SignalRankingPanel />
       </div>
 
       {/* ═══ 核心区域：双列布局 ═══ */}
