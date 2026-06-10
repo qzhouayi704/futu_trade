@@ -36,6 +36,9 @@ interface RankItem {
     signal: number;
     w_net: number;
     w_chg: number;
+    combo?: number;
+    multi_mega?: number;
+    multi_accel?: number;
   };
 }
 
@@ -132,7 +135,7 @@ export function SniperCard() {
                 {/* 机会 TOP */}
                 <div className="rounded-lg bg-gradient-to-br from-emerald-50/80 to-green-50/50 border border-emerald-100/60 p-2">
                   <div className="text-[10px] font-bold text-emerald-700 mb-1.5 flex items-center gap-1">
-                    <span>🟢</span> 机会 TOP 3
+                    <span>🟢</span> 机会 TOP 5
                   </div>
                   {ranking.opportunity.length === 0 ? (
                     <div className="text-[10px] text-gray-400 py-1">暂无</div>
@@ -153,6 +156,12 @@ export function SniperCard() {
                             <span className="text-[9px] px-1 py-px rounded bg-emerald-200/60 text-emerald-700 font-medium">
                               {item.score}
                             </span>
+                            {item.detail?.combo ? (
+                              <span className="text-[8px] px-0.5 py-px rounded bg-amber-200/70 text-amber-800 font-bold">共振</span>
+                            ) : null}
+                            {item.detail?.multi_mega ? (
+                              <span className="text-[8px] px-0.5 py-px rounded bg-purple-200/70 text-purple-800 font-bold">多M</span>
+                            ) : null}
                           </div>
                         </div>
                       ))}
@@ -163,7 +172,7 @@ export function SniperCard() {
                 {/* 风险 TOP */}
                 <div className="rounded-lg bg-gradient-to-br from-red-50/80 to-orange-50/50 border border-red-100/60 p-2">
                   <div className="text-[10px] font-bold text-red-700 mb-1.5 flex items-center gap-1">
-                    <span>🔴</span> 风险 TOP 3
+                    <span>🔴</span> 风险 TOP 5
                   </div>
                   {ranking.risk.length === 0 ? (
                     <div className="text-[10px] text-gray-400 py-1">暂无</div>
