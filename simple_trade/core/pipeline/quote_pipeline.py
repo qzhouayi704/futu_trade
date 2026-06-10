@@ -204,8 +204,8 @@ class QuotePipeline:
         if not active_markets:
             return False
 
-        # 启动预热：前 36 个周期 (约 180 秒) 不执行策略，等 OpenD 稳定
-        warmup_cycles = max(1, 180 // self.push_interval)
+        # 启动预热：前 12 个周期 (约 60 秒) 不执行策略，等 OpenD 稳定
+        warmup_cycles = max(1, 60 // self.push_interval)
         if self._loop_count <= warmup_cycles:
             if self._loop_count == 1:
                 logging.info(

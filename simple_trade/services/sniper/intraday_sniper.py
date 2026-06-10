@@ -940,17 +940,13 @@ class IntradaySniper:
     # ==================== 双窗口评分排行 ====================
 
     def _update_ranking(self, conn, watch_codes: list, today: str):
-        """每次扫描后更新 TOP 排行榜（双窗口: 3m+30m）"""
+        """每次扫描后更新 TOP 排行榜（双窗口: 3m+30m）
+
+        整合改进: 使用 strength 细粒度评分替代固定 SIGNAL_WEIGHTS
+        - 机会榜: 用窗口内绿灯信号的最高 strength
+        - 风险榜: 用窗口内红灯信号的最高 strength
+        """
         now_str = datetime.now().strftime("%H:%M")
-        # 回测验证权重: mega_buy+accel_in=71.9%胜率, 多重mega=80%
-        SIGNAL_WEIGHTS = {
-            'mega_buy': 8,       # 核心信号（回测62%胜率）
-            'accel_in': 5,       # 确认信号（+25%胜率加成）
-            'reversal_bull': 3,  # 辅助（55-60%但样本少）
-            'mega_sell': 6,      # 风险信号（回测67%准确）
-            'reversal_bear': 2,  # 弱风险（回测33%无效）
-            'sustained_out': 1,  # 噪声（回测50%≈随机）
-        }
 
         opp_scores = []
         risk_scores = []
@@ -991,26 +987,26 @@ class IntradaySniper:
                     (window[-1]['price'] - window[0]['price']) / window[0]['price'] * 100, 2
                 ) if window[0]['price'] > 0 else 0.0
 
-                # 窗口内信号
+                # 窗口内信号 — 改用 strength 最高值
                 w_cutoff = self._sub_minutes(now_str, w_size)
-                green_score = sum(
-                    SIGNAL_WEIGHTS.get(s.signal_type, 1)
-                    for s in stock_sigs if not s.is_red and s.time > w_cutoff
-                )
-                red_score = sum(
-                    SIGNAL_WEIGHTS.get(s.signal_type, 1)
-                    for s in stock_sigs if s.is_red and s.time > w_cutoff
-                )
+                w_sigs = [s for s in stock_sigs if s.time > w_cutoff]
+
+                # 绿灯信号: 取最高 strength (0-100)
+                green_strengths = [s.strength for s in w_sigs if not s.is_red and s.strength > 0]
+                max_green_strength = max(green_strengths) if green_strengths else 0
+
+                # 红灯信号: 取最高 strength
+                red_strengths = [s.strength for s in w_sigs if s.is_red and s.strength > 0]
+                max_red_strength = max(red_strengths) if red_strengths else 0
 
                 avg_w_tv = sum(p['turnover'] for p in window) / len(window) if window else 1
 
                 # 🟢 机会分
-                if w_net > f_thresh or w_chg > c_thresh or green_score > 0:
+                if w_net > f_thresh or w_chg > c_thresh or max_green_strength > 0:
                     opp_flow = min((max(w_net, 0) / avg_w_tv) * 5, 50) if avg_w_tv > 0 else 0
                     opp_mom = min(max(w_chg, 0) * 3, 40)
 
                     # 共振加分（回测验证）
-                    w_sigs = [s for s in stock_sigs if s.time > w_cutoff]
                     has_mega = any(s.signal_type == 'mega_buy' and not s.is_red for s in w_sigs)
                     has_accel = any(s.signal_type == 'accel_in' and not s.is_red for s in w_sigs)
                     combo_bonus = 15 if (has_mega and has_accel) else 0
@@ -1023,28 +1019,37 @@ class IntradaySniper:
                     accel_count = sum(1 for s in w_sigs if s.signal_type == 'accel_in' and not s.is_red)
                     multi_accel_bonus = min(accel_count - 1, 3) * 5 if (has_mega and accel_count >= 2) else 0
 
-                    opp_total = (green_score * SCORE_SIGNAL_WEIGHT + opp_flow + opp_mom
+                    # 新公式: 信号质量(strength)×0.6 + 资金流×0.2 + 动量×0.2 + 加成
+                    signal_quality = max_green_strength  # 0-100
+                    opp_total = (signal_quality * 0.6 + opp_flow * 0.2 + opp_mom * 0.2
                                  + combo_bonus + multi_mega_bonus + multi_accel_bonus)
                     if opp_total > best_opp:
                         best_opp = opp_total
                         best_opp_detail = {
                             'window': w_size, 'flow': round(opp_flow, 1),
-                            'momentum': round(opp_mom, 1), 'signal': green_score,
+                            'momentum': round(opp_mom, 1),
+                            'signal': round(signal_quality, 1),  # 改为 strength
+                            'strength_max': round(max_green_strength, 1),  # 新增字段
                             'w_net': round(w_net), 'w_chg': round(w_chg, 2),
                             'combo': combo_bonus, 'multi_mega': multi_mega_bonus,
                             'multi_accel': multi_accel_bonus,
                         }
 
                 # 🔴 风险分
-                if w_net < -f_thresh or w_chg < -c_thresh or red_score > 0:
+                if w_net < -f_thresh or w_chg < -c_thresh or max_red_strength > 0:
                     risk_flow = min((max(-w_net, 0) / avg_w_tv) * 5, 50) if avg_w_tv > 0 else 0
                     risk_mom = min(max(-w_chg, 0) * 3, 40)
-                    risk_total = red_score * SCORE_SIGNAL_WEIGHT + risk_flow + risk_mom
+
+                    # 新公式: 风险信号质量×0.6 + 流出×0.2 + 跌幅×0.2
+                    risk_quality = max_red_strength  # 0-100
+                    risk_total = risk_quality * 0.6 + risk_flow * 0.2 + risk_mom * 0.2
                     if risk_total > best_risk:
                         best_risk = risk_total
                         best_risk_detail = {
                             'window': w_size, 'flow': round(risk_flow, 1),
-                            'momentum': round(risk_mom, 1), 'signal': red_score,
+                            'momentum': round(risk_mom, 1),
+                            'signal': round(risk_quality, 1),  # 改为 strength
+                            'strength_max': round(max_red_strength, 1),  # 新增字段
                             'w_net': round(w_net), 'w_chg': round(w_chg, 2),
                         }
 
