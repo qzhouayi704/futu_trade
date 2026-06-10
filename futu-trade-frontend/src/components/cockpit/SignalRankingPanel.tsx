@@ -64,8 +64,6 @@ export function SignalRankingPanel() {
     );
   }
 
-  if (!hasData) return null; // 无数据时不显示
-
   const medalColors = [
     "bg-amber-400 text-white",      // 🥇
     "bg-gray-300 text-gray-700",     // 🥈
