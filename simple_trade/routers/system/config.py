@@ -156,3 +156,56 @@ async def reset_config(container=Depends(get_container)):
     except Exception as e:
         logging.error(f"重置配置失败: {e}")
         raise BusinessError(message=f"重置配置失败: {str(e)}")
+
+
+@router.get("/signal-weights")
+async def get_signal_weights(container=Depends(get_container)):
+    """获取信号权重和阈值配置"""
+    try:
+        weights = getattr(container.config, 'signal_weights', {})
+        return {
+            "success": True,
+            "message": "获取信号权重配置成功",
+            "data": weights
+        }
+    except Exception as e:
+        logging.error(f"获取信号权重配置失败: {e}")
+        raise BusinessError(message=f"获取信号权重配置失败: {str(e)}")
+
+
+@router.post("/signal-weights")
+async def update_signal_weights(
+    weights: dict,
+    container=Depends(get_container)
+):
+    """更新信号权重和阈值配置"""
+    try:
+        if not weights:
+            raise ValidationError(message="请提供权重配置数据")
+
+        # 合并并更新权重配置
+        current_weights = getattr(container.config, 'signal_weights', {})
+        updated_weights = {**current_weights, **weights}
+
+        # 确保数据正确（强转格式）
+        for k in ('v1_weight', 'v2_weight', 'momentum_weight', 'v1_strength_threshold', 'v2_score_threshold'):
+            if k in updated_weights:
+                updated_weights[k] = float(updated_weights[k])
+        if 'resonance_threshold' in updated_weights:
+            updated_weights['resonance_threshold'] = int(updated_weights['resonance_threshold'])
+
+        # 写入到配置文件简单持久化
+        container.config.signal_weights = updated_weights
+
+        # 复用 ConfigManager 存盘
+        config_path = "simple_trade/config.json"
+        ConfigManager.save_config(container.config, config_path)
+
+        return {
+            "success": True,
+            "message": "信号权重配置更新成功",
+            "data": updated_weights
+        }
+    except Exception as e:
+        logging.error(f"更新信号权重配置失败: {e}")
+        raise BusinessError(message=f"更新信号权重配置失败: {str(e)}")

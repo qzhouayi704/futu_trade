@@ -232,7 +232,7 @@ class IntradaySniper:
                         conn, stock_code, today
                     )
 
-                    if len(timeline) < 10 or avg_turnover <= 0:
+                    if len(timeline) < 2 or avg_turnover <= 0:
                         continue
 
                     # 跳过微盘股
@@ -953,7 +953,7 @@ class IntradaySniper:
 
         for code in watch_codes:
             tl, avg_tv, day_total = self._load_minute_data(conn, code, today)
-            if len(tl) < 5 or day_total < MIN_DAILY_TURNOVER:
+            if len(tl) < 2 or day_total < MIN_DAILY_TURNOVER:
                 continue
 
             open_price = tl[0]['price']
@@ -977,8 +977,11 @@ class IntradaySniper:
                 (SCORE_SHORT_WINDOW, SCORE_SHORT_FLOW_THRESH, SCORE_SHORT_CHG_THRESH),
                 (SCORE_LONG_WINDOW, SCORE_LONG_FLOW_THRESH, SCORE_LONG_CHG_THRESH),
             ]:
+                # 动态窗口：当交易时间<10分钟时，动态切换为3分钟窗口
+                actual_w_size = 3 if len(tl) < 10 else w_size
+
                 # 窗口数据
-                window = [p for p in tl if p['time'] > self._sub_minutes(now_str, w_size)]
+                window = [p for p in tl if p['time'] > self._sub_minutes(now_str, actual_w_size)]
                 if len(window) < 2:
                     continue
 
@@ -988,7 +991,7 @@ class IntradaySniper:
                 ) if window[0]['price'] > 0 else 0.0
 
                 # 窗口内信号 — 改用 strength 最高值
-                w_cutoff = self._sub_minutes(now_str, w_size)
+                w_cutoff = self._sub_minutes(now_str, actual_w_size)
                 w_sigs = [s for s in stock_sigs if s.time > w_cutoff]
 
                 # 绿灯信号: 取最高 strength (0-100)
@@ -1026,7 +1029,7 @@ class IntradaySniper:
                     if opp_total > best_opp:
                         best_opp = opp_total
                         best_opp_detail = {
-                            'window': w_size, 'flow': round(opp_flow, 1),
+                            'window': actual_w_size, 'flow': round(opp_flow, 1),
                             'momentum': round(opp_mom, 1),
                             'signal': round(signal_quality, 1),  # 改为 strength
                             'strength_max': round(max_green_strength, 1),  # 新增字段
@@ -1046,7 +1049,7 @@ class IntradaySniper:
                     if risk_total > best_risk:
                         best_risk = risk_total
                         best_risk_detail = {
-                            'window': w_size, 'flow': round(risk_flow, 1),
+                            'window': actual_w_size, 'flow': round(risk_flow, 1),
                             'momentum': round(risk_mom, 1),
                             'signal': round(risk_quality, 1),  # 改为 strength
                             'strength_max': round(max_red_strength, 1),  # 新增字段

@@ -92,6 +92,15 @@ class SignalPublisher:
         if priority == "HIGH":
             await self._send_wechat(signal)
 
+        # 4. 接入决策引擎 (STRONG_BUY / MODERATE_BUY)
+        if signal.signal_type in ("STRONG_BUY", "MODERATE_BUY"):
+            try:
+                engine = getattr(self.container, "trade_decision_engine", None)
+                if engine:
+                    await engine.on_momentum_signal(signal)
+            except Exception as e:
+                logger.error(f"发送信号至决策引擎失败: {e}", exc_info=True)
+
     async def _save_to_db(self, signal, priority: str):
         """写入trade_signals表"""
         try:

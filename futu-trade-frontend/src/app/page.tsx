@@ -8,7 +8,7 @@ import { useSocket } from "@/lib/socket";
 import { systemApi } from "@/lib/api";
 import { useToast } from "@/components/common/Toast";
 import { MonitorStartModal, StrategyPanel } from "@/components/monitor";
-import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel } from "@/components/cockpit";
+import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel, MultiSignalDashboard } from "@/components/cockpit";
 import { usePositions } from "./hooks/useDashboard";
 import type { QuoteData } from "@/types/socket";
 
@@ -25,6 +25,7 @@ export default function CockpitPage() {
   // 启动监控 Modal
   const [startModalOpen, setStartModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [selectedStockCode, setSelectedStockCode] = useState<string | null>(null);
 
   // 持仓股票代码
   const positionStockCodes = useMemo(
@@ -125,7 +126,10 @@ export default function CockpitPage() {
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-4 md:gap-5 mb-4 md:mb-5">
         {/* 左列：信号流 (3/5 宽度) */}
         <div className="xl:col-span-3">
-          <SignalFeed positionStockCodes={positionStockCodes} />
+          <SignalFeed
+            positionStockCodes={positionStockCodes}
+            onSelectStock={setSelectedStockCode}
+          />
         </div>
 
         {/* 右列：持仓 + Sniper止盈状态 (2/5 宽度) */}
@@ -140,6 +144,18 @@ export default function CockpitPage() {
 
       {/* ═══ 底部：决策日志 ═══ */}
       <DecisionLog />
+
+      {/* ═══ 多维信号驾驶舱 Modal ═══ */}
+      {selectedStockCode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="relative w-full max-w-lg shadow-2xl rounded-xl overflow-hidden">
+            <MultiSignalDashboard
+              stockCode={selectedStockCode}
+              onClose={() => setSelectedStockCode(null)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

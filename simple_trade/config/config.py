@@ -245,6 +245,16 @@ class Config:
     # ==================== 订阅配置 ====================
     subscription_config: SubscriptionConfig = field(default_factory=SubscriptionConfig)
 
+    # ==================== 信号权重配置 ====================
+    signal_weights: dict = field(default_factory=lambda: {
+        "v1_weight": 1.0,
+        "v2_weight": 0.8,
+        "momentum_weight": 1.0,
+        "resonance_threshold": 2,
+        "v1_strength_threshold": 40.0,
+        "v2_score_threshold": 60.0
+    })
+
     def __post_init__(self):
         """JSON 加载时自动将 dict 转换为嵌套 dataclass"""
         _conversions = {

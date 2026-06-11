@@ -187,6 +187,30 @@ class UnifiedTradeDecisionEngine:
         )
         await self.on_signal(event)
 
+    async def on_momentum_signal(self, signal):
+        """动量引擎信号 — 高优先级快速通道
+
+        回测胜率 73.1%，样本少但质量高，给予特权：
+        - 跳过共振判断
+        - 仅需通过基础门卫（冷却、时段、陷阱）
+        """
+        if signal.signal_type not in ('STRONG_BUY', 'MODERATE_BUY'):
+            return
+
+        direction = 'BUY'
+        strength = 90.0 if signal.signal_type == 'STRONG_BUY' else 75.0
+
+        event = TradeSignalEvent(
+            source='momentum_engine',
+            stock_code=signal.stock_code,
+            stock_name=getattr(signal, 'stock_name', signal.stock_code) or signal.stock_code,
+            direction=direction,
+            strength=strength,
+            price=getattr(signal, 'price', 0.0),
+            reason=getattr(signal, 'description', f"动量引擎 {signal.signal_type}"),
+        )
+        await self.on_signal(event)
+
     # ==================== 买入信号处理 ====================
 
     async def _handle_buy_signal(self, event: TradeSignalEvent):
@@ -222,6 +246,35 @@ class UnifiedTradeDecisionEngine:
             logger.info(
                 f"[DecisionEngine] ✓ 资金流直通 {event.stock_code} {event.stock_name} "
                 f"capital={event.capital_score:.0f} scorer={event.scorer_score}"
+            )
+        elif event.source == 'momentum_engine':
+            # 动量直通通道：回测高胜率，跳过共振，直接进入门卫
+            decision = TradeDecision(
+                stock_code=event.stock_code,
+                stock_name=event.stock_name,
+                direction='BUY',
+                price=event.price,
+                quantity=0,  # 稍后由 _calculate_position 计算
+                reason=event.reason,
+                sources=['momentum_engine'],
+                resonance_type='momentum_direct',
+                simulated=self._simulate,
+                buy_dip_pct=1.0,
+                take_profit_pct=5.0,
+                stop_loss_pct=3.0,
+            )
+            if event.trade_params:
+                decision.buy_dip_pct = event.trade_params.get('buy_dip_pct', decision.buy_dip_pct)
+                decision.take_profit_pct = event.trade_params.get('take_profit_pct', decision.take_profit_pct)
+                decision.stop_loss_pct = event.trade_params.get('stop_loss_pct', decision.stop_loss_pct)
+
+            resonance_info = {
+                'matched': True,
+                'type': 'momentum_direct',
+                'reason': f'动量直通: {event.reason}',
+            }
+            logger.info(
+                f"[DecisionEngine] ✓ 动量直通 {event.stock_code} {event.stock_name} strength={event.strength}"
             )
         else:
             # Sniper等其他来源走原共振逻辑
@@ -865,6 +918,8 @@ class UnifiedTradeDecisionEngine:
                 ).fetchall()
             result = []
             for r in rows:
+                stock_code = r[3]
+                summary = self._get_stock_multi_dimensional_summary(stock_code)
                 result.append({
                     'id': r[0], 'trade_date': r[1], 'timestamp': r[2],
                     'stock_code': r[3], 'stock_name': r[4],
@@ -873,11 +928,67 @@ class UnifiedTradeDecisionEngine:
                     'guard': json.loads(r[9]) if r[9] else {},
                     'final_action': r[10], 'final_reason': r[11],
                     'raw_detail': json.loads(r[12]) if r[12] else {},
+                    'multi_dimensional_summary': summary
                 })
             return result
         except Exception as e:
             logger.error(f"[DecisionEngine] 查询流水失败: {e}")
             return []
+
+    def _get_stock_multi_dimensional_summary(self, stock_code: str) -> dict:
+        """获取某只股票当前的多维信号摘要"""
+        v1_strength = 0
+        v1_label = ""
+        v2_score = 0
+        m_verdict = ""
+
+        # V1
+        sniper = getattr(self.container, 'intraday_sniper', None)
+        if sniper:
+            try:
+                stock_sigs = [s for s in sniper._today_signals if s.stock_code == stock_code]
+                if stock_sigs:
+                    v1_strength = stock_sigs[-1].strength
+                    v1_label = stock_sigs[-1].strength_label
+            except Exception:
+                pass
+
+        # V2
+        scorer = getattr(self.container, 'stock_scorer', None)
+        if scorer:
+            try:
+                cached = scorer.get_score(stock_code)
+                if cached:
+                    v2_score = cached.total_score
+            except Exception:
+                pass
+
+        # Momentum
+        momentum = getattr(self.container, 'momentum_engine', None)
+        if momentum and hasattr(momentum, 'resonance_detector'):
+            try:
+                db = getattr(self.container, 'db_manager', None)
+                if db:
+                    rows = db.execute_query(
+                        """SELECT strategy_id FROM trade_signals
+                           WHERE stock_id = (SELECT id FROM stocks WHERE code=?)
+                           AND strategy_name = '动量引擎'
+                           ORDER BY id DESC LIMIT 1""",
+                        (stock_code,)
+                    )
+                    if rows:
+                        strategy_id = rows[0][0]
+                        if strategy_id.startswith("momentum_"):
+                            m_verdict = strategy_id.replace("momentum_", "")
+            except Exception:
+                pass
+
+        return {
+            "v1_strength": v1_strength,
+            "v1_label": v1_label,
+            "v2_score": v2_score,
+            "momentum_verdict": m_verdict or "WATCH"
+        }
 
     def get_screening_analysis(self, stock_code: str) -> dict:
         """获取单只股票的7环节筛选分析（供选股工作台分析按钮调用）"""

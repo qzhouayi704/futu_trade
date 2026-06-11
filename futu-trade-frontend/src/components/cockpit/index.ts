@@ -4,3 +4,4 @@ export { SignalFeed } from "./SignalFeed";
 export { PositionPanel } from "./PositionPanel";
 export { DecisionLog } from "./DecisionLog";
 export { SignalRankingPanel } from "./SignalRankingPanel";
+export { MultiSignalDashboard } from "./MultiSignalDashboard";

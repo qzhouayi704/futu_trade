@@ -52,12 +52,29 @@ interface PipelineRecord {
   strength: number;
   final_action: string;
   final_reason: string;
+  multi_dimensional_summary?: {
+    v1_strength: number;
+    v1_label: string;
+    v2_score: number;
+    momentum_verdict: string;
+  };
+}
+
+interface MomentumSignal {
+  stock_code: string;
+  signal_type: string;
+  description: string;
+  price: number;
+  priority: string;
+  confidence: number;
+  timestamp: number;
+  dimensions: string[];
 }
 
 // 统一信号项
 interface UnifiedSignal {
   id: string;
-  source: "sniper" | "alert" | "pipeline";
+  source: "v1" | "v2" | "momentum" | "decision";
   time: string;           // HH:MM 格式
   stock_code: string;
   stock_name: string;
@@ -71,6 +88,12 @@ interface UnifiedSignal {
   badgeColor: string;
   price?: number;
   pricePct?: number;
+  multi_dimensional_summary?: {
+    v1_strength: number;
+    v1_label: string;
+    v2_score: number;
+    momentum_verdict: string;
+  };
 }
 
 // ── 信号类型标签 ──────────────────────────────────
@@ -87,14 +110,16 @@ const PRIMARY_SNIPER_TYPES = new Set(["mega_buy", "mega_sell", "distribution_tra
 interface UnifiedSignalFeedProps {
   positionStockCodes?: string[];   // 持仓股票代码列表（用于优先排序）
   maxItems?: number;
-  sourceFilter?: "all" | "sniper" | "alert" | "pipeline";  // 信号源筛选
+  sourceFilter?: "all" | "v1" | "v2" | "momentum" | "decision";  // 信号源筛选
+  onSelectStock?: (code: string) => void;
 }
 
-export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sourceFilter = "all" }: UnifiedSignalFeedProps) {
+export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sourceFilter = "all", onSelectStock }: UnifiedSignalFeedProps) {
   const { socket } = useSocket();
   const [sniperSignals, setSniperSignals] = useState<SniperSignal[]>([]);
   const [vpAlerts, setVpAlerts] = useState<VolumePriceAlert[]>([]);
   const [pipelineRecords, setPipelineRecords] = useState<PipelineRecord[]>([]);
+  const [momentumSignals, setMomentumSignals] = useState<MomentumSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
@@ -105,14 +130,35 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
   const loadData = useCallback(async () => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const [sigRes, vpRes, pipeRes]: any[] = await Promise.all([
+      const [sigRes, vpRes, pipeRes, momRes]: any[] = await Promise.all([
         apiClient.get("/sniper/signals"),
         apiClient.get("/enhanced-heat/volume-price-alerts?source=focus"),
         apiClient.get("/sniper/signal-pipeline?limit=20"),
+        apiClient.get("/signals/multi-dimensional/list?limit=15"),
       ]);
       if (sigRes.success && Array.isArray(sigRes.data)) setSniperSignals(sigRes.data);
       if (vpRes.success && Array.isArray(vpRes.data)) setVpAlerts(vpRes.data);
       if (pipeRes.success && Array.isArray(pipeRes.data)) setPipelineRecords(pipeRes.data);
+      
+      // 解析多维列表中的动量信号作为初始动量数据
+      if (momRes.success && momRes.data && Array.isArray(momRes.data.list)) {
+        const list: MomentumSignal[] = [];
+        for (const item of momRes.data.list) {
+          if (item.momentum_engine) {
+            list.push({
+              stock_code: item.stock_code,
+              signal_type: item.momentum_engine.verdict,
+              description: `动量爆发: ${item.momentum_engine.dimensions?.join('+') || '多维'}`,
+              price: item.current_price,
+              priority: item.momentum_engine.verdict.startsWith('STRONG') ? 'HIGH' : 'MEDIUM',
+              confidence: 0.8,
+              timestamp: Math.round(Date.now() / 1000),
+              dimensions: item.momentum_engine.dimensions || []
+            });
+          }
+        }
+        setMomentumSignals(list);
+      }
       setLastUpdate(new Date());
     } catch (e) {
       console.error("加载信号数据失败:", e);
@@ -151,11 +197,27 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
       setLastUpdate(new Date());
     };
 
+    const handleMomentum = (data: MomentumSignal) => {
+      setMomentumSignals(prev => {
+        const updated = [data, ...prev];
+        const seen = new Set<string>();
+        return updated.filter(s => {
+          const key = `${s.stock_code}:${s.signal_type}:${s.timestamp}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      });
+      setLastUpdate(new Date());
+    };
+
     socket.on("sniper_signal", handleSniper);
     socket.on("signal_pipeline", handlePipeline);
+    socket.on("momentum_signal", handleMomentum);
     return () => {
       socket.off("sniper_signal", handleSniper);
       socket.off("signal_pipeline", handlePipeline);
+      socket.off("momentum_signal", handleMomentum);
     };
   }, [socket]);
 
@@ -164,7 +226,7 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
   const unifiedSignals = useMemo((): UnifiedSignal[] => {
     const items: UnifiedSignal[] = [];
 
-    // 1. 狙击信号 → 只取主信号
+    // 1. V1 Sniper
     for (const sig of sniperSignals) {
       if (!PRIMARY_SNIPER_TYPES.has(sig.signal_type)) continue;
 
@@ -192,8 +254,8 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
       }
 
       items.push({
-        id: `sniper-${sig.stock_code}-${sig.signal_type}-${sig.time}`,
-        source: "sniper",
+        id: `v1-${sig.stock_code}-${sig.signal_type}-${sig.time}`,
+        source: "v1",
         time: sig.time,
         stock_code: sig.stock_code,
         stock_name: sig.stock_name,
@@ -207,7 +269,7 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
       });
     }
 
-    // 2. 量价预警 → 吸收/拉升/放量跌
+    // 2. V2 Scorer
     for (const alert of vpAlerts) {
       const isAbsorption = alert.alert_type === "absorption";
       const isDump = alert.alert_type === "dump";
@@ -245,8 +307,8 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
       }
 
       items.push({
-        id: `alert-${alert.stock_code}-${alert.alert_type}-${alert.start_time}`,
-        source: "alert",
+        id: `v2-${alert.stock_code}-${alert.alert_type}-${alert.start_time}`,
+        source: "v2",
         time: alert.end_time,
         stock_code: alert.stock_code,
         stock_name: alert.stock_name,
@@ -259,14 +321,41 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
       });
     }
 
-    // 3. 策略追踪 → 已执行 + 策略广播
+    // 3. 动量引擎
+    for (const sig of momentumSignals) {
+      const isBuy = sig.signal_type.includes("BUY");
+      const timeStr = sig.timestamp
+        ? new Date(sig.timestamp * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+        : new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+
+      items.push({
+        id: `momentum-${sig.stock_code}-${sig.signal_type}-${sig.timestamp}`,
+        source: "momentum",
+        time: timeStr,
+        stock_code: sig.stock_code,
+        stock_name: sig.stock_code,
+        emoji: "⚡",
+        label: sig.signal_type,
+        detail: sig.description,
+        urgency: sig.priority === "HIGH" ? 85 : 65,
+        is_red: !isBuy,
+        bgColor: isBuy
+          ? "bg-cyan-50/60 border-cyan-200/50 dark:bg-cyan-950/20 dark:border-cyan-900/30"
+          : "bg-rose-50/40 border-rose-200/40 dark:bg-rose-950/20 dark:border-rose-900/30",
+        textColor: isBuy ? "text-cyan-600 dark:text-cyan-400" : "text-rose-600 dark:text-rose-400",
+        badgeColor: isBuy ? "bg-cyan-200/70 text-cyan-700" : "bg-rose-200/70 text-rose-700",
+        price: sig.price,
+      });
+    }
+
+    // 4. 决策/策略流水
     for (const rec of pipelineRecords) {
       if (rec.final_action !== "executed" && rec.final_action !== "broadcast") continue;
       const isBroadcast = rec.final_action === "broadcast";
       const isBuy = rec.direction === "BUY";
       items.push({
-        id: `pipe-${rec.id || rec.timestamp}`,
-        source: "pipeline",
+        id: `decision-${rec.id || rec.timestamp}`,
+        source: "decision",
         time: rec.timestamp?.slice(11, 16) || "",
         stock_code: rec.stock_code,
         stock_name: rec.stock_name,
@@ -286,6 +375,7 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
         badgeColor: isBuy
           ? "bg-emerald-200/70 text-emerald-700"
           : "bg-red-200/70 text-red-700",
+        multi_dimensional_summary: rec.multi_dimensional_summary
       });
     }
 
@@ -304,7 +394,7 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
       : items;
 
     return filtered.slice(0, maxItems);
-  }, [sniperSignals, vpAlerts, pipelineRecords, positionSet, maxItems, sourceFilter]);
+  }, [sniperSignals, vpAlerts, pipelineRecords, momentumSignals, positionSet, maxItems, sourceFilter]);
 
   // ── 统计 ──────────────────────────────────
 
@@ -411,12 +501,45 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
                     </div>
                   </div>
 
+                  {/* 多维证据微型面板 */}
+                  {sig.multi_dimensional_summary && (
+                    <div className="flex items-center gap-1.5 mt-1 border-t border-dashed border-border/50 pt-1 overflow-x-auto pb-0.5">
+                      <span className="text-[9px] text-slate-500 dark:text-slate-400 shrink-0 font-medium">多维证据:</span>
+                      {sig.multi_dimensional_summary.v1_strength > 0 && (
+                        <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 font-mono">
+                          V1:{sig.multi_dimensional_summary.v1_label}({sig.multi_dimensional_summary.v1_strength})
+                        </span>
+                      )}
+                      {sig.multi_dimensional_summary.v2_score > 0 && (
+                        <span className="text-[8px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 shrink-0 font-mono">
+                          V2:{sig.multi_dimensional_summary.v2_score}分
+                        </span>
+                      )}
+                      {sig.multi_dimensional_summary.momentum_verdict && sig.multi_dimensional_summary.momentum_verdict !== 'WATCH' && (
+                        <span className="text-[8px] px-1 py-0.5 rounded bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20 shrink-0 font-mono">
+                          动量:{sig.multi_dimensional_summary.momentum_verdict}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
                   {/* 详情 + 操作按钮 */}
                   <div className="flex items-center justify-between mt-1 gap-2">
                     <span className={`text-[10px] ${sig.textColor} opacity-75 truncate flex-1`}>
                       {sig.detail}
                     </span>
                     <div className="flex items-center gap-1 shrink-0">
+                      {onSelectStock && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectStock(sig.stock_code);
+                          }}
+                          className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-100/80 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-800/50 transition-colors font-medium"
+                        >
+                          📊多维
+                        </button>
+                      )}
                       <Link
                         href={`/pre-check?code=${sig.stock_code}`}
                         onClick={(e) => { e.stopPropagation(); }}

@@ -432,7 +432,7 @@ class StockScorer:
     @staticmethod
     def _score_tiered(cfg: dict, value, label: str) -> tuple:
         if value is None:
-            mid = cfg['max_score'] // 2
+            mid = int(cfg['max_score'] * 0.5)
             return mid, ScoreDetail(label, None, mid, cfg['max_score'], '无数据(中性)')
         score = cfg['default']
         for threshold, points in cfg['tiers']:

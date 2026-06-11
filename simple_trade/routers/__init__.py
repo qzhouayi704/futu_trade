@@ -40,6 +40,7 @@ from .trading.pre_trade_check import router as pre_trade_check_router
 from .trading.trade_pattern import router as trade_pattern_router
 from .trading.ai_analysis import router as ai_analysis_router
 from .trading.sniper import router as sniper_router
+from .trading.signals import router as signals_router
 
 # data/ - 数据管理
 from .data.stock import router as stock_router
@@ -94,6 +95,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(trade_pattern_router)
     app.include_router(ai_analysis_router)
     app.include_router(sniper_router)
+    app.include_router(signals_router)
 
     # 数据管理
     app.include_router(stock_router)
