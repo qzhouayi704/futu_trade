@@ -46,7 +46,7 @@ export function MultiSignalDashboard({ stockCode, onClose }: MultiSignalDashboar
     if (!stockCode) return;
     setLoading(true);
     try {
-      const res = await apiClient.get(`/signals/multi-dimensional/${stockCode}`);
+      const res: any = await apiClient.get(`/signals/multi-dimensional/${stockCode}`);
       if (res?.success && res.data) {
         setData(res.data);
       }
@@ -263,8 +263,8 @@ export function MultiSignalDashboard({ stockCode, onClose }: MultiSignalDashboar
                   reason: `驾驶舱多维买入: ${consensus.verdict}`
                 });
                 alert("模拟交易委托成功！");
-              } catch (e: any) {
-                alert(`交易失败: ${e.message || e}`);
+              } catch (err: any) {
+                alert(`交易失败: ${err?.message || err}`);
               }
             }}
             className="flex-1 min-w-[80px] bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2 px-3 rounded-lg transition-colors shadow-lg shadow-indigo-600/20"
