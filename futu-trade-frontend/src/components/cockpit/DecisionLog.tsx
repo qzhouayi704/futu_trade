@@ -52,7 +52,7 @@ export function DecisionLog() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [executedRes, rejectedRes] = await Promise.all([
+        const [executedRes, rejectedRes]: any[] = await Promise.all([
           sniperApi.getSignalPipeline(30),
           apiClient.get("/signals/rejected?limit=30")
         ]);
