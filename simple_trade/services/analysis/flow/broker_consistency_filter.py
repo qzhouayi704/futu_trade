@@ -14,6 +14,7 @@
 
 import logging
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 from futu import RET_OK, SubType
@@ -104,6 +105,29 @@ class BrokerAnalysisResult:
     buyer_details: List[Dict] = field(default_factory=list)
     seller_details: List[Dict] = field(default_factory=list)
     reason: str = ""                        # 人类可读描述
+
+
+class BiasSignal(str, Enum):
+    DISTRIBUTION_TRAP = "distribution_trap"   # 出货陷阱
+    ACCUMULATION      = "accumulation_signal"  # 主力吸筹
+    AMBIGUOUS         = "ambiguous"            # 信号模糊，双方得分接近
+    NONE              = "none"                 # 无信号
+
+
+@dataclass
+class BrokerBiasResult:
+    """单次盘口快照的双向评分结果（互斥裁决）"""
+    stock_code: str = ""
+    signal: BiasSignal = BiasSignal.NONE
+    winning_confidence: float = 0.0       # 胜出方置信度
+    trap_score: float = 0.0               # 出货陷阱原始分
+    acc_score: float = 0.0               # 主力吸筹原始分
+    reason: str = ""
+    # 原始席位快照（供上层构造 SniperSignal 使用）
+    top_buyers: List[str] = field(default_factory=list)
+    top_sellers: List[str] = field(default_factory=list)
+    buyer_details: List[Dict] = field(default_factory=list)
+    seller_details: List[Dict] = field(default_factory=list)
 
 
 class BrokerConsistencyFilter:
@@ -354,6 +378,166 @@ class BrokerConsistencyFilter:
 
         except Exception as e:
             logger.debug(f"[{stock_code}] 吸筹检测异常: {e}")
+
+        return result
+
+    def analyze_broker_bias(
+        self,
+        stock_code: str,
+        change_pct: float = 0.0,
+        ambiguous_threshold: float = 0.15,
+    ) -> BrokerBiasResult:
+        """
+        单次盘口快照同时计算出货陷阱与主力吸筹得分，并做互斥裁决。
+
+        互斥规则：
+          - 若两者得分差 < ambiguous_threshold，视为信号模糊，均不触发
+          - 否则取较高分一方；对方即使 ≥ 0.5 也被压制
+
+        Returns:
+            BrokerBiasResult
+        """
+        result = BrokerBiasResult(stock_code=stock_code)
+
+        if not self._futu_client:
+            return result
+
+        quote_ctx = getattr(self._futu_client, 'client', None)
+        if not quote_ctx:
+            return result
+
+        try:
+            self._ensure_subscription(stock_code, quote_ctx)
+
+            ret, bid_df, ask_df = quote_ctx.get_broker_queue(stock_code)
+            if ret != RET_OK:
+                logger.debug(f"[{stock_code}] 获取经纪商队列失败: {bid_df}")
+                return result
+
+            top_buyers = self._extract_unique_brokers(
+                bid_df, 'bid_broker_name', 'bid_broker_pos', top_n=10
+            )
+            top_sellers = self._extract_unique_brokers(
+                ask_df, 'ask_broker_name', 'ask_broker_pos', top_n=10
+            )
+
+            result.top_buyers = [b['name'] for b in top_buyers[:5]]
+            result.top_sellers = [s['name'] for s in top_sellers[:5]]
+            result.buyer_details = top_buyers[:8]
+            result.seller_details = top_sellers[:8]
+
+            if not top_buyers or not top_sellers:
+                return result
+
+            # ---- 买方分类 ----
+            inst_buy     = sum(1 for b in top_buyers if b['tag'] == '机构')
+            connect_buy  = sum(1 for b in top_buyers if b['tag'] == '北水')
+            clearing_buy = sum(1 for b in top_buyers if b['tag'] == '清算通道')
+            retail_buy   = sum(1 for b in top_buyers if b['tag'] == '散户')
+
+            # ---- 卖方分类 ----
+            inst_sell     = sum(1 for s in top_sellers if s['tag'] == '机构')
+            connect_sell  = sum(1 for s in top_sellers if s['tag'] == '北水')
+            clearing_sell = sum(1 for s in top_sellers if s['tag'] == '清算通道')
+            retail_sell   = sum(1 for s in top_sellers if s['tag'] == '散户')
+
+            retail_buy_ratio  = retail_buy  / len(top_buyers)
+            retail_sell_ratio = retail_sell / len(top_sellers)
+
+            # ---- 出货陷阱得分 ----
+            trap_score = 0.0
+            if clearing_sell >= 2:
+                trap_score += 0.35
+            elif clearing_sell >= 1:
+                trap_score += 0.2
+            if inst_sell >= 3:
+                trap_score += 0.3
+            elif inst_sell >= 2:
+                trap_score += 0.2
+            elif inst_sell >= 1:
+                trap_score += 0.1
+            if connect_sell >= 1:
+                trap_score += 0.1
+            if retail_buy_ratio >= 0.5:
+                trap_score += 0.3
+            elif retail_buy_ratio >= 0.3:
+                trap_score += 0.15
+            if change_pct > 10:
+                trap_score += 0.2
+            elif change_pct > 5:
+                trap_score += 0.1
+
+            # ---- 主力吸筹得分 ----
+            acc_score = 0.0
+            if clearing_buy >= 2:
+                acc_score += 0.35
+            elif clearing_buy >= 1:
+                acc_score += 0.2
+            if inst_buy >= 3:
+                acc_score += 0.3
+            elif inst_buy >= 2:
+                acc_score += 0.2
+            elif inst_buy >= 1:
+                acc_score += 0.1
+            if connect_buy >= 1:
+                acc_score += 0.1
+            if retail_sell_ratio >= 0.5:
+                acc_score += 0.3
+            elif retail_sell_ratio >= 0.3:
+                acc_score += 0.15
+            if change_pct < -5:
+                acc_score += 0.2
+            elif change_pct < -2:
+                acc_score += 0.1
+
+            result.trap_score = min(trap_score, 1.0)
+            result.acc_score  = min(acc_score,  1.0)
+
+            # ---- 互斥裁决 ----
+            diff = abs(result.trap_score - result.acc_score)
+            if diff < ambiguous_threshold:
+                # 双方得分接近：盘口结构模糊，均不触发
+                if result.trap_score >= 0.5 or result.acc_score >= 0.5:
+                    result.signal = BiasSignal.AMBIGUOUS
+                    result.reason = (
+                        f"信号模糊(出货{result.trap_score:.0%} vs 吸筹{result.acc_score:.0%})，"
+                        f"差距仅{diff:.0%}<{ambiguous_threshold:.0%}，不触发"
+                    )
+                    logger.debug(f"[{stock_code}] ⚠ {result.reason}")
+                return result
+
+            if result.trap_score >= result.acc_score and result.trap_score >= 0.5:
+                result.signal = BiasSignal.DISTRIBUTION_TRAP
+                result.winning_confidence = result.trap_score
+                smart_names = [
+                    f"{s['name']}({s['tag']})" for s in top_sellers
+                    if s['tag'] in ('机构', '清算通道', '北水')
+                ][:3]
+                retail_names = [b['name'] for b in top_buyers if b['tag'] == '散户'][:3]
+                result.reason = (
+                    f"出货陷阱(置信度{result.trap_score:.0%})："
+                    f"卖方专业资金[{','.join(smart_names)}]，"
+                    f"买方散户[{','.join(retail_names)}]"
+                )
+                logger.warning(f"[{stock_code}] ⚠️ {result.reason}")
+
+            elif result.acc_score > result.trap_score and result.acc_score >= 0.5:
+                result.signal = BiasSignal.ACCUMULATION
+                result.winning_confidence = result.acc_score
+                smart_names = [
+                    f"{b['name']}({b['tag']})" for b in top_buyers
+                    if b['tag'] in ('机构', '清算通道', '北水')
+                ][:3]
+                retail_names = [s['name'] for s in top_sellers if s['tag'] == '散户'][:3]
+                result.reason = (
+                    f"主力吸筹(置信度{result.acc_score:.0%})："
+                    f"买方专业资金[{','.join(smart_names)}]，"
+                    f"卖方散户[{','.join(retail_names)}]"
+                )
+                logger.info(f"[{stock_code}] 🟢 {result.reason}")
+
+        except Exception as e:
+            logger.debug(f"[{stock_code}] analyze_broker_bias 异常: {e}")
 
         return result
 

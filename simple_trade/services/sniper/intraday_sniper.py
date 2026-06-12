@@ -315,17 +315,22 @@ class IntradaySniper:
 
                     new_signals.extend(signals)
 
-                    # 出货陷阱检测（每只股票每15分钟最多触发一次）
-                    # 如果 mega_buy 席位校验已执行过，跳过重复调用
-                    trap_cooldown_key = f"trap:{stock_code}"
-                    last_trap = self._stock_states.get(stock_code, {}).get('last_trap_idx', -999)
-                    if not broker_checked and len(timeline) - last_trap >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
+                    # 经纪商偏向检测（单次盘口快照，互斥裁决出货陷阱 vs 主力吸筹）
+                    # 使用统一冷却：任意一方触发均重置，防止同一股票在同一窗口重复检测
+                    last_broker_idx = max(
+                        self._stock_states.get(stock_code, {}).get('last_trap_idx', -999),
+                        self._stock_states.get(stock_code, {}).get('last_acc_idx', -999),
+                    )
+                    if not broker_checked and len(timeline) - last_broker_idx >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
                         try:
-                            from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
+                            from ..analysis.flow.broker_consistency_filter import (
+                                BrokerConsistencyFilter, BiasSignal,
+                            )
                             bf = BrokerConsistencyFilter(self.container.futu_client)
-                            trap_result = bf.check_distribution_trap(stock_code, change_pct=change_pct)
-                            if trap_result.is_trap and trap_result.trap_confidence >= 0.5:
-                                price = timeline[-1]['price'] if timeline else 0
+                            bias = bf.analyze_broker_bias(stock_code, change_pct=change_pct)
+                            price = timeline[-1]['price'] if timeline else 0
+
+                            if bias.signal == BiasSignal.DISTRIBUTION_TRAP:
                                 trap_sig = SniperSignal(
                                     time=datetime.now().strftime("%H:%M"),
                                     stock_code=stock_code,
@@ -333,26 +338,16 @@ class IntradaySniper:
                                     signal_type="distribution_trap",
                                     is_red=True,
                                     price=price,
-                                    detail=f"出货陷阱(置信度{trap_result.trap_confidence:.0%}): {trap_result.reason}",
+                                    detail=bias.reason,
                                     action="⚠️ 警惕主力出货，不宜追买",
                                     severity="high",
                                 )
                                 new_signals.append(trap_sig)
                                 if stock_code in self._stock_states:
                                     self._stock_states[stock_code]['last_trap_idx'] = len(timeline)
-                        except Exception as e:
-                            logger.debug(f"出货陷阱检测异常: {stock_code}: {e}")
+                                    self._stock_states[stock_code]['last_acc_idx'] = len(timeline)
 
-                    # 吸筹信号检测（镜像：买方机构+卖方散户）
-                    # 如果 mega_buy 席位校验已执行过，跳过重复调用
-                    last_acc = self._stock_states.get(stock_code, {}).get('last_acc_idx', -999)
-                    if not broker_checked and len(timeline) - last_acc >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
-                        try:
-                            from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
-                            bf = BrokerConsistencyFilter(self.container.futu_client)
-                            acc_result = bf.check_accumulation_signal(stock_code, change_pct=change_pct)
-                            if acc_result.is_trap and acc_result.trap_confidence >= 0.5:
-                                price = timeline[-1]['price'] if timeline else 0
+                            elif bias.signal == BiasSignal.ACCUMULATION:
                                 acc_sig = SniperSignal(
                                     time=datetime.now().strftime("%H:%M"),
                                     stock_code=stock_code,
@@ -360,15 +355,17 @@ class IntradaySniper:
                                     signal_type="accumulation_signal",
                                     is_red=False,
                                     price=price,
-                                    detail=f"主力吸筹(置信度{acc_result.trap_confidence:.0%}): {acc_result.reason}",
+                                    detail=bias.reason,
                                     action="🟢 机构吸筹中，关注买入机会",
                                     severity="high",
                                 )
                                 new_signals.append(acc_sig)
                                 if stock_code in self._stock_states:
+                                    self._stock_states[stock_code]['last_trap_idx'] = len(timeline)
                                     self._stock_states[stock_code]['last_acc_idx'] = len(timeline)
+
                         except Exception as e:
-                            logger.debug(f"吸筹检测异常: {stock_code}: {e}")
+                            logger.debug(f"经纪商偏向检测异常: {stock_code}: {e}")
 
                 # 先更新 TOP 排行榜（用于过滤信号）
                 self._update_ranking(conn, watch_codes, today)
