@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from ...core.models import TradeSignal
+from ...core.models import TradeSignal, StockInfo
 from ...core.exceptions import BusinessError
 from ...dependencies import get_container
 from ...schemas.common import APIResponse
@@ -80,11 +80,16 @@ async def execute_trade(
 
     trade_service = ensure_trade_service(container)
 
+    # 构建 StockInfo 对象（execute_trade 需要 StockInfo 而非 stock_code）
+    stock = StockInfo(code=request.stock_code, name="")
+    # price=None 表示市价单，传 0 给服务层
+    trade_price = request.price if request.price else 0.0
+
     result = await asyncio.to_thread(
         trade_service.execute_trade,
-        stock_code=request.stock_code,
+        stock=stock,
         trade_type=request.trade_type,
-        price=request.price,
+        price=trade_price,
         quantity=request.quantity,
         signal_id=request.signal_id
     )

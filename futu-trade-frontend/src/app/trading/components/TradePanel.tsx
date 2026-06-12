@@ -522,16 +522,26 @@ export default function TradePanel() {
                                 🎯
                               </button>
                               <button
-                                onClick={() => {
-                                  setSelectedStock({
+                                onClick={async () => {
+                                  const sellSignal = {
                                     stock_code: position.stock_code,
                                     stock_name: position.stock_name,
                                     signal_type: "sell",
                                     signal_price: position.current_price || 0,
                                     id: 0,
-                                  } as TradeSignal);
+                                  } as TradeSignal;
+                                  setSelectedStock(sellSignal);
                                   setTradeQuantity(position.qty || position.quantity || 0);
                                   setTradeType("sell");
+                                  // 内联 pre-check + 弹窗（避免 React 闭包问题）
+                                  setCheckingTrade(true);
+                                  setPreCheckResult(null);
+                                  try {
+                                    const res = await fetch(`/api/pre-trade-check/${encodeURIComponent(position.stock_code)}`);
+                                    const json = await res.json();
+                                    if (json.success && json.data) setPreCheckResult(json.data);
+                                  } catch { setPreCheckResult(null); }
+                                  finally { setCheckingTrade(false); setShowConfirmModal(true); }
                                 }}
                                 className="text-[10px] px-1.5 py-1 rounded bg-green-50 text-green-700 hover:bg-green-100 transition-colors font-medium"
                                 title="快速卖出"

@@ -151,7 +151,7 @@ class FutuTradeService:
             result['message'] = "无效的交易参数"
             return result
 
-        if price <= 0 or quantity <= 0 or quantity % 100 != 0:
+        if price < 0 or quantity <= 0 or quantity % 100 != 0:
             result['message'] = "无效的价格或数量（数量必须是100的倍数）"
             return result
 

@@ -7,7 +7,7 @@
 """
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ...core.exceptions import ValidationError
 from ...core.models import StockInfo
@@ -18,10 +18,19 @@ from ...core.models import StockInfo
 class ExecuteTradeRequest(BaseModel):
     """执行交易请求"""
     stock_code: str = Field(..., min_length=1, description="股票代码")
-    trade_type: str = Field(..., pattern="^(BUY|SELL)$", description="交易类型(BUY/SELL)")
-    price: float = Field(..., gt=0, description="交易价格")
+    trade_type: str = Field(..., description="交易类型(BUY/SELL/buy/sell)")
+    price: Optional[float] = Field(None, description="交易价格，None表示市价")
     quantity: int = Field(..., gt=0, description="交易数量(必须是100的倍数)")
     signal_id: Optional[int] = Field(None, description="信号ID")
+
+    @field_validator('trade_type')
+    @classmethod
+    def normalize_trade_type(cls, v: str) -> str:
+        """将trade_type统一转为大写"""
+        v = v.upper()
+        if v not in ('BUY', 'SELL'):
+            raise ValueError('trade_type must be BUY or SELL')
+        return v
 
     def validate_quantity(self):
         """验证数量是100的倍数"""
