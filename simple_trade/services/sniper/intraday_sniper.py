@@ -315,57 +315,10 @@ class IntradaySniper:
 
                     new_signals.extend(signals)
 
-                    # 经纪商偏向检测（单次盘口快照，互斥裁决出货陷阱 vs 主力吸筹）
-                    # 使用统一冷却：任意一方触发均重置，防止同一股票在同一窗口重复检测
-                    last_broker_idx = max(
-                        self._stock_states.get(stock_code, {}).get('last_trap_idx', -999),
-                        self._stock_states.get(stock_code, {}).get('last_acc_idx', -999),
-                    )
-                    if not broker_checked and len(timeline) - last_broker_idx >= COOLDOWN_MINUTES // SCAN_INTERVAL_MINUTES:
-                        try:
-                            from ..analysis.flow.broker_consistency_filter import (
-                                BrokerConsistencyFilter, BiasSignal,
-                            )
-                            bf = BrokerConsistencyFilter(self.container.futu_client)
-                            bias = bf.analyze_broker_bias(stock_code, change_pct=change_pct)
-                            price = timeline[-1]['price'] if timeline else 0
-
-                            if bias.signal == BiasSignal.DISTRIBUTION_TRAP:
-                                trap_sig = SniperSignal(
-                                    time=datetime.now().strftime("%H:%M"),
-                                    stock_code=stock_code,
-                                    stock_name=stock_name,
-                                    signal_type="distribution_trap",
-                                    is_red=True,
-                                    price=price,
-                                    detail=bias.reason,
-                                    action="⚠️ 警惕主力出货，不宜追买",
-                                    severity="high",
-                                )
-                                new_signals.append(trap_sig)
-                                if stock_code in self._stock_states:
-                                    self._stock_states[stock_code]['last_trap_idx'] = len(timeline)
-                                    self._stock_states[stock_code]['last_acc_idx'] = len(timeline)
-
-                            elif bias.signal == BiasSignal.ACCUMULATION:
-                                acc_sig = SniperSignal(
-                                    time=datetime.now().strftime("%H:%M"),
-                                    stock_code=stock_code,
-                                    stock_name=stock_name,
-                                    signal_type="accumulation_signal",
-                                    is_red=False,
-                                    price=price,
-                                    detail=bias.reason,
-                                    action="🟢 机构吸筹中，关注买入机会",
-                                    severity="high",
-                                )
-                                new_signals.append(acc_sig)
-                                if stock_code in self._stock_states:
-                                    self._stock_states[stock_code]['last_trap_idx'] = len(timeline)
-                                    self._stock_states[stock_code]['last_acc_idx'] = len(timeline)
-
-                        except Exception as e:
-                            logger.debug(f"经纪商偏向检测异常: {stock_code}: {e}")
+                    # [DISABLED 2026-06-12] 经纪商偏向独立检测已禁用
+                    # 回测结果: distribution_trap 63.3%, accumulation_signal 42.3% (不如随机)
+                    # 每日4000+条信号且158只冲突, 信噪比过低无实际交易价值
+                    # 保留 mega_buy 的席位交叉验证(上方第264-314行)作为辅助参考
 
                 # 先更新 TOP 排行榜（用于过滤信号）
                 self._update_ranking(conn, watch_codes, today)
@@ -378,9 +331,9 @@ class IntradaySniper:
                     self._save_signal_to_db(sig)
                     
                     # 识别机构资金信号
+                    # [MODIFIED 2026-06-12] 移除 accumulation_signal 推送优先(已禁用)
                     is_inst_signal = (
-                        sig.signal_type == 'accumulation_signal' or 
-                        (sig.signal_type == 'mega_buy' and sig.severity == 'high')
+                        sig.signal_type == 'mega_buy' and sig.severity == 'high'
                     )
                     
                     if sig.stock_code in top_codes or is_inst_signal:
