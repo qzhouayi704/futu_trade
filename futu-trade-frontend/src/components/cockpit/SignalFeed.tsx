@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { UnifiedSignalFeed } from "@/app/components/dashboard/UnifiedSignalFeed";
 
-type FilterType = "all" | "v1" | "v2" | "momentum" | "decision";
+type FilterType = "all" | "v1" | "v2" | "momentum";
 
 interface SignalFeedProps {
   positionStockCodes: string[];
@@ -17,7 +17,6 @@ const FILTERS: { key: FilterType; label: string; emoji: string }[] = [
   { key: "v1", label: "V1-Sniper", emoji: "🔫" },
   { key: "v2", label: "V2-StockScorer", emoji: "📈" },
   { key: "momentum", label: "动量引擎", emoji: "⚡" },
-  { key: "decision", label: "决策", emoji: "🎯" },
 ];
 
 export function SignalFeed({ positionStockCodes, onSelectStock }: SignalFeedProps) {

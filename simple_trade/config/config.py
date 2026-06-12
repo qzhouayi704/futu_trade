@@ -119,10 +119,12 @@ class GeminiAnalystConfig(_ConfigMixin):
 @dataclass
 class SubscriptionConfig(_ConfigMixin):
     """订阅配置"""
+    total_subscription_quota: int = 300  # 富途 API 所有类型共享的总额度
     max_quote_subscription: int = 300
     max_ticker_subscription: int = 100
     max_orderbook_subscription: int = 100
     enable_auto_replace: bool = True
+
 
 
 @dataclass

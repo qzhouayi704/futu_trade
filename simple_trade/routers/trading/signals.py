@@ -182,20 +182,6 @@ def get_single_stock_multi_dimensional(stock_code: str, container) -> Dict[str, 
     }
 
 
-@router.get("/multi-dimensional/{stock_code}")
-async def get_multi_dimensional_signal(stock_code: str, container=Depends(get_container)):
-    """获取单只股票的三维信号聚合状态"""
-    try:
-        data = get_single_stock_multi_dimensional(stock_code, container)
-        return {
-            "success": True,
-            "data": data
-        }
-    except Exception as e:
-        logger.error(f"获取单股多维信号失败: {e}")
-        raise BusinessError(message=f"获取单股多维信号失败: {str(e)}")
-
-
 @router.get("/multi-dimensional/list")
 async def get_multi_dimensional_signal_list(
     page: int = Query(1, ge=1),
@@ -258,6 +244,20 @@ async def get_multi_dimensional_signal_list(
     except Exception as e:
         logger.error(f"获取多维信号列表失败: {e}")
         raise BusinessError(message=f"获取多维信号列表失败: {str(e)}")
+
+
+@router.get("/multi-dimensional/{stock_code}")
+async def get_multi_dimensional_signal(stock_code: str, container=Depends(get_container)):
+    """获取单只股票的三维信号聚合状态"""
+    try:
+        data = get_single_stock_multi_dimensional(stock_code, container)
+        return {
+            "success": True,
+            "data": data
+        }
+    except Exception as e:
+        logger.error(f"获取单股多维信号失败: {e}")
+        raise BusinessError(message=f"获取单股多维信号失败: {str(e)}")
 
 
 @router.get("/rejected")

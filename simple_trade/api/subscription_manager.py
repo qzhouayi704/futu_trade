@@ -66,11 +66,13 @@ class SubscriptionManager:
         # 订阅额度限制（从配置读取）
         if config and hasattr(config, 'subscription_config'):
             sub_cfg = config.subscription_config
+            self._total_quota = sub_cfg.get('total_subscription_quota', 300)
             self._max_quote_subscription = sub_cfg.get('max_quote_subscription', 300)
             self._max_ticker_subscription = sub_cfg.get('max_ticker_subscription', 100)
             self._max_orderbook_subscription = sub_cfg.get('max_orderbook_subscription', 100)
             self._max_rt_data_subscription = sub_cfg.get('max_rt_data_subscription', 100)
         else:
+            self._total_quota = 300
             self._max_quote_subscription = 300
             self._max_ticker_subscription = 100
             self._max_orderbook_subscription = 100
@@ -610,12 +612,26 @@ class SubscriptionManager:
         if not to_subscribe:
             return {'success': stock_codes, 'failed': []}
 
-        # 检查额度限制
+        # 检查单类型额度限制
         available_quota = max_quota - len(subscribed_set)
+
+        # 检查富途 API 总额度（所有类型共享）
+        total_used = (len(self._quote_subscribed) + len(self._ticker_subscribed)
+                      + len(self._orderbook_subscribed) + len(self._rt_data_subscribed))
+        total_available = self._total_quota - total_used
+        available_quota = min(available_quota, total_available)
+
+        if available_quota <= 0:
+            self.logger.warning(
+                f"{type_name} 订阅额度耗尽: 单类型剩余 {max_quota - len(subscribed_set)}, "
+                f"总额度剩余 {total_available} (已用 {total_used}/{self._total_quota})"
+            )
+            return {'success': [], 'failed': to_subscribe}
+
         if len(to_subscribe) > available_quota:
             self.logger.warning(
                 f"{type_name} 订阅额度不足: 需要 {len(to_subscribe)} 只，"
-                f"可用 {available_quota} 只"
+                f"可用 {available_quota} 只 (总额度 {total_used}/{self._total_quota})"
             )
             to_subscribe = to_subscribe[:available_quota]
 
