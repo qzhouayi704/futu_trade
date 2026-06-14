@@ -225,6 +225,15 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning(f"每日K线自动更新任务启动失败: {e}")
 
+            # 启动每日板块成分股自动更新任务（收盘后16:40，补入新股）
+            try:
+                from .services.market_data.plate.daily_plate_updater import DailyPlateUpdater
+                daily_plate_updater = DailyPlateUpdater(container)
+                _track(daily_plate_updater.start(), name="daily_plate_updater")
+                logging.info("每日板块成分股自动更新任务已注册（16:40触发）")
+            except Exception as e:
+                logging.warning(f"每日板块成分股自动更新任务启动失败: {e}")
+
             # 启动动量引擎（BSR + Delta 实时信号）
             try:
                 from .services.momentum import MomentumEngine

@@ -103,7 +103,9 @@ const SNIPER_LABELS: Record<string, string> = {
   distribution_trap: "出货陷阱", accumulation_signal: "主力吸筹",
 };
 
-const PRIMARY_SNIPER_TYPES = new Set(["mega_buy", "mega_sell", "distribution_trap", "accumulation_signal"]);
+// distribution_trap / accumulation_signal 已于 2026-06-12 在后端禁用产生（回测显示不如随机），
+// 前端不再展示其历史残留，避免高 urgency(90) 的 trap 信号霸占列表。
+const PRIMARY_SNIPER_TYPES = new Set(["mega_buy", "mega_sell"]);
 
 // ── Props ──────────────────────────────────────
 
@@ -132,7 +134,7 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const [sigRes, vpRes, pipeRes, momRes]: any[] = await Promise.all([
         apiClient.get("/sniper/signals"),
-        apiClient.get("/enhanced-heat/volume-price-alerts?source=focus"),
+        apiClient.get("/enhanced-heat/volume-price-alerts?source=all"),
         apiClient.get("/sniper/signal-pipeline?limit=20"),
         apiClient.get("/signals/multi-dimensional/list?limit=15"),
       ]);
@@ -226,24 +228,14 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
   const unifiedSignals = useMemo((): UnifiedSignal[] => {
     const items: UnifiedSignal[] = [];
 
-    // 1. V1 Sniper
+    // 1. V1 Sniper（仅 mega_buy / mega_sell，见 PRIMARY_SNIPER_TYPES）
     for (const sig of sniperSignals) {
       if (!PRIMARY_SNIPER_TYPES.has(sig.signal_type)) continue;
 
-      const isTrap = sig.signal_type === "distribution_trap";
-      const isAcc = sig.signal_type === "accumulation_signal";
       const isBuy = sig.signal_type === "mega_buy";
 
       let bgColor: string, textColor: string, badgeColor: string;
-      if (isTrap) {
-        bgColor = "bg-amber-50/80 border-amber-300/60 dark:bg-amber-950/30 dark:border-amber-800/40";
-        textColor = "text-amber-700 dark:text-amber-400";
-        badgeColor = "bg-amber-200/80 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300";
-      } else if (isAcc) {
-        bgColor = "bg-cyan-50/80 border-cyan-300/60 dark:bg-cyan-950/30 dark:border-cyan-800/40";
-        textColor = "text-cyan-700 dark:text-cyan-400";
-        badgeColor = "bg-cyan-200/80 text-cyan-800 dark:bg-cyan-900/50 dark:text-cyan-300";
-      } else if (sig.is_red) {
+      if (sig.is_red) {
         bgColor = "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-900/30";
         textColor = "text-red-600 dark:text-red-400";
         badgeColor = "bg-red-200/70 text-red-700 dark:bg-red-900/50 dark:text-red-300";
@@ -259,11 +251,11 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
         time: sig.time,
         stock_code: sig.stock_code,
         stock_name: sig.stock_name,
-        emoji: isTrap ? "⚠️" : sig.emoji,
+        emoji: sig.emoji,
         label: SNIPER_LABELS[sig.signal_type] || sig.signal_type,
         detail: sig.detail,
-        urgency: isTrap ? 90 : sig.is_red ? 85 : isBuy ? 80 : 70,
-        is_red: sig.is_red || isTrap,
+        urgency: sig.is_red ? 85 : isBuy ? 80 : 70,
+        is_red: sig.is_red,
         bgColor, textColor, badgeColor,
         price: sig.price,
       });
@@ -393,7 +385,19 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
       ? items.filter(s => s.source === sourceFilter)
       : items;
 
-    return filtered.slice(0, maxItems);
+    // 每股条数上限：防止单只股票（尤其持仓股）的高频信号霸占整个列表，
+    // 挤掉其他股票的信号。已排序，故保留的是每只股票 urgency/时间最高的若干条。
+    const MAX_PER_STOCK = 3;
+    const perStockCount = new Map<string, number>();
+    const capped: UnifiedSignal[] = [];
+    for (const sig of filtered) {
+      const n = perStockCount.get(sig.stock_code) ?? 0;
+      if (n >= MAX_PER_STOCK) continue;
+      perStockCount.set(sig.stock_code, n + 1);
+      capped.push(sig);
+    }
+
+    return capped.slice(0, maxItems);
   }, [sniperSignals, vpAlerts, pipelineRecords, momentumSignals, positionSet, maxItems, sourceFilter]);
 
   // ── 统计 ──────────────────────────────────
