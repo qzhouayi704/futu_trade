@@ -83,11 +83,26 @@ export function DecisionLog() {
           apiClient.get("/signals/rejected?limit=50"),
         ]);
         const records: PipelineRecord[] = [];
+        const seenIds = new Set<number>();
         if (executedRes?.success && Array.isArray(executedRes.data)) {
-          records.push(...executedRes.data);
+          for (const r of executedRes.data) {
+            if (r.id && !seenIds.has(r.id)) {
+              seenIds.add(r.id);
+              records.push(r);
+            } else if (!r.id) {
+              records.push(r);
+            }
+          }
         }
         if (rejectedRes?.success && Array.isArray(rejectedRes.data)) {
-          records.push(...rejectedRes.data);
+          for (const r of rejectedRes.data) {
+            if (r.id && !seenIds.has(r.id)) {
+              seenIds.add(r.id);
+              records.push(r);
+            } else if (!r.id) {
+              records.push(r);
+            }
+          }
         }
         // 按时间倒序
         records.sort(

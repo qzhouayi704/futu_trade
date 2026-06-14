@@ -14,7 +14,7 @@ import os
 import sys
 import asyncio
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -133,19 +133,22 @@ class TestRunPipeline:
 
 class TestStrategyInterval:
 
-    def test_should_run_strategy_first_cycle(self):
-        """第一次循环应执行策略检测"""
+    @patch('simple_trade.utils.market_helper.MarketTimeHelper.is_any_market_trading', return_value=True)
+    def test_should_run_strategy_warmup_skipped(self, mock_trading):
+        """启动预热期内不执行策略检测"""
         pipeline, *_ = _make_pipeline(push_interval=5, strategy_interval=60)
         pipeline._loop_count = 1
-        assert pipeline._should_run_strategy() is True
-
-    def test_should_run_strategy_skip_intermediate(self):
-        """中间循环不应执行策略检测"""
-        pipeline, *_ = _make_pipeline(push_interval=5, strategy_interval=60)
-        pipeline._loop_count = 5
         assert pipeline._should_run_strategy() is False
 
-    def test_should_run_strategy_next_interval(self):
+    @patch('simple_trade.utils.market_helper.MarketTimeHelper.is_any_market_trading', return_value=True)
+    def test_should_run_strategy_skip_intermediate(self, mock_trading):
+        """中间循环不应执行策略检测"""
+        pipeline, *_ = _make_pipeline(push_interval=5, strategy_interval=60)
+        pipeline._loop_count = 14
+        assert pipeline._should_run_strategy() is False
+
+    @patch('simple_trade.utils.market_helper.MarketTimeHelper.is_any_market_trading', return_value=True)
+    def test_should_run_strategy_next_interval(self, mock_trading):
         """到达下一个间隔时应执行策略检测"""
         pipeline, *_ = _make_pipeline(push_interval=5, strategy_interval=60)
         pipeline._loop_count = 13  # 13 % 12 == 1

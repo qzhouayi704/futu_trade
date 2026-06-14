@@ -198,10 +198,9 @@ class QuotePipeline:
         避免 fetch_kline 与 CentralScheduler 同时竞争 OpenD 资源。
         非交易时段跳过策略检测，避免用陈旧数据反复产生无意义信号。
         """
-        # 非交易时段守卫：无活跃市场时跳过策略评估
+        # 非交易时段守卫：无市场真正交易时跳过策略评估
         from ...utils.market_helper import MarketTimeHelper
-        active_markets = MarketTimeHelper.get_current_active_markets()
-        if not active_markets:
+        if not MarketTimeHelper.is_any_market_trading():
             return False
 
         # 启动预热：前 12 个周期 (约 60 秒) 不执行策略，等 OpenD 稳定
@@ -501,45 +500,15 @@ class QuotePipeline:
                     )
 
     async def _run_strategy_detection(self, quotes: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
-        """执行策略检测（自动交易 + 多策略信号），返回 (trade_actions, conditions)"""
+        """执行策略检测（多策略信号），返回 (trade_actions, conditions)
+
+        注意：旧系统策略 (trade_service.auto_trade) 已注销。
+        交易信号现由 DecisionEngine + IntradaySniper + StockScorer 流水线统一管理。
+        """
         trade_actions: List[Dict] = []
         conditions: List[Dict] = []
 
-        try:
-            target_stocks = self._get_target_stocks()
-            stock_pool = [
-                {
-                    'id': s.get('id', 0), 'code': s['code'], 'name': s['name'],
-                    'market': s['market'], 'plate_name': s.get('plate_name', '')
-                }
-                for s in target_stocks
-            ]
-
-            auto_trade_result = await self._run_in_executor(
-                self.container.trade_service.auto_trade, stock_pool
-            )
-
-            trade_actions = auto_trade_result['trade_actions']
-            conditions_data = auto_trade_result['conditions_data']
-
-            for action in trade_actions:
-                conditions.append({
-                    'stock_code': action['stock_code'],
-                    'stock_name': action['stock_name'],
-                    'signal_type': action['signal_type'],
-                    'condition_text': action['message'],
-                    'timestamp': action['timestamp'],
-                    'price': action['price'],
-                    'reason': action['reason']
-                })
-
-            self._broadcaster.update_trading_conditions(conditions_data)
-            self._broadcaster.update_trade_signals(trade_actions, quotes)
-
-        except Exception as e:
-            logging.error(f"【行情管道】策略检测异常: {e}", exc_info=True)
-
-        # 多策略并行信号检测
+        # 多策略并行信号检测（保留）
         await self._run_multi_strategy_detection(quotes)
 
         return trade_actions, conditions
