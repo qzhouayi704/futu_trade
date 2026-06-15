@@ -147,7 +147,10 @@ class AbsorptionScanner:
                     'price': round(price, 3) if price > 0 else 0,
                 })
 
-            # 检测吸收（独立冷却）
+            # [2026-06-15 降级为中性提醒] 买入吸收：安慰剂对照回测显示其作为"看跌出货"预警反向
+            # (报警后股价多数上涨, 较随机同日入场 -20pp, n=295/5天)。故保留检测但去掉看跌判定，
+            # 前端以中性"观察"项低优先级展示，不报红、不参与交易决策。
+            # 是否反转成看涨"吸筹"信号待更多行情数据。详见 scripts/analysis/warning_signal_backtest_report.md
             abs_key = f"absorption:{code}"
             last_abs = self._cooldown.get(abs_key)
             if not (last_abs and (now - last_abs).total_seconds() < self.COOLDOWN_MINUTES * 60):
@@ -171,7 +174,9 @@ class AbsorptionScanner:
                     alerts.append(result)
                     self._cooldown[rally_key] = now
 
-            # 检测放量下跌（独立冷却）
+            # [2026-06-15 降级为中性提醒] 放量下跌：与买入吸收同理，作为"继续看跌"预警反向
+            # (报警后多数反弹, 较随机 -9pp, n=445)。保留检测、持续落库供数日后复跑回测，
+            # 前端以中性低优先级展示，不报红、不参与交易决策。
             dump_key = f"dump:{code}"
             last_dump = self._cooldown.get(dump_key)
             if not (last_dump and (now - last_dump).total_seconds() < self.COOLDOWN_MINUTES * 60):
@@ -250,8 +255,8 @@ class AbsorptionScanner:
                         'message': (
                             f"{priced[i]['time']}~{priced[j-1]['time']}"
                             f" 连续{window_len}分钟主买 净买{cum_buy:.0f}万"
-                            f" 但股价{'下跌' if pct < -0.05 else '持平'}"
-                            f"({pct:+.2f}%)，疑似压单吸收"
+                            f" 但股价{'微跌' if pct < -0.05 else '持平'}"
+                            f"({pct:+.2f}%) — 持续主买价格未涨，方向待观察"
                         ),
                     }
                     if best is None or window_len > best['duration_min']:

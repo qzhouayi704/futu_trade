@@ -103,6 +103,35 @@ const SNIPER_LABELS: Record<string, string> = {
   distribution_trap: "出货陷阱", accumulation_signal: "主力吸筹",
 };
 
+// 动量引擎裁决标签（避免在前端直接显示 STRONG_BUY 等英文枚举）
+const MOMENTUM_LABELS: Record<string, string> = {
+  STRONG_BUY: "强力买入", BUY: "动量买入",
+  STRONG_SELL: "强力卖出", SELL: "动量卖出",
+  NEUTRAL: "动量中性", WATCH: "动量观察",
+};
+
+// ── 配色按"动作语义"统一为三桶（2026-06-15）──────────────
+// emoji + 文字标签仍区分信号类型，但颜色只表达：该买 / 该躲 / 只是看看。
+// 把原先 7 种按类型各异的配色收敛到 3 种，降低视觉复杂度。
+type SignalBucket = "buy" | "risk" | "watch";
+const BUCKET_STYLE: Record<SignalBucket, { bgColor: string; textColor: string; badgeColor: string }> = {
+  buy: {   // 买入机会（绿）
+    bgColor: "bg-emerald-50/60 border-emerald-200/50 dark:bg-emerald-950/20 dark:border-emerald-900/30",
+    textColor: "text-emerald-600 dark:text-emerald-400",
+    badgeColor: "bg-emerald-200/70 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+  },
+  risk: {  // 风险/卖出（红）
+    bgColor: "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-900/30",
+    textColor: "text-red-600 dark:text-red-400",
+    badgeColor: "bg-red-200/70 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  },
+  watch: { // 仅参考/观察（灰）
+    bgColor: "bg-slate-50/60 border-slate-200/50 dark:bg-slate-900/20 dark:border-slate-800/40",
+    textColor: "text-slate-600 dark:text-slate-400",
+    badgeColor: "bg-slate-200/70 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300",
+  },
+};
+
 // distribution_trap / accumulation_signal 已于 2026-06-12 在后端禁用产生（回测显示不如随机），
 // 前端不再展示其历史残留，避免高 urgency(90) 的 trap 信号霸占列表。
 const PRIMARY_SNIPER_TYPES = new Set(["mega_buy", "mega_sell"]);
@@ -249,17 +278,6 @@ export function UnifiedSignalFeed({
 
       const isBuy = sig.signal_type === "mega_buy";
 
-      let bgColor: string, textColor: string, badgeColor: string;
-      if (sig.is_red) {
-        bgColor = "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-900/30";
-        textColor = "text-red-600 dark:text-red-400";
-        badgeColor = "bg-red-200/70 text-red-700 dark:bg-red-900/50 dark:text-red-300";
-      } else {
-        bgColor = "bg-emerald-50/60 border-emerald-200/50 dark:bg-emerald-950/20 dark:border-emerald-900/30";
-        textColor = "text-emerald-600 dark:text-emerald-400";
-        badgeColor = "bg-emerald-200/70 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300";
-      }
-
       items.push({
         id: `v1-${sig.stock_code}-${sig.signal_type}-${sig.time}`,
         source: "v1",
@@ -271,47 +289,40 @@ export function UnifiedSignalFeed({
         detail: sig.detail,
         urgency: sig.is_red ? 85 : isBuy ? 80 : 70,
         is_red: sig.is_red,
-        bgColor, textColor, badgeColor,
+        ...BUCKET_STYLE[sig.is_red ? "risk" : "buy"],
         price: sig.price,
       });
     }
 
-    // 2. V2 Scorer
+    // 2. V2 量价
+    //    [2026-06-15] 经安慰剂对照回测：买入吸收/放量下跌作为"看跌"预警均反向(劣于随机同日入场)。
+    //    两者均降级为中性"观察"项——不报红、低优先级、不参与交易决策(方向待更多数据)。
+    //    仅"拉升"保留为机会提醒。详见 scripts/analysis/warning_signal_backtest_report.md
     for (const alert of vpAlerts) {
-      const isAbsorption = alert.alert_type === "absorption";
-      const isDump = alert.alert_type === "dump";
-      const isHigh = alert.severity === "high";
-
-      let emoji: string, label: string, bgColor: string, textColor: string, badgeColor: string;
-
-      if (isAbsorption) {
-        emoji = isHigh ? "🚨" : "⚠️";
-        label = "买入吸收";
-        bgColor = isHigh
-          ? "bg-red-50/80 border-red-200/60 dark:bg-red-950/20 dark:border-red-800/40"
-          : "bg-orange-50/80 border-orange-200/60 dark:bg-orange-950/20 dark:border-orange-800/40";
-        textColor = isHigh ? "text-red-600 dark:text-red-400" : "text-orange-600 dark:text-orange-400";
-        badgeColor = isHigh ? "bg-red-200/80 text-red-700" : "bg-orange-200/80 text-orange-700";
-      } else if (isDump) {
-        emoji = "💥";
-        label = "放量下跌";
-        bgColor = "bg-purple-50/80 border-purple-200/60 dark:bg-purple-950/20 dark:border-purple-800/40";
-        textColor = "text-purple-600 dark:text-purple-400";
-        badgeColor = "bg-purple-200/80 text-purple-700";
-      } else {
-        const pos = alert.position;
-        emoji = pos === "low" ? "🚀" : pos === "high" ? "⚡" : "📈";
-        label = pos === "low" ? "低位拉升" : pos === "high" ? "高位拉升" : "拉升";
-        bgColor = pos === "low"
-          ? "bg-emerald-50/80 border-emerald-200/60 dark:bg-emerald-950/20 dark:border-emerald-800/40"
-          : "bg-blue-50/80 border-blue-200/60 dark:bg-blue-950/20 dark:border-blue-800/40";
-        textColor = pos === "low"
-          ? "text-emerald-600 dark:text-emerald-400"
-          : "text-blue-600 dark:text-blue-400";
-        badgeColor = pos === "low"
-          ? "bg-emerald-200/80 text-emerald-700"
-          : "bg-blue-200/80 text-blue-700";
+      // 买入吸收 / 放量下跌：中性观察项（已去掉"出货/继续看跌"判定）
+      if (alert.alert_type === "absorption" || alert.alert_type === "dump") {
+        const isDump = alert.alert_type === "dump";
+        items.push({
+          id: `v2-${alert.stock_code}-${alert.alert_type}-${alert.start_time}`,
+          source: "v2",
+          time: alert.end_time,
+          stock_code: alert.stock_code,
+          stock_name: alert.stock_name,
+          emoji: "👀",
+          label: isDump ? "放量下跌·观察" : "买入吸收·观察",
+          detail: `${alert.start_time}~${alert.end_time} ${alert.duration_min}分钟 ${isDump ? "净卖价跌" : "持续主买价格未涨"} (${alert.price_change_pct >= 0 ? "+" : ""}${alert.price_change_pct.toFixed(2)}%)`,
+          urgency: 40,
+          is_red: false,
+          ...BUCKET_STYLE.watch,
+          pricePct: alert.price_change_pct,
+        });
+        continue;
       }
+
+      // 拉升：低位拉升=买入机会(绿)，高位/中位=仅参考观察(灰，警惕追高)
+      const pos = alert.position;
+      const emoji = pos === "low" ? "🚀" : pos === "high" ? "⚡" : "📈";
+      const label = pos === "low" ? "低位拉升" : pos === "high" ? "高位拉升" : "拉升";
 
       items.push({
         id: `v2-${alert.stock_code}-${alert.alert_type}-${alert.start_time}`,
@@ -321,9 +332,9 @@ export function UnifiedSignalFeed({
         stock_name: alert.stock_name,
         emoji, label,
         detail: `${alert.start_time}~${alert.end_time} ${alert.duration_min}分钟 ${alert.price_change_pct >= 0 ? "+" : ""}${alert.price_change_pct.toFixed(2)}%`,
-        urgency: isAbsorption ? (isHigh ? 88 : 65) : isDump ? 82 : 60,
-        is_red: isAbsorption || isDump,
-        bgColor, textColor, badgeColor,
+        urgency: 60,
+        is_red: false,
+        ...BUCKET_STYLE[pos === "low" ? "buy" : "watch"],
         pricePct: alert.price_change_pct,
       });
     }
@@ -331,6 +342,8 @@ export function UnifiedSignalFeed({
     // 3. 动量引擎
     for (const sig of momentumSignals) {
       const isBuy = sig.signal_type.includes("BUY");
+      const isSell = sig.signal_type.includes("SELL");
+      const bucket: SignalBucket = isBuy ? "buy" : isSell ? "risk" : "watch";
       const timeStr = sig.timestamp
         ? new Date(sig.timestamp * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
         : new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
@@ -342,15 +355,11 @@ export function UnifiedSignalFeed({
         stock_code: sig.stock_code,
         stock_name: sig.stock_code,
         emoji: "⚡",
-        label: sig.signal_type,
+        label: MOMENTUM_LABELS[sig.signal_type] || sig.signal_type,
         detail: sig.description,
-        urgency: sig.priority === "HIGH" ? 85 : 65,
-        is_red: !isBuy,
-        bgColor: isBuy
-          ? "bg-cyan-50/60 border-cyan-200/50 dark:bg-cyan-950/20 dark:border-cyan-900/30"
-          : "bg-rose-50/40 border-rose-200/40 dark:bg-rose-950/20 dark:border-rose-900/30",
-        textColor: isBuy ? "text-cyan-600 dark:text-cyan-400" : "text-rose-600 dark:text-rose-400",
-        badgeColor: isBuy ? "bg-cyan-200/70 text-cyan-700" : "bg-rose-200/70 text-rose-700",
+        urgency: bucket === "watch" ? 45 : sig.priority === "HIGH" ? 85 : 65,
+        is_red: bucket === "risk",
+        ...BUCKET_STYLE[bucket],
         price: sig.price,
       });
     }
@@ -373,15 +382,7 @@ export function UnifiedSignalFeed({
         detail: rec.final_reason,
         urgency: isBroadcast ? 55 : 50,
         is_red: !isBuy,
-        bgColor: isBuy
-          ? "bg-emerald-50/60 border-emerald-200/50 dark:bg-emerald-950/20 dark:border-emerald-900/30"
-          : "bg-red-50/40 border-red-200/40 dark:bg-red-950/20 dark:border-red-900/30",
-        textColor: isBuy
-          ? "text-emerald-600 dark:text-emerald-400"
-          : "text-red-600 dark:text-red-400",
-        badgeColor: isBuy
-          ? "bg-emerald-200/70 text-emerald-700"
-          : "bg-red-200/70 text-red-700",
+        ...BUCKET_STYLE[isBuy ? "buy" : "risk"],
         multi_dimensional_summary: rec.multi_dimensional_summary
       });
     }

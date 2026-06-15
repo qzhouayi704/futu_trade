@@ -1074,12 +1074,14 @@ export default function MarketScanPanel() {
                                 })()}
                                 {/* ③ 经纪商 */}
                                 {(() => {
+                                  // [2026-06-15] 席位"出货陷阱"检测回测劣于随机、已不参与交易决策，
+                                  // 此处降级为中性"仅参考"展示，不再红色告警。
                                   const s = screeningData[stock.code]?.stages?.broker;
                                   return (
-                                    <div className={`rounded-lg border p-2 ${s?.is_trap ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
-                                      <div className="text-[10px] text-gray-500">③ 经纪商检测</div>
-                                      <div className={`text-sm font-bold ${s?.is_trap ? 'text-red-700' : 'text-emerald-700'}`}>
-                                        {s?.is_trap ? '⚠ 出货陷阱' : '✓ 正常'}
+                                    <div className={`rounded-lg border p-2 ${s?.is_trap ? 'bg-slate-50 border-slate-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                                      <div className="text-[10px] text-gray-500">③ 席位检测 <span className="text-[8px] text-slate-400">仅参考</span></div>
+                                      <div className={`text-sm font-bold ${s?.is_trap ? 'text-slate-600' : 'text-emerald-700'}`}>
+                                        {s?.is_trap ? '席位偏空·参考' : '✓ 正常'}
                                       </div>
                                       <div className="text-[10px] text-gray-500">置信度: {(s?.confidence ?? 0).toFixed(0)}%</div>
                                     </div>

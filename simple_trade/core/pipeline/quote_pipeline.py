@@ -419,10 +419,11 @@ class QuotePipeline:
                     signal_type = 'BUY'
                     reason = f"{emoji} 量价齐升: {alert['message']}"
                 else:
-                    # 吸收 → 风险预警
-                    emoji = '🚨' if alert['severity'] == 'high' else '⚠️'
+                    # [2026-06-15] 买入吸收/放量下跌降级为中性观察：去掉🚨看跌措辞，
+                    # 但保留 ALERT 类型(→ signal_pipeline direction=WARN)持续落库，供数日后复跑回测。
+                    emoji = '👀'
                     signal_type = 'ALERT'
-                    reason = f"{emoji} 买入吸收预警: {alert['message']}"
+                    reason = f"{emoji} 量价观察: {alert['message']}"
 
                 actions.append({
                     'stock_code': alert['stock_code'],

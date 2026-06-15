@@ -321,33 +321,28 @@ function FlowMomentumBadge({ summary }: { summary: FlowSummary | null }) {
 function AbsorptionWarningBanner({ absorption }: { absorption: AbsorptionAlert | null | undefined }) {
   if (!absorption || !absorption.detected) return null;
 
-  const isHigh = absorption.severity === 'high';
-  const bgColor = isHigh ? 'bg-red-50' : 'bg-orange-50';
-  const borderColor = isHigh ? 'border-red-300' : 'border-orange-300';
-  const textColor = isHigh ? 'text-red-800' : 'text-orange-800';
-  const subTextColor = isHigh ? 'text-red-600' : 'text-orange-600';
-
+  // [2026-06-15] 买入吸收降级为中性观察：安慰剂对照回测显示其作为"出货/看跌"预警反向
+  // (报警后股价多数上涨, 较随机 -20pp)，故去掉看跌结论与红色高危样式，仅作中性形态提示。
+  // 详见 scripts/analysis/warning_signal_backtest_report.md
   return (
-    <div className={`${bgColor} ${borderColor} border rounded-lg px-3 py-2.5 transition-all`}>
+    <div className="bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2.5 transition-all">
       <div className="flex items-center gap-2">
-        <span className="text-base animate-pulse">{isHigh ? '🚨' : '⚠️'}</span>
+        <span className="text-base">👀</span>
         <div className="flex-1">
-          <div className={`text-xs font-bold ${textColor} flex items-center gap-2`}>
-            <span>买入吸收预警</span>
-            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${
-              isHigh ? 'bg-red-200 text-red-700' : 'bg-orange-200 text-orange-700'
-            }`}>
-              {isHigh ? '高危' : '注意'}
+          <div className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-2">
+            <span>买入吸收·观察</span>
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+              仅参考
             </span>
           </div>
-          <div className={`text-[11px] ${subTextColor} mt-0.5`}>
+          <div className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
             {absorption.start_time}~{absorption.end_time} 连续{absorption.duration_min}分钟主买，
             净买入{absorption.cum_net_buy > 0 ? '+' : ''}{absorption.cum_net_buy.toFixed(0)}万，
-            但股价{absorption.price_change_pct < -0.05 ? '反跌' : '持平'}
+            但股价{absorption.price_change_pct < -0.05 ? '微跌' : '持平'}
             {absorption.price_change_pct < -0.05 ? `${absorption.price_change_pct.toFixed(2)}%` : ''}
           </div>
           <div className="text-[10px] text-gray-500 mt-0.5">
-            💡 大量隐性卖单正在吸收买盘，价格被压制，需警惕主力出货
+            💡 持续主买但价格未涨，方向待观察（回测显示此形态不宜单独当作出货/看跌依据）
           </div>
         </div>
       </div>

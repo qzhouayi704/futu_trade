@@ -575,18 +575,11 @@ class UnifiedTradeDecisionEngine:
                 if veto:
                     return {'passed': False, 'reason': f"[否决] {veto}"}
 
-            # 4. 出货陷阱检测
-            try:
-                from ...services.analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
-                bf = BrokerConsistencyFilter(self.container.futu_client)
-                trap_result = bf.check_distribution_trap(stock_code, change_pct=0)
-                if trap_result.is_trap:
-                    return {
-                        'passed': False,
-                        'reason': f"[出货陷阱] 置信度{trap_result.trap_confidence:.0%}: {trap_result.reason}"
-                    }
-            except Exception as e:
-                logger.debug(f"[DecisionEngine] 出货陷阱检测异常(放行): {e}")
+            # 4. 出货陷阱检测 — [2026-06-15 移除硬阻断]
+            #    安慰剂对照回测显示该检测劣于随机：distribution_trap 报警后 EOD 命中率较
+            #    "随机同日入场" 低 8.5pp、次日低 7.6pp(n=3592)，在此硬阻断买入实为负贡献。
+            #    检测仍保留在诊断链路(_explain，约1025行)与 AI 分析中仅作展示参考。
+            #    详见 scripts/analysis/warning_signal_backtest_report.md
 
             return {'passed': True, 'reason': ''}
 

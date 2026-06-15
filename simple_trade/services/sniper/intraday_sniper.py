@@ -260,33 +260,13 @@ class IntradaySniper:
                             (timeline[-1]['price'] - timeline[0]['price']) / timeline[0]['price'] * 100, 2
                         )
 
-                    broker_checked = False  # 标记：避免下方独立检测重复调用
+                    # [2026-06-15] mega_buy 席位交叉验证已移除：安慰剂对照回测显示
+                    # broker_trap(席位警示) 相对随机仅 +1pp(无边际)、accumulation(席位确认) 仅 +5pp(弱)，
+                    # 仅徒增信号噪音与前端复杂度，不参与交易决策。
+                    # 详见 scripts/analysis/warning_signal_backtest_report.md
                     for sig in signals:
                         if sig.signal_type == 'mega_buy':
-                            broker_acc_conf = 0.0
-                            broker_trap_conf = 0.0
-                            try:
-                                from ..analysis.flow.broker_consistency_filter import BrokerConsistencyFilter
-                                bf = BrokerConsistencyFilter(self.container.futu_client)
-                                trap_res = bf.check_distribution_trap(stock_code, change_pct=change_pct)
-                                acc_res = bf.check_accumulation_signal(stock_code, change_pct=change_pct)
-                                broker_checked = True
-
-                                if trap_res.is_trap:
-                                    sig.detail += f" (⚠️席位警示: 存在出货迹象, 置信度{trap_res.trap_confidence:.0%})"
-                                    sig.severity = "medium"
-                                    broker_trap_conf = trap_res.trap_confidence
-                                elif acc_res.is_trap:
-                                    sig.detail += f" (🔥席位确认: 机构吸筹中, 置信度{acc_res.trap_confidence:.0%})"
-                                    sig.severity = "high"
-                                    broker_acc_conf = acc_res.trap_confidence
-                                else:
-                                    sig.detail += " (⚠️席位确认: 散户/未知席位主导，警惕拉高出货)"
-                                    sig.severity = "medium"
-                            except Exception as e:
-                                logger.debug(f"验证mega_buy席位失败: {e}")
-
-                            # 计算强度评分
+                            # 计算强度评分（席位维度固定为0，不再参与评分）
                             try:
                                 # 从 detail 提取倍数 (格式: "日均X倍")
                                 import re
@@ -295,8 +275,8 @@ class IntradaySniper:
 
                                 strength, label, ctx = self._calc_mega_buy_strength(
                                     stock_code, sig_mult, timeline,
-                                    broker_acc_confidence=broker_acc_conf,
-                                    broker_trap_confidence=broker_trap_conf,
+                                    broker_acc_confidence=0.0,
+                                    broker_trap_confidence=0.0,
                                     change_pct=change_pct,
                                 )
                                 sig.strength = strength
@@ -315,10 +295,9 @@ class IntradaySniper:
 
                     new_signals.extend(signals)
 
-                    # [DISABLED 2026-06-12] 经纪商偏向独立检测已禁用
-                    # 回测结果: distribution_trap 63.3%, accumulation_signal 42.3% (不如随机)
-                    # 每日4000+条信号且158只冲突, 信噪比过低无实际交易价值
-                    # 保留 mega_buy 的席位交叉验证(上方第264-314行)作为辅助参考
+                    # [DISABLED 2026-06-12] 经纪商偏向独立检测已禁用 (distribution_trap/accumulation_signal)
+                    # [2026-06-15] 进一步移除 mega_buy 席位交叉验证标签：安慰剂对照回测确认其无边际
+                    # 每日4000+条信号且信噪比过低, 无实际交易价值。详见 scripts/analysis/warning_signal_backtest_report.md
 
                 # 先更新 TOP 排行榜（用于过滤信号）
                 self._update_ranking(conn, watch_codes, today)

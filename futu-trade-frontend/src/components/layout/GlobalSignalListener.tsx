@@ -30,9 +30,13 @@ export function GlobalSignalListener() {
         title = "🚨 自动防守触发";
         type = "error";
       } else if (sigType === "ALERT" || sigType === "DANGER") {
-        // 吸收预警 / 风险警告
-        const isAbsorption = reason.includes("吸收") || reason.includes("压单");
-        title = isAbsorption ? "⚠️ 买入吸收预警" : "⚠️ 风险警告";
+        // [2026-06-15] 量价观察(买入吸收/放量下跌)已降级为中性参考项(回测显示反向)，
+        // 不再弹 Toast 打扰，仅在信号流中以灰色观察项展示；其余风险类 ALERT 仍提示。
+        if (reason.includes("量价观察") || reason.includes("吸收") ||
+            reason.includes("压单") || reason.includes("放量下跌")) {
+          return;
+        }
+        title = "⚠️ 风险警告";
         type = "warning";
       } else if (sigType === "BUY") {
         // 拉升提醒 / 买入机会
