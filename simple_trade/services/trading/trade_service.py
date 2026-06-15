@@ -154,6 +154,21 @@ class TradeService:
             'change_percent': chg_pct, 'volume': vol
         }
 
+        if not self.strategy_dispatcher:
+            conditions_data[code] = {
+                'stock_code': code,
+                'stock_name': name,
+                'plate_name': plate,
+                'strategy_name': 'StrategyDispatcher',
+                'condition_passed': False,
+                'reason': (
+                    'Legacy StrategyDispatcher is disabled. '
+                    'Use StockScorer V2 signal pipeline instead.'
+                ),
+                'details': [],
+            }
+            return
+
         condition_results = self.strategy_dispatcher.dispatch_conditions(enhanced_stock)
         for cr in condition_results:
             conditions_data.setdefault(code, {})

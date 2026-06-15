@@ -9,6 +9,7 @@
 
 import logging
 import asyncio
+import os
 from datetime import datetime
 from typing import List, Dict, Tuple
 from ...utils.logger import get_flow_logger
@@ -69,6 +70,8 @@ class QuotePipeline:
         self._loop_count = 0
         self.signal_tracker = None
         self._signal_arbitrator = SignalArbitrator()
+        self.legacy_strategy_detection_enabled = self._legacy_strategy_detection_enabled(container)
+        self._legacy_strategy_skipped_logged = False
         # 异步任务引用（防止 GC 回收和异常丢失）
         self._pending_tasks: set = set()
 
@@ -86,6 +89,17 @@ class QuotePipeline:
             )
 
         self._init_signal_tracker()
+
+    @staticmethod
+    def _legacy_strategy_detection_enabled(container) -> bool:
+        """Return whether the legacy BaseStrategy detector may run."""
+        raw = os.getenv("ENABLE_LEGACY_STRATEGY")
+        if raw is None:
+            config = getattr(container, "config", None)
+            raw = getattr(config, "enable_legacy_strategy", False) if config else False
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
     async def run_quote_cycle(self) -> List[Dict]:
         """报价获取周期 - 系统启动即运行，不依赖监控
@@ -516,6 +530,16 @@ class QuotePipeline:
     async def _run_multi_strategy_detection(self, quotes: List[Dict]):
         """执行多策略并行信号检测，将分组信号存储到 state"""
         if not self.strategy_monitor:
+            return
+        if not self.legacy_strategy_detection_enabled:
+            if hasattr(self.state_manager, 'set_signals_by_strategy'):
+                self.state_manager.set_signals_by_strategy({})
+            if not self._legacy_strategy_skipped_logged:
+                logging.info(
+                    "Legacy BaseStrategy detection disabled; "
+                    "set ENABLE_LEGACY_STRATEGY=true to re-enable temporarily"
+                )
+                self._legacy_strategy_skipped_logged = True
             return
         try:
             kline_data = self.state_manager.get_kline_cache() if hasattr(

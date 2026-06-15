@@ -210,6 +210,9 @@ class UnifiedDataCache:
             return None
         try:
             with self._db_manager.get_connection() as conn:
+                # L2 is an opaque cache layer only. Domain data such as quotes,
+                # subscriptions and trade signals must continue to use their
+                # dedicated tables so cache eviction cannot lose business state.
                 cursor = conn.execute(
                     "SELECT value, expire_at FROM cache_entries WHERE key=?", (key,)
                 )
@@ -230,6 +233,8 @@ class UnifiedDataCache:
         if not self._db_manager:
             return
         try:
+            # Keep cache payloads compressed and schema-free; callers should not
+            # query cache_entries directly for business semantics.
             blob = zlib.compress(pickle.dumps(data))
             now = int(time.time())
             with self._db_manager.get_connection() as conn:

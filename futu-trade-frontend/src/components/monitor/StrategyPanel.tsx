@@ -190,7 +190,7 @@ function StrategyMiniCard({ s }: { s: StrategyInfo }) {
 }
 
 export function StrategyPanel() {
-  const activeCount = STRATEGIES.filter((s) => s.status === "active").length;
+  const modelCount = STRATEGIES.length;
 
   return (
     <Card>
@@ -200,17 +200,17 @@ export function StrategyPanel() {
             <svg className="w-5 h-5 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
             </svg>
-            策略面板
+            V2评分模型
           </h3>
           <div className="flex items-center gap-3">
             <span className="text-xs text-gray-500 dark:text-gray-400">
-              {activeCount} 个运行中
+              {modelCount} 个评分模型
             </span>
             <Link
               href="/strategies"
               className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
             >
-              详情 →
+              策略说明 →
             </Link>
           </div>
         </div>

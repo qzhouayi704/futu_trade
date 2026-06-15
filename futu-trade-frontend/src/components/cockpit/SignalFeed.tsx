@@ -4,11 +4,13 @@
 
 import { useState } from "react";
 import { UnifiedSignalFeed } from "@/app/components/dashboard/UnifiedSignalFeed";
+import type { PipelineRecord } from "@/lib/hooks/useSignalPipeline";
 
 type FilterType = "all" | "v1" | "v2" | "momentum";
 
 interface SignalFeedProps {
   positionStockCodes: string[];
+  pipelineRecords?: PipelineRecord[];
   onSelectStock?: (code: string) => void;
 }
 
@@ -19,7 +21,7 @@ const FILTERS: { key: FilterType; label: string; emoji: string }[] = [
   { key: "momentum", label: "动量引擎", emoji: "⚡" },
 ];
 
-export function SignalFeed({ positionStockCodes, onSelectStock }: SignalFeedProps) {
+export function SignalFeed({ positionStockCodes, pipelineRecords, onSelectStock }: SignalFeedProps) {
   const [filter, setFilter] = useState<FilterType>("all");
 
   return (
@@ -46,6 +48,7 @@ export function SignalFeed({ positionStockCodes, onSelectStock }: SignalFeedProp
         positionStockCodes={positionStockCodes}
         maxItems={30}
         sourceFilter={filter}
+        pipelineRecords={pipelineRecords}
         onSelectStock={onSelectStock}
       />
     </div>

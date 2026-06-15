@@ -10,6 +10,7 @@ import { useToast } from "@/components/common/Toast";
 import { MonitorStartModal, StrategyPanel } from "@/components/monitor";
 import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel, MultiSignalDashboard } from "@/components/cockpit";
 import { usePositions } from "./hooks/useDashboard";
+import { useSignalPipeline } from "@/lib/hooks/useSignalPipeline";
 import type { QuoteData } from "@/types/socket";
 
 export default function CockpitPage() {
@@ -18,6 +19,11 @@ export default function CockpitPage() {
 
   // 持仓数据
   const { data: positions = [], isLoading: positionsLoading, refetch: refetchPositions } = usePositions();
+  const { records: pipelineRecords } = useSignalPipeline({
+    limit: 50,
+    includeRejected: true,
+    pollMs: 30000,
+  });
 
   // 实时价格
   const [realtimePrices, setRealtimePrices] = useState<Record<string, number>>({});
@@ -128,6 +134,7 @@ export default function CockpitPage() {
         <div className="xl:col-span-3">
           <SignalFeed
             positionStockCodes={positionStockCodes}
+            pipelineRecords={pipelineRecords}
             onSelectStock={setSelectedStockCode}
           />
         </div>
@@ -143,7 +150,7 @@ export default function CockpitPage() {
       </div>
 
       {/* ═══ 底部：决策日志 ═══ */}
-      <DecisionLog />
+      <DecisionLog records={pipelineRecords} />
 
       {/* ═══ 多维信号驾驶舱 Modal ═══ */}
       {selectedStockCode && (

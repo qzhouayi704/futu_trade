@@ -10,7 +10,7 @@ A3 重构：
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from ...services import (
     FutuTradeService,
@@ -31,8 +31,6 @@ from ...services.trading.risk.dynamic_stop_loss import (
     DynamicStopLossConfig,
 )
 from ...services.trading.profit.intraday_profit_taker import IntradayProfitTaker
-from ...strategy.strategy_registry import StrategyRegistry, auto_discover_strategies
-from ..coordination.strategy_dispatcher import StrategyDispatcher
 from .core_services import CoreServices
 from .data_services import DataServices
 
@@ -57,9 +55,9 @@ class BusinessServices:
         self.dynamic_stop_loss_strategy: Optional[DynamicStopLossStrategy] = None
         self.signal_tracker = None
 
-        # 策略相关（即时）
-        self.strategy_registry: Optional[StrategyRegistry] = None
-        self.strategy_dispatcher: Optional[StrategyDispatcher] = None
+        # Legacy BaseStrategy dispatcher. Current production scoring is StockScorer V2.
+        self.strategy_registry: Optional[Any] = None
+        self.strategy_dispatcher: Optional[Any] = None
 
         # ===== 非核心服务（懒加载，_xxx 前缀存储） =====
         self._hot_stock_service = None
@@ -98,26 +96,12 @@ class BusinessServices:
         """初始化业务服务（仅核心服务即时创建）"""
         logging.info("开始初始化业务服务...")
 
-        # 1. 策略注册表（自动发现，无需传参）
-        auto_discover_strategies()
-        logging.info(f"策略注册表初始化完成")
-
-        # 2. 策略调度器
-        self.strategy_dispatcher = StrategyDispatcher()
-
-        # 将 StrategyRegistry 中已发现的策略实例化并注册到调度器
-        # 跳过需要手动启用的策略（如 price_position_live 需要外部注入才能工作）
-        _skip_auto_register = {'price_position_live'}
-        for strategy_name in StrategyRegistry.get_strategy_names():
-            if strategy_name in _skip_auto_register:
-                logging.info(f"策略 {strategy_name} 跳过自动注册（需手动启用）")
-                continue
-            instance = StrategyRegistry.create_instance(
-                strategy_name, data_service=self.core.stock_data_service
-            )
-            if instance:
-                self.strategy_dispatcher.register(instance)
-        logging.info(f"策略调度器初始化完成，已注册 {self.strategy_dispatcher.count} 个策略")
+        # 1-2. StrategyDispatcher is a legacy BaseStrategy path. The live system now
+        # uses StockScorer V2 (TREND/BREAKOUT/MOMENTUM) via the quote/sniper/momentum
+        # pipeline, so old strategies are not auto-discovered or registered at startup.
+        self.strategy_registry = None
+        self.strategy_dispatcher = None
+        logging.info("Legacy StrategyDispatcher disabled; using StockScorer V2 strategy pipeline")
 
         # 3. 告警服务
         self.alert_service = AlertChecker(
@@ -571,4 +555,3 @@ class BusinessServices:
             except Exception as e:
                 logging.warning(f"统一交易决策引擎初始化失败: {e}")
         return self._trade_decision_engine
-

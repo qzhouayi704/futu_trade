@@ -46,12 +46,47 @@ class BusinessTables:
     '''
 
     # 系统配置表
+    # 决策流水线表：记录信号从产生到最终动作的完整过程。
+    SIGNAL_PIPELINE_TABLE = '''
+        CREATE TABLE IF NOT EXISTS signal_pipeline (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            stock_name TEXT,
+            source TEXT,
+            direction TEXT,
+            strength REAL,
+            resonance_result TEXT,
+            guard_result TEXT,
+            final_action TEXT,
+            final_reason TEXT,
+            raw_detail TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''
+
+    SIGNAL_PIPELINE_INDEXES = [
+        'CREATE INDEX IF NOT EXISTS idx_signal_pipeline_date ON signal_pipeline(trade_date)',
+        'CREATE INDEX IF NOT EXISTS idx_signal_pipeline_code ON signal_pipeline(stock_code, trade_date)',
+    ]
+
     SYSTEM_CONFIG_TABLE = '''
         CREATE TABLE IF NOT EXISTS system_config (
             key VARCHAR(50) PRIMARY KEY,
             value TEXT,
             description TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''
+
+    # 订阅快照表 - 用于 OpenD 重连后按优先级恢复订阅
+    SUBSCRIPTION_SNAPSHOT_TABLE = '''
+        CREATE TABLE IF NOT EXISTS subscription_snapshot (
+            type TEXT PRIMARY KEY,
+            codes TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     '''
 

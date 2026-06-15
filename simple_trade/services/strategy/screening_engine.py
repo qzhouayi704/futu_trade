@@ -58,7 +58,7 @@ class ScreeningEngine:
     def __init__(
         self,
         db_manager: DatabaseManager,
-        strategy_dispatcher: StrategyDispatcher,
+        strategy_dispatcher: Optional[StrategyDispatcher],
         stop_loss_params: StopLossParams = None,
     ):
         self.db_manager = db_manager
@@ -99,8 +99,12 @@ class ScreeningEngine:
             quote.get('plate_name', '')
         )
 
-        # 通过调度器执行所有已注册策略
-        condition_results = self.strategy_dispatcher.dispatch_conditions(stock_data)
+        # StrategyDispatcher is legacy; when disabled, only keep position stop-loss checks.
+        condition_results = (
+            self.strategy_dispatcher.dispatch_conditions(stock_data)
+            if self.strategy_dispatcher
+            else []
+        )
 
         # 合并多策略结果：取最强信号
         signal_type, signal_reason, strategy_name, strategy_data = (

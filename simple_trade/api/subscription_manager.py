@@ -413,16 +413,25 @@ class SubscriptionManager:
                 CREATE TABLE IF NOT EXISTS subscription_snapshot (
                     type TEXT PRIMARY KEY,
                     codes TEXT,
-                    updated_at INTEGER
+                    updated_at INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             import json
-            codes_json = json.dumps(list(self._subscribed_stocks))
-            conn.execute(
-                "INSERT OR REPLACE INTO subscription_snapshot (type, codes, updated_at) "
-                "VALUES (?, ?, ?)",
-                ('QUOTE', codes_json, int(time.time()))
-            )
+            now = int(time.time())
+            snapshots = {
+                'QUOTE': self._quote_subscribed,
+                'TICKER': self._ticker_subscribed,
+                'ORDER_BOOK': self._orderbook_subscribed,
+                'RT_DATA': self._rt_data_subscribed,
+            }
+            for sub_type, codes in snapshots.items():
+                codes_json = json.dumps(list(codes))
+                conn.execute(
+                    "INSERT OR REPLACE INTO subscription_snapshot (type, codes, updated_at) "
+                    "VALUES (?, ?, ?)",
+                    (sub_type, codes_json, now)
+                )
             conn.commit()
             self.logger.debug(f"订阅快照已保存: {len(self._subscribed_stocks)} 只")
         except Exception as e:

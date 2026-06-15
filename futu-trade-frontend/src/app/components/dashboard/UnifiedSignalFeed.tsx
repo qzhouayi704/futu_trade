@@ -43,7 +43,7 @@ interface VolumePriceAlert {
 }
 
 interface PipelineRecord {
-  id: number;
+  id?: number;
   timestamp: string;
   stock_code: string;
   stock_name: string;
@@ -113,19 +113,28 @@ interface UnifiedSignalFeedProps {
   positionStockCodes?: string[];   // 持仓股票代码列表（用于优先排序）
   maxItems?: number;
   sourceFilter?: "all" | "v1" | "v2" | "momentum" | "decision";  // 信号源筛选
+  pipelineRecords?: PipelineRecord[];
   onSelectStock?: (code: string) => void;
 }
 
-export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sourceFilter = "all", onSelectStock }: UnifiedSignalFeedProps) {
+export function UnifiedSignalFeed({
+  positionStockCodes = [],
+  maxItems = 20,
+  sourceFilter = "all",
+  pipelineRecords: externalPipelineRecords,
+  onSelectStock,
+}: UnifiedSignalFeedProps) {
   const { socket } = useSocket();
   const [sniperSignals, setSniperSignals] = useState<SniperSignal[]>([]);
   const [vpAlerts, setVpAlerts] = useState<VolumePriceAlert[]>([]);
-  const [pipelineRecords, setPipelineRecords] = useState<PipelineRecord[]>([]);
+  const [localPipelineRecords, setLocalPipelineRecords] = useState<PipelineRecord[]>([]);
   const [momentumSignals, setMomentumSignals] = useState<MomentumSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const positionSet = useMemo(() => new Set(positionStockCodes), [positionStockCodes]);
+  const hasExternalPipelineRecords = externalPipelineRecords !== undefined;
+  const pipelineRecords = externalPipelineRecords ?? localPipelineRecords;
 
   // ── 数据加载 ──────────────────────────────────
 
@@ -135,12 +144,14 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
       const [sigRes, vpRes, pipeRes, momRes]: any[] = await Promise.all([
         apiClient.get("/sniper/signals"),
         apiClient.get("/enhanced-heat/volume-price-alerts?source=all"),
-        apiClient.get("/sniper/signal-pipeline?limit=20"),
+        hasExternalPipelineRecords
+          ? Promise.resolve(null)
+          : apiClient.get("/sniper/signal-pipeline?limit=20"),
         apiClient.get("/signals/multi-dimensional/list?limit=15"),
       ]);
       if (sigRes.success && Array.isArray(sigRes.data)) setSniperSignals(sigRes.data);
       if (vpRes.success && Array.isArray(vpRes.data)) setVpAlerts(vpRes.data);
-      if (pipeRes.success && Array.isArray(pipeRes.data)) setPipelineRecords(pipeRes.data);
+      if (pipeRes?.success && Array.isArray(pipeRes.data)) setLocalPipelineRecords(pipeRes.data);
       
       // 解析多维列表中的动量信号作为初始动量数据
       if (momRes.success && momRes.data && Array.isArray(momRes.data.list)) {
@@ -167,7 +178,7 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [hasExternalPipelineRecords]);
 
   useEffect(() => {
     loadData();
@@ -195,7 +206,7 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
     };
 
     const handlePipeline = (data: PipelineRecord) => {
-      setPipelineRecords(prev => [data, ...prev].slice(0, 50));
+      setLocalPipelineRecords(prev => [data, ...prev].slice(0, 50));
       setLastUpdate(new Date());
     };
 
@@ -214,14 +225,18 @@ export function UnifiedSignalFeed({ positionStockCodes = [], maxItems = 20, sour
     };
 
     socket.on("sniper_signal", handleSniper);
-    socket.on("signal_pipeline", handlePipeline);
+    if (!hasExternalPipelineRecords) {
+      socket.on("signal_pipeline", handlePipeline);
+    }
     socket.on("momentum_signal", handleMomentum);
     return () => {
       socket.off("sniper_signal", handleSniper);
-      socket.off("signal_pipeline", handlePipeline);
+      if (!hasExternalPipelineRecords) {
+        socket.off("signal_pipeline", handlePipeline);
+      }
       socket.off("momentum_signal", handleMomentum);
     };
-  }, [socket]);
+  }, [hasExternalPipelineRecords, socket]);
 
   // ── 转换为统一信号格式 ──────────────────────────
 

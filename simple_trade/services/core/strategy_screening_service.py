@@ -42,16 +42,29 @@ class StrategyScreeningService:
         self.kline_service = kline_service  # K线服务，用于检查额度
         self.futu_trade_service = futu_trade_service  # 交易服务，用于获取实际持仓
 
-        # 创建子服务（使用 StrategyDispatcher 替代硬编码的 SwingStrategy）
+        # Legacy StrategyDispatcher screening is disabled when no dispatcher is supplied.
         self.strategy_dispatcher = strategy_dispatcher
-        self.engine = ScreeningEngine(db_manager, strategy_dispatcher)
+        self.engine = (
+            ScreeningEngine(db_manager, strategy_dispatcher)
+            if strategy_dispatcher
+            else None
+        )
         self.cache = ScreeningCache(db_manager, config, futu_trade_service)
 
         # 筛选模式状态
         self._screening_mode: str = 'normal'  # 'normal' 或 'cached_only'
         self._quota_insufficient: bool = False  # K线额度是否不足
 
-        logging.info("策略筛选服务初始化完成")
+        if self.engine:
+            logging.info("策略筛选服务初始化完成")
+        else:
+            logging.info("策略筛选服务初始化完成（Legacy StrategyDispatcher 已停用）")
+
+    def _required_kline_days(self) -> int:
+        """Return the legacy dispatcher kline requirement, or a safe default."""
+        if not self.strategy_dispatcher:
+            return 30
+        return self.strategy_dispatcher.get_max_required_kline_days()
 
     def set_kline_service(self, kline_service):
         """设置K线服务（用于后期注入）"""
@@ -119,7 +132,7 @@ class StrategyScreeningService:
         Returns:
             筛选后的报价列表
         """
-        required_days = self.strategy_dispatcher.get_max_required_kline_days()
+        required_days = self._required_kline_days()
         stocks_with_kline = self.cache.get_stocks_with_kline_data(required_days)
 
         if not stocks_with_kline:
@@ -152,6 +165,11 @@ class StrategyScreeningService:
         """
         results = []
         all_results = {}
+
+        if not self.engine:
+            logging.debug("Legacy strategy screening skipped because StrategyDispatcher is disabled")
+            self.cache.update_screening_results(all_results)
+            return results
 
         # 获取所有持仓信息（包含成本价）
         positions_dict = {}
@@ -270,7 +288,7 @@ class StrategyScreeningService:
         Returns:
             有K线数据的股票数量
         """
-        required_days = self.strategy_dispatcher.get_max_required_kline_days()
+        required_days = self._required_kline_days()
         return self.cache.refresh_kline_cache(required_days)
 
     def get_stock_screening_result(self, stock_code: str) -> Optional[ScreeningResult]:

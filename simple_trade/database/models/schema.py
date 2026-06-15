@@ -52,6 +52,9 @@ class DatabaseSchema(BaseTables, BusinessTables):
         'CREATE INDEX IF NOT EXISTS idx_signals_type ON trade_signals(signal_type)',
         'CREATE INDEX IF NOT EXISTS idx_signals_strategy ON trade_signals(strategy_id)',
 
+        # === 订阅快照表索引 ===
+        'CREATE INDEX IF NOT EXISTS idx_subscription_snapshot_updated ON subscription_snapshot(updated_at DESC)',
+
         # === 板块匹配日志索引 ===
         'CREATE INDEX IF NOT EXISTS idx_match_log_plate ON plate_match_log(plate_code)',
         'CREATE INDEX IF NOT EXISTS idx_match_log_matched ON plate_match_log(matched)',
@@ -142,7 +145,9 @@ class DatabaseSchema(BaseTables, BusinessTables):
             cls.KLINE_DATA_TABLE,
             cls.KLINE_5MIN_DATA_TABLE,
             cls.TRADE_SIGNALS_TABLE,
+            cls.SIGNAL_PIPELINE_TABLE,
             cls.SYSTEM_CONFIG_TABLE,
+            cls.SUBSCRIPTION_SNAPSHOT_TABLE,
             cls.PLATE_MATCH_LOG_TABLE,
             cls.TRADING_RECORDS_TABLE,
             cls.DAILY_ACTIVE_STOCKS_TABLE,
@@ -196,6 +201,8 @@ class DatabaseSchema(BaseTables, BusinessTables):
         # 添加盘中狙击索引
         if hasattr(cls, 'SNIPER_SIGNALS_INDEXES'):
             indexes.extend(cls.SNIPER_SIGNALS_INDEXES)
+        if hasattr(cls, 'SIGNAL_PIPELINE_INDEXES'):
+            indexes.extend(cls.SIGNAL_PIPELINE_INDEXES)
         return indexes
 
 
@@ -207,7 +214,9 @@ class TableNames:
     KLINE_DATA = "kline_data"
     KLINE_5MIN_DATA = "kline_5min_data"
     TRADE_SIGNALS = "trade_signals"
+    SIGNAL_PIPELINE = "signal_pipeline"
     SYSTEM_CONFIG = "system_config"
+    SUBSCRIPTION_SNAPSHOT = "subscription_snapshot"
     PLATE_MATCH_LOG = "plate_match_log"
     TRADING_RECORDS = "trading_records"
     DAILY_ACTIVE_STOCKS = "daily_active_stocks"

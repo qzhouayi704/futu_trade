@@ -5,6 +5,11 @@
 
 管理所有策略的注册、执行和信号汇总。
 所有服务中的策略执行逻辑统一委托给 StrategyDispatcher 调度。
+
+Legacy note (2026-06-14):
+当前实时主策略链路已迁移到 StockScorer V2（TREND/BREAKOUT/MOMENTUM）。
+StrategyDispatcher 只保留给历史 BaseStrategy/StrategyRegistry 代码追溯，不再由
+BusinessServices 启动注册，也不应作为新增策略入口。
 """
 
 import logging

@@ -35,7 +35,9 @@ class SubscriptionRecoveryHelper:
         """
         async with self._lock:
             if hasattr(self._subscription_manager, 'force_clear_subscriptions'):
-                self._subscription_manager.force_clear_subscriptions()
+                all_stocks = list(self._subscription_manager.subscribed_stocks)
+                if all_stocks:
+                    self._subscription_manager.force_clear_subscriptions(all_stocks)
             else:
                 # fallback: 手动清除内存状态
                 self._subscription_manager._subscribed_stocks.clear()
@@ -53,6 +55,9 @@ class SubscriptionRecoveryHelper:
         """
         async with self._lock:
             if hasattr(self._subscription_manager, 'restore_subscriptions_by_priority'):
+                # The manager owns the in-memory subscription sets and Futu calls.
+                # Persistent snapshots are intentionally read/written in manager
+                # code so recovery here stays a thin orchestration wrapper.
                 # P2-2: 使用分级恢复
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(
