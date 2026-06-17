@@ -13,6 +13,7 @@
 5. ScreeningEngine - 策略趋势止损                     urgency=5
 """
 
+import os
 import time
 import logging
 from dataclasses import dataclass, field
@@ -571,13 +572,51 @@ class RiskCoordinator:
                     ))
                     if action.action == 'SELL_ALL':
                         triggered_stocks.add(code)
-                    # 影子观察日志：SMART_POSITION 决策当前只记录不执行（未接执行环），
-                    # 便于上线前对照混合出场实际会怎么卖。
+                    # 影子观察日志：SMART_POSITION 决策默认只记录不执行。
                     self.logger.info(
                         f"【智能持仓·影子】{code} {action.action} "
                         f"{action.qty_to_sell}股 — {action.reason}"
                     )
+                    # 实盘执行：仅当 HYBRID_EXIT_LIVE 显式开启 且 该持仓为 hybrid profile 时真卖。
+                    # 与 HYBRID_EXIT_ENABLED(买入侧登记)两段开关配合: 仅登记=影子, 两者都开=实盘。
+                    if os.environ.get('HYBRID_EXIT_LIVE', '').lower() in ('1', 'true', 'yes'):
+                        self._execute_hybrid_sell(mgr, code, action, price)
 
         except Exception as e:
             self.logger.error(f"【风险协调】智能持仓检查异常: {e}", exc_info=True)
+
+    def _execute_hybrid_sell(self, mgr, code: str, action, price: float):
+        """实盘执行混合出场卖单(HYBRID_EXIT_LIVE 开启时)。
+
+        安全约束: 只对 hybrid profile 持仓下单; 港股 SELL_PARTIAL 向下取整到整手(100),
+        SELL_ALL 卖全部剩余(含可能的碎股); 市价单(price=0); 报单成功后回写 remaining。
+        任何异常都不向上抛(出场环不能因单只股票报错而中断)。
+        """
+        try:
+            pos = mgr.get_position(code)
+            if not pos or getattr(pos, 'exit_profile', 'standard') != 'hybrid':
+                return  # 非 hybrid 持仓不在本实盘通道处理
+            from ....dependencies import get_container
+            fts = getattr(get_container(), 'futu_trade_service', None)
+            if not fts or not fts.is_trade_ready():
+                self.logger.warning(f"【混合出场·实盘】{code} 交易服务未就绪, 跳过")
+                return
+            qty = int(action.qty_to_sell or 0)
+            if action.action == 'SELL_PARTIAL':
+                qty = (qty // 100) * 100  # 港股整手
+            if qty <= 0:
+                return
+            res = fts.order_manager.place_order(
+                stock_code=code, trade_type='SELL', price=0, quantity=qty,
+            )
+            if res.get('success'):
+                mgr.update_after_sell(code, qty)
+                self.logger.info(
+                    f"【混合出场·实盘】{code} 卖出{qty}股 "
+                    f"order={res.get('futu_order_id')} — {action.reason}"
+                )
+            else:
+                self.logger.warning(f"【混合出场·实盘】{code} 报单失败: {res.get('message')}")
+        except Exception as e:
+            self.logger.error(f"【混合出场·实盘】{code} 执行异常: {e}", exc_info=True)
 
