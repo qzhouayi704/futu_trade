@@ -22,6 +22,12 @@ interface SniperSignal {
   severity: string;
   strength?: number;
   strength_label?: string;
+  // 提醒分层(mega_buy): 持续抢筹次数 + 已涨幅
+  tier?: string;          // opportunity(机会·持续抢筹) / pulse(脉冲) / reference(追高·参考)
+  mode?: string;          // trend / spike / chase
+  buy_count?: number;     // 当日该股第几次 mega_buy
+  intraday_gain?: number; // 信号时当日已涨幅%
+  posture?: string;       // 配套出场动作
 }
 
 interface RankItem {
@@ -105,10 +111,13 @@ export function SniperCard() {
   }, [socket]);
 
   const hasRanking = ranking.opportunity.length > 0 || ranking.risk.length > 0;
-  // 首页只展示巨量抢筹/砸盘/出货陷阱/吸筹信号
+  // 提醒分层优先级: 机会(持续抢筹) > 其它 > 追高·参考
+  const tierRank = (s: SniperSignal) =>
+    s.tier === "opportunity" ? 0 : s.tier === "reference" ? 2 : 1;
+  // 首页只展示巨量抢筹/砸盘/出货陷阱/吸筹信号; 机会层置顶, 其余按时间
   const recent = [...signals]
     .filter((s) => ["mega_buy", "mega_sell", "distribution_trap", "accumulation_signal"].includes(s.signal_type))
-    .sort((a, b) => b.time.localeCompare(a.time))
+    .sort((a, b) => tierRank(a) - tierRank(b) || b.time.localeCompare(a.time))
     .slice(0, 6);
 
   return (
@@ -245,12 +254,33 @@ export function SniperCard() {
                               {sig.strength_label?.split(" ")[0]} {sig.strength}
                             </span>
                           )}
+                          {sig.signal_type === "mega_buy" && sig.tier && (
+                            <span className={`text-[9px] px-1 py-px rounded font-bold shrink-0 ${
+                              sig.tier === "opportunity" ? "bg-emerald-400/90 text-white" :
+                              sig.tier === "reference" ? "bg-gray-200/70 text-gray-500" :
+                              "bg-sky-200/70 text-sky-800"
+                            }`}>
+                              {sig.tier === "opportunity" ? `持续抢筹×${sig.buy_count ?? ""}` :
+                               sig.tier === "reference" ? "追高·参考" : "脉冲"}
+                            </span>
+                          )}
                         </div>
                         <span className="text-xs font-bold tabular-nums text-gray-600 shrink-0 ml-2">
                           {sig.price.toFixed(3)}
                         </span>
                       </div>
                       <div className={`text-[10px] ${textColor} opacity-70 mt-0.5 line-clamp-2`}>{sig.detail}</div>
+                      {sig.signal_type === "mega_buy" && sig.posture && (
+                        <div className="text-[10px] mt-0.5 font-medium text-gray-700 flex items-center gap-1">
+                          <span>📍</span>
+                          <span className="truncate">{sig.posture}</span>
+                          {sig.intraday_gain != null && (
+                            <span className="text-gray-400 shrink-0">
+                              · 已涨{sig.intraday_gain > 0 ? "+" : ""}{sig.intraday_gain}%
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
