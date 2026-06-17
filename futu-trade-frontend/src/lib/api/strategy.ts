@@ -58,6 +58,29 @@ export const strategyApi = {
     return apiClient.post("/strategy/active/preset", { preset_name: presetName });
   },
 
+  // 获取各策略真实效果统计（诚实记分牌：已实现收益口径）
+  getStrategyStats: async (
+    days = 30
+  ): Promise<
+    ApiResponse<{
+      stats: Array<{
+        strategy_id: string | null;
+        total_signals: number;
+        n_close: number;
+        realized_win_rate: number;
+        avg_close_1d: number;
+        avg_close_3d: number;
+        avg_close_5d: number;
+        avg_win: number;
+        avg_loss: number;
+        accuracy_1d: number;
+      }>;
+      days: number;
+    }>
+  > => {
+    return apiClient.get("/strategy/stats", { params: { days } });
+  },
+
   // 获取板块强势度排名
   getPlateStrength: async (): Promise<
     ApiResponse<{

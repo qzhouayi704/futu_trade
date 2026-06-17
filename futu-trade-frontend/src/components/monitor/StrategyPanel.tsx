@@ -2,9 +2,19 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/common";
 import Link from "next/link";
+import { strategyApi } from "@/lib/api/strategy";
+
+/* 实盘已实现统计(持有到收盘口径)；样本足够时覆盖静态回测胜率 */
+interface LiveStat {
+  strategy_id: string | null;
+  n_close: number;
+  realized_win_rate: number;
+  avg_close_1d: number;
+}
+const MIN_CLOSE_SAMPLES = 10; // 样本不足则回退到回测值，避免展示噪声
 
 /* ── 策略定义（与 /strategies 页面同步） ── */
 interface StrategyInfo {
@@ -62,10 +72,14 @@ const STRATEGIES: StrategyInfo[] = [
   },
 ];
 
-function StrategyMiniCard({ s }: { s: StrategyInfo }) {
+function StrategyMiniCard({ s, live }: { s: StrategyInfo; live?: LiveStat }) {
   const [expanded, setExpanded] = useState(false);
   const returnNum = parseFloat(s.avgReturn);
   const pfNum = parseFloat(s.profitFactor);
+  // 实盘样本足够时用已实现胜率覆盖静态回测值
+  const hasLive = !!live && live.n_close >= MIN_CLOSE_SAMPLES;
+  const winRateDisplay = hasLive ? `${live!.realized_win_rate.toFixed(1)}%` : s.winRate;
+  const winRateLabel = hasLive ? `胜率·实盘${live!.n_close}` : "胜率·回测";
 
   return (
     <div
@@ -108,10 +122,10 @@ function StrategyMiniCard({ s }: { s: StrategyInfo }) {
             <div className="text-[10px] text-gray-400">收益</div>
           </div>
           <div className="text-center">
-            <div className="text-sm font-bold text-gray-700 dark:text-gray-300 tabular-nums">
-              {s.winRate}
+            <div className={`text-sm font-bold tabular-nums ${hasLive ? "text-indigo-600 dark:text-indigo-400" : "text-gray-700 dark:text-gray-300"}`}>
+              {winRateDisplay}
             </div>
-            <div className="text-[10px] text-gray-400">胜率</div>
+            <div className="text-[10px] text-gray-400">{winRateLabel}</div>
           </div>
           <div className="text-center">
             <div
@@ -153,10 +167,10 @@ function StrategyMiniCard({ s }: { s: StrategyInfo }) {
               <div className="text-[10px] text-gray-400">笔均收益</div>
             </div>
             <div className="text-center bg-gray-50 dark:bg-gray-800 rounded-lg py-2">
-              <div className="text-base font-bold text-gray-700 dark:text-gray-300 tabular-nums">
-                {s.winRate}
+              <div className={`text-base font-bold tabular-nums ${hasLive ? "text-indigo-600 dark:text-indigo-400" : "text-gray-700 dark:text-gray-300"}`}>
+                {winRateDisplay}
               </div>
-              <div className="text-[10px] text-gray-400">胜率</div>
+              <div className="text-[10px] text-gray-400">{winRateLabel}</div>
             </div>
             <div className="text-center bg-gray-50 dark:bg-gray-800 rounded-lg py-2">
               <div
@@ -191,6 +205,25 @@ function StrategyMiniCard({ s }: { s: StrategyInfo }) {
 
 export function StrategyPanel() {
   const modelCount = STRATEGIES.length;
+  const [liveMap, setLiveMap] = useState<Record<string, LiveStat>>({});
+
+  useEffect(() => {
+    let alive = true;
+    strategyApi
+      .getStrategyStats(30)
+      .then((res) => {
+        if (!alive || !res?.success || !res.data) return;
+        const m: Record<string, LiveStat> = {};
+        for (const st of res.data.stats || []) {
+          if (st.strategy_id) m[st.strategy_id.toUpperCase()] = st;
+        }
+        setLiveMap(m);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   return (
     <Card>
@@ -217,7 +250,7 @@ export function StrategyPanel() {
 
         <div className="space-y-3">
           {STRATEGIES.map((s) => (
-            <StrategyMiniCard key={s.id} s={s} />
+            <StrategyMiniCard key={s.id} s={s} live={liveMap[s.name.toUpperCase()]} />
           ))}
         </div>
       </div>

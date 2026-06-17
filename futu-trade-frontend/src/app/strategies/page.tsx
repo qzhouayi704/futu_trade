@@ -213,7 +213,7 @@ function StrategyCard({ strategy, isExpanded, onToggle }: { strategy: Strategy; 
             </div>
             <div className="text-center">
               <div className="text-sm font-bold text-gray-700 dark:text-gray-300">{strategy.backtest.winRate}</div>
-              <div className="text-[10px] text-gray-400">胜率</div>
+              <div className="text-[10px] text-gray-400">胜率·回测</div>
             </div>
             <div className="text-center">
               <div className={`text-sm font-bold ${parseFloat(strategy.backtest.profitFactor) >= 1.0 ? 'text-indigo-600' : 'text-gray-400'}`}>{strategy.backtest.profitFactor}</div>
@@ -299,7 +299,7 @@ function StrategyCard({ strategy, isExpanded, onToggle }: { strategy: Strategy; 
                     </div>
                     <div className="text-center">
                       <div className="text-lg font-bold text-gray-700 dark:text-gray-300">{strategy.backtest.winRate}</div>
-                      <div className="text-[10px] text-gray-400">胜率</div>
+                      <div className="text-[10px] text-gray-400">胜率·回测</div>
                     </div>
                     <div className="text-center">
                       <div className={`text-lg font-bold ${parseFloat(strategy.backtest.profitFactor) >= 1.0 ? 'text-indigo-600' : 'text-gray-400'}`}>{strategy.backtest.profitFactor}</div>

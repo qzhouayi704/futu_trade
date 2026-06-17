@@ -34,10 +34,14 @@ class TrackingRecord:
     tracking_status: str = 'active'
     created_at: str = ''
     updated_at: str = ''
+    # 持有到收盘的已实现收益%（覆盖式更新，收敛为当日收盘收益）。区别于 max_rise（摸高率）。
+    day1_close_ret: Optional[float] = None
+    day3_close_ret: Optional[float] = None
+    day5_close_ret: Optional[float] = None
 
     @classmethod
     def from_db_row(cls, row: tuple) -> 'TrackingRecord':
-        """从数据库行构建追踪记录"""
+        """从数据库行构建追踪记录。close_ret 列在末尾(索引15-17)，旧调用方少这几列时降级为 None。"""
         return cls(
             id=row[0], signal_id=row[1], stock_code=row[2],
             signal_type=row[3], signal_price=row[4], strategy_id=row[5],
@@ -45,6 +49,9 @@ class TrackingRecord:
             day3_max_rise=row[8], day3_max_drop=row[9],
             day5_max_rise=row[10], day5_max_drop=row[11],
             tracking_status=row[12], created_at=row[13], updated_at=row[14],
+            day1_close_ret=row[15] if len(row) > 15 else None,
+            day3_close_ret=row[16] if len(row) > 16 else None,
+            day5_close_ret=row[17] if len(row) > 17 else None,
         )
 
 
@@ -53,31 +60,49 @@ class StrategyStats:
     """策略效果统计数据类"""
     strategy_id: Optional[str] = None
     total_signals: int = 0
+    # 摸高率口径(max-favorable-excursion >= target%)，保留为次要/历史指标
     accuracy_1d: float = 0.0
     accuracy_3d: float = 0.0
     accuracy_5d: float = 0.0
     avg_return_1d: float = 0.0
     avg_return_3d: float = 0.0
     avg_return_5d: float = 0.0
+    # 已实现收益口径(持有到收盘) —— 诚实记分牌主指标
+    n_close: int = 0                  # 有 close_ret 的样本数
+    realized_win_rate: float = 0.0    # day1 收盘收益 > 0 的占比 %
+    avg_close_1d: float = 0.0
+    avg_close_3d: float = 0.0
+    avg_close_5d: float = 0.0
+    avg_win: float = 0.0              # day1 收盘盈利样本的均盈 %
+    avg_loss: float = 0.0             # day1 收盘亏损样本的均亏 %
 
     def to_dict(self) -> Dict:
         return {
             'strategy_id': self.strategy_id,
             'total_signals': self.total_signals,
+            # 摸高率(次要)
             'accuracy_1d': round(self.accuracy_1d, 2),
             'accuracy_3d': round(self.accuracy_3d, 2),
             'accuracy_5d': round(self.accuracy_5d, 2),
             'avg_return_1d': round(self.avg_return_1d, 2),
             'avg_return_3d': round(self.avg_return_3d, 2),
             'avg_return_5d': round(self.avg_return_5d, 2),
+            # 已实现收益(主指标)
+            'n_close': self.n_close,
+            'realized_win_rate': round(self.realized_win_rate, 2),
+            'avg_close_1d': round(self.avg_close_1d, 2),
+            'avg_close_3d': round(self.avg_close_3d, 2),
+            'avg_close_5d': round(self.avg_close_5d, 2),
+            'avg_win': round(self.avg_win, 2),
+            'avg_loss': round(self.avg_loss, 2),
         }
 
 
-# 追踪的天数窗口配置
+# 追踪的天数窗口配置: (天数, 摸高字段, 回撤字段, 收盘收益字段)
 DAY_WINDOWS = [
-    (1, 'day1_max_rise', 'day1_max_drop'),
-    (3, 'day3_max_rise', 'day3_max_drop'),
-    (5, 'day5_max_rise', 'day5_max_drop'),
+    (1, 'day1_max_rise', 'day1_max_drop', 'day1_close_ret'),
+    (3, 'day3_max_rise', 'day3_max_drop', 'day3_close_ret'),
+    (5, 'day5_max_rise', 'day5_max_drop', 'day5_close_ret'),
 ]
 
 # 默认目标涨幅（用于计算准确率）
@@ -134,13 +159,15 @@ class SignalTracker:
         cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
 
         if strategy_id:
-            query = '''SELECT strategy_id, day1_max_rise, day3_max_rise, day5_max_rise
+            query = '''SELECT strategy_id, day1_max_rise, day3_max_rise, day5_max_rise,
+                              day1_close_ret, day3_close_ret, day5_close_ret
                        FROM signal_performance
                        WHERE strategy_id = ? AND created_at >= ?
                          AND tracking_status = 'completed' '''
             rows = self.db_manager.execute_query(query, (strategy_id, cutoff))
         else:
-            query = '''SELECT strategy_id, day1_max_rise, day3_max_rise, day5_max_rise
+            query = '''SELECT strategy_id, day1_max_rise, day3_max_rise, day5_max_rise,
+                              day1_close_ret, day3_close_ret, day5_close_ret
                        FROM signal_performance
                        WHERE created_at >= ? AND tracking_status = 'completed' '''
             rows = self.db_manager.execute_query(query, (cutoff,))
@@ -155,7 +182,8 @@ class SignalTracker:
             '''SELECT id, signal_id, stock_code, signal_type, signal_price,
                       strategy_id, day1_max_rise, day1_max_drop,
                       day3_max_rise, day3_max_drop, day5_max_rise, day5_max_drop,
-                      tracking_status, created_at, updated_at
+                      tracking_status, created_at, updated_at,
+                      day1_close_ret, day3_close_ret, day5_close_ret
                FROM signal_performance WHERE tracking_status = 'active' '''
         )
         return [TrackingRecord.from_db_row(r) for r in rows]
@@ -179,7 +207,7 @@ class SignalTracker:
 
         # 更新各天数窗口的最高涨幅和最大回撤
         updates = {}
-        for window_days, rise_field, drop_field in DAY_WINDOWS:
+        for window_days, rise_field, drop_field, close_field in DAY_WINDOWS:
             if days_elapsed <= window_days:
                 old_rise = getattr(track, rise_field)
                 old_drop = getattr(track, drop_field)
@@ -188,6 +216,11 @@ class SignalTracker:
                 if new_rise != old_rise or new_drop != old_drop:
                     updates[rise_field] = new_rise
                     updates[drop_field] = new_drop
+                # 收盘收益: 覆盖式记录当前已实现收益(当日最后一笔≈收盘 → 收敛为收盘收益)
+                old_close = getattr(track, close_field)
+                new_close = round(change_pct, 3)
+                if old_close is None or abs(new_close - old_close) >= 0.01:
+                    updates[close_field] = new_close
 
         # 超过 5 天标记为完成
         new_status = 'completed' if days_elapsed > 5 else 'active'
@@ -244,6 +277,24 @@ class SignalTracker:
                 stats.accuracy_5d = sum(1 for v in rises_5d if v >= target) / len(rises_5d) * 100
                 stats.avg_return_5d = sum(rises_5d) / len(rises_5d)
 
+            # 已实现收益口径(持有到收盘) —— 诚实主指标。close_ret 列在 r[4..6]，
+            # 旧库/旧样本可能为 None(未追踪 close_ret)，自动从样本中剔除。
+            closes_1d = [r[4] for r in group_rows if len(r) > 4 and r[4] is not None]
+            closes_3d = [r[5] for r in group_rows if len(r) > 5 and r[5] is not None]
+            closes_5d = [r[6] for r in group_rows if len(r) > 6 and r[6] is not None]
+            stats.n_close = len(closes_1d)
+            if closes_1d:
+                wins = [v for v in closes_1d if v > 0]
+                losses = [v for v in closes_1d if v <= 0]
+                stats.realized_win_rate = len(wins) / len(closes_1d) * 100
+                stats.avg_close_1d = sum(closes_1d) / len(closes_1d)
+                stats.avg_win = sum(wins) / len(wins) if wins else 0.0
+                stats.avg_loss = sum(losses) / len(losses) if losses else 0.0
+            if closes_3d:
+                stats.avg_close_3d = sum(closes_3d) / len(closes_3d)
+            if closes_5d:
+                stats.avg_close_5d = sum(closes_5d) / len(closes_5d)
+
             results.append(stats)
 
         return results
@@ -262,7 +313,8 @@ class SignalTracker:
             '''SELECT id, signal_id, stock_code, signal_type, signal_price,
                       strategy_id, day1_max_rise, day1_max_drop,
                       day3_max_rise, day3_max_drop, day5_max_rise, day5_max_drop,
-                      tracking_status, created_at, updated_at
+                      tracking_status, created_at, updated_at,
+                      day1_close_ret, day3_close_ret, day5_close_ret
                FROM signal_performance WHERE tracking_status = 'active' '''
         )
         if not active_rows:
@@ -322,7 +374,7 @@ class SignalTracker:
         days_elapsed = (now - created).days
 
         updates = {}
-        for window_days, rise_field, drop_field in DAY_WINDOWS:
+        for window_days, rise_field, drop_field, close_field in DAY_WINDOWS:
             if days_elapsed <= window_days:
                 old_rise = getattr(track, rise_field)
                 old_drop = getattr(track, drop_field)
@@ -331,6 +383,11 @@ class SignalTracker:
                 if new_rise != old_rise or new_drop != old_drop:
                     updates[rise_field] = new_rise
                     updates[drop_field] = new_drop
+                # 收盘收益: 覆盖式记录当前已实现收益(当日最后一笔≈收盘 → 收敛为收盘收益)
+                old_close = getattr(track, close_field)
+                new_close = round(change_pct, 3)
+                if old_close is None or abs(new_close - old_close) >= 0.01:
+                    updates[close_field] = new_close
 
         new_status = 'completed' if days_elapsed > 5 else 'active'
         if new_status != track.tracking_status:

@@ -22,10 +22,10 @@ cur.execute("""
            AVG(sp.day3_max_drop) as avg_day3_drop,
            AVG(sp.day5_max_rise) as avg_day5_rise,
            AVG(sp.day5_max_drop) as avg_day5_drop,
-           SUM(CASE WHEN sp.signal_type='BUY' AND sp.day3_max_rise > 0.03 THEN 1 ELSE 0 END) as buy_win_3pct,
-           SUM(CASE WHEN sp.signal_type='BUY' AND sp.day3_max_drop < -0.05 THEN 1 ELSE 0 END) as buy_loss_5pct,
-           SUM(CASE WHEN sp.signal_type='SELL' AND sp.day3_max_drop < -0.03 THEN 1 ELSE 0 END) as sell_win_3pct,
-           SUM(CASE WHEN sp.signal_type='SELL' AND sp.day3_max_rise > 0.05 THEN 1 ELSE 0 END) as sell_loss_5pct
+           SUM(CASE WHEN sp.signal_type='BUY' AND sp.day3_max_rise > 3.0 THEN 1 ELSE 0 END) as buy_win_3pct,
+           SUM(CASE WHEN sp.signal_type='BUY' AND sp.day3_max_drop < -5.0 THEN 1 ELSE 0 END) as buy_loss_5pct,
+           SUM(CASE WHEN sp.signal_type='SELL' AND sp.day3_max_drop < -3.0 THEN 1 ELSE 0 END) as sell_win_3pct,
+           SUM(CASE WHEN sp.signal_type='SELL' AND sp.day3_max_rise > 5.0 THEN 1 ELSE 0 END) as sell_loss_5pct
     FROM signal_performance sp
     WHERE sp.tracking_status = 'completed'
     GROUP BY sp.strategy_id, sp.signal_type
@@ -80,7 +80,7 @@ cur.execute("""
            sp.created_at
     FROM signal_performance sp
     WHERE sp.tracking_status = 'completed' AND sp.signal_type = 'BUY'
-      AND sp.day3_max_drop < -0.05
+      AND sp.day3_max_drop < -5.0
     ORDER BY sp.day3_max_drop ASC
     LIMIT 20
 """)
@@ -95,11 +95,32 @@ cur.execute("""
            sp.created_at
     FROM signal_performance sp
     WHERE sp.tracking_status = 'completed' AND sp.signal_type = 'SELL'
-      AND sp.day3_max_rise > 0.05
+      AND sp.day3_max_rise > 5.0
     ORDER BY sp.day3_max_rise DESC
     LIMIT 20
 """)
 result["worst_sell_signals"] = [dict(r) for r in cur.fetchall()]
+
+# 7. 已实现收益口径（持有到收盘 vs 摸高率）—— 诚实记分牌
+#    胜率 = close_ret > 0 占比；并报均盈/均亏。需先跑 add_signal_close_ret.sql 迁移，
+#    旧库无该列时静默跳过（不影响其余分析）。
+try:
+    cur.execute("""
+        SELECT sp.strategy_id, sp.signal_type,
+               COUNT(sp.day1_close_ret) as n_close,
+               AVG(sp.day1_close_ret) as avg_close_1d,
+               AVG(sp.day3_close_ret) as avg_close_3d,
+               SUM(CASE WHEN sp.signal_type='BUY' AND sp.day1_close_ret > 0 THEN 1 ELSE 0 END) as buy_close_win_1d,
+               AVG(CASE WHEN sp.day1_close_ret > 0 THEN sp.day1_close_ret END) as avg_win_1d,
+               AVG(CASE WHEN sp.day1_close_ret <= 0 THEN sp.day1_close_ret END) as avg_loss_1d
+        FROM signal_performance sp
+        WHERE sp.tracking_status = 'completed' AND sp.day1_close_ret IS NOT NULL
+        GROUP BY sp.strategy_id, sp.signal_type
+        ORDER BY sp.strategy_id, sp.signal_type
+    """)
+    result["realized_close_perf_by_strategy"] = [dict(r) for r in cur.fetchall()]
+except sqlite3.OperationalError as e:
+    result["realized_close_perf_by_strategy"] = {"skipped": f"close_ret 列不存在(需先跑迁移): {e}"}
 
 conn.close()
 

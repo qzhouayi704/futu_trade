@@ -51,6 +51,32 @@ async def get_strategy_list(container=Depends(get_container)):
     )
 
 
+@router.get("/strategy/stats", response_model=APIResponse)
+async def get_strategy_stats(
+    strategy_id: str = None,
+    days: int = 30,
+    container=Depends(get_container),
+):
+    """获取各策略真实效果统计（诚实记分牌）。
+
+    数据来自 signal_performance 已完成追踪记录，按 strategy_id 聚合：
+    - realized_win_rate: 持有到收盘(day1_close_ret>0)占比 —— 主指标
+    - avg_close_1d/3d/5d, avg_win, avg_loss
+    - accuracy_*(摸高率) 保留为次要/历史指标
+    """
+    tracker = getattr(container, 'signal_tracker', None)
+    if tracker is None:
+        from ...services.strategy.signal_tracker import SignalTracker
+        tracker = SignalTracker(container.db_manager)
+
+    stats = tracker.get_strategy_stats(strategy_id=strategy_id, days=days)
+    return APIResponse(
+        success=True,
+        data={'stats': [s.to_dict() for s in stats], 'days': days},
+        message="获取策略效果统计成功",
+    )
+
+
 @router.get("/strategy/presets", response_model=APIResponse)
 async def get_strategy_presets(
     strategy_id: str = None,
