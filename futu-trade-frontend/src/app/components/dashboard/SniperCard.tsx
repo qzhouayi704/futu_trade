@@ -257,11 +257,12 @@ export function SniperCard() {
                           {sig.signal_type === "mega_buy" && sig.tier && (
                             <span className={`text-[9px] px-1 py-px rounded font-bold shrink-0 ${
                               sig.tier === "opportunity" ? "bg-emerald-400/90 text-white" :
-                              sig.tier === "reference" ? "bg-gray-200/70 text-gray-500" :
+                              sig.tier === "reference" ? "bg-amber-300/80 text-amber-900" :
                               "bg-sky-200/70 text-sky-800"
                             }`}>
                               {sig.tier === "opportunity" ? `持续抢筹×${sig.buy_count ?? ""}` :
-                               sig.tier === "reference" ? "追高·参考" : "脉冲"}
+                               sig.tier === "reference" ? "急涨别碰" :
+                               sig.mode === "watch" ? "单次·观察" : "谨慎·快出"}
                             </span>
                           )}
                         </div>

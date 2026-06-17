@@ -385,11 +385,12 @@ export default function SniperSignalsPage() {
                         {p.signal_type === "mega_buy" && p.tier && (
                           <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold shrink-0 ${
                             p.tier === "opportunity" ? "bg-emerald-400/90 text-white dark:bg-emerald-600/80" :
-                            p.tier === "reference" ? "bg-gray-200/70 text-gray-500 dark:bg-gray-700/50 dark:text-gray-400" :
+                            p.tier === "reference" ? "bg-amber-300/80 text-amber-900 dark:bg-amber-700/60 dark:text-amber-100" :
                             "bg-sky-200/70 text-sky-800 dark:bg-sky-800/50 dark:text-sky-200"
                           }`}>
                             {p.tier === "opportunity" ? `持续抢筹×${p.buy_count ?? ""}` :
-                             p.tier === "reference" ? "追高·参考" : "脉冲"}
+                             p.tier === "reference" ? "急涨别碰" :
+                             p.mode === "watch" ? "单次·观察" : "谨慎·快出"}
                           </span>
                         )}
                       </div>

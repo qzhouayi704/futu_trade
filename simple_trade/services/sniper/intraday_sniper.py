@@ -49,10 +49,11 @@ class SniperSignal:
     strength: int = 0       # 信号强度评分 (0-100)，仅 mega_buy 使用
     strength_label: str = ""  # 强度标签，如 "★★★ 强"
     # 提醒分层(mega_buy)：按"持续抢筹次数 + 当日已涨幅"分层，6天验证最强稳健单因子
-    tier: str = ""          # opportunity(机会·持续抢筹) / pulse(脉冲) / reference(参考)
-    mode: str = ""          # trend(趋势型·可持有) / spike(脉冲型·快出) / chase(追高)
+    tier: str = ""          # opportunity(机会·持续抢筹) / pulse(脉冲·谨慎) / reference(急涨别碰)
+    mode: str = ""          # trend(可持有) / spike(急涨快出) / chase(追高) / watch(单次观察)
     buy_count: int = 0      # 当日该股第几次 mega_buy
-    intraday_gain: float = 0.0  # 信号时当日已涨幅%
+    intraday_gain: float = 0.0  # 信号时当日已涨幅%(从开盘)
+    pre_jump3: float = 0.0  # 信号前3分钟急涨%(脉冲接盘判定: ≥6%别碰)
     posture: str = ""       # 配套出场动作提示
 
     @property
@@ -80,6 +81,7 @@ class SniperSignal:
             d["mode"] = self.mode
             d["buy_count"] = self.buy_count
             d["intraday_gain"] = self.intraday_gain
+            d["pre_jump3"] = self.pre_jump3
             d["posture"] = self.posture
         return d
 
@@ -301,7 +303,7 @@ class IntradaySniper:
                                 sig.buy_count = prior_mb + 1
                                 sig.intraday_gain = change_pct
                                 sig.tier, sig.mode, sig.posture = self._classify_alert(
-                                    sig.buy_count, change_pct
+                                    sig.buy_count, change_pct, sig.pre_jump3
                                 )
                                 if ctx:
                                     sig.detail += f" [{label} {strength}分: {ctx}]"
@@ -427,7 +429,8 @@ class IntradaySniper:
                             return False
                 return True
 
-            def emit(sig_type: str, is_red: bool, detail: str, action: str):
+            def emit(sig_type: str, is_red: bool, detail: str, action: str,
+                     pre_jump3: float = 0.0):
                 state['cooldown'][sig_type] = minute  # 记录真实时间
                 state['recent_signals'].append((minute, is_red))
                 # 清理过期记录（超过2倍冲突窗口）
@@ -439,6 +442,7 @@ class IntradaySniper:
                     time=minute, stock_code=stock_code, stock_name=stock_name,
                     signal_type=sig_type, is_red=is_red,
                     price=point['price'], detail=detail, action=action,
+                    pre_jump3=pre_jump3,
                 ))
 
             # === 信号1: 巨量砸盘 ===
@@ -453,9 +457,10 @@ class IntradaySniper:
             if point['net'] > dynamic_mega:
                 if can_emit('mega_buy', False):
                     mult = point['net'] / avg_turnover if avg_turnover > 0 else 0
+                    pj3 = self._pre_jump_pct(timeline, i, 3)  # 信号前3分钟急涨%
                     emit('mega_buy', False,
                          f"单分钟净买入+{point['net']:.0f}万(日均{mult:.0f}倍)",
-                         "✅ 关注买入机会")
+                         "✅ 关注买入机会", pre_jump3=pj3)
 
             # === 每3分钟扫描的信号 ===
             if is_scan_point:
@@ -588,20 +593,45 @@ class IntradaySniper:
     # ==================== 提醒分层 ====================
 
     @staticmethod
-    def _classify_alert(buy_count: int, gain: float):
-        """按"持续抢筹次数 + 当日已涨幅"给 mega_buy 提醒分层(6 天逐日验证最强稳健单因子)。
+    def _pre_jump_pct(timeline: List[dict], idx: int, mins: int = 3) -> float:
+        """信号前 mins 分钟的急涨幅%(当前价 vs mins 分钟前的价)。按 time 字段回看以
+        正确处理无成交的空分钟; 历史不足(开盘附近)返回 0(视为没急涨)。"""
+        if idx < 0 or idx >= len(timeline):
+            return 0.0
+        cur = timeline[idx]
+        cur_p = cur.get('price', 0) or 0
+        ct = cur.get('time', '')
+        if cur_p <= 0 or len(ct) < 5:
+            return 0.0
+        cur_min = int(ct[:2]) * 60 + int(ct[3:5])
+        for j in range(idx - 1, -1, -1):
+            t = timeline[j].get('time', '')
+            if len(t) < 5:
+                continue
+            if cur_min - (int(t[:2]) * 60 + int(t[3:5])) >= mins:
+                p0 = timeline[j].get('price', 0) or 0
+                return round((cur_p / p0 - 1) * 100, 2) if p0 > 0 else 0.0
+        return 0.0
 
-        - 已涨≥12% → 参考(追高): 第3次+ 已涨≥12% 那批后续 -1.2%，切掉追高尾巴。
-        - 第3次+(持续抢筹) 且 已涨≤8% → 机会(趋势型): 6/6 天收盘胜率高于第1次,
-          持有到收盘就赢(多在低位陪跑触发,确认≠太高)。
-        - 其余(第1/2次/孤立) → 脉冲型: 峰值高但回吐,配尖冲出场快出。
-        返回 (tier, mode, posture)。
+    @staticmethod
+    def _classify_alert(buy_count: int, gain: float, pre_jump3: float = 0.0):
+        """给 mega_buy 提醒分层。返回 (tier, mode, posture)。
+
+        判定(6 天逐日验证): 信号前3分钟急涨幅 pre_jump3 是"脉冲接盘"的实时干净指标——
+        越急涨, 后续越冲高就回吐(≥6% 那批收盘几乎全亏); 急涨<1% 的安静吸货才守得住。
+        - pre_jump3≥6 或 当日已涨≥12% → 急涨别碰(脉冲接盘/追高, 数据上收盘大概率亏)。
+        - pre_jump3 1~6%            → 脉冲·谨慎(已偏亏, 想做就冲高快出)。
+        - pre_jump3<1 且 持续抢筹≥3 → 可持有(安静吸货+反复扫货, 持到收盘赢)。
+        - pre_jump3<1 且 单次       → 单次抢筹·观察(安静但未确认建仓)。
         """
-        if gain >= 12:
-            return 'reference', 'chase', '已涨≥12% 追高风险，观望/不追'
-        if buy_count >= 3 and gain <= 8:
-            return 'opportunity', 'trend', '趋势型·可持有到收盘(分批锁利 + 宽跟踪)'
-        return 'pulse', 'spike', '脉冲型·冲高快出(+2%减50% / +4%减25%)'
+        if pre_jump3 >= 6 or gain >= 12:
+            why = f"信号前3分钟已急涨{pre_jump3:.0f}%" if pre_jump3 >= 6 else f"当日已涨{gain:.0f}%"
+            return 'reference', 'chase', f'急涨别碰·脉冲接盘({why}，大概率冲高回吐)'
+        if pre_jump3 >= 1:
+            return 'pulse', 'spike', f'谨慎·冲高快出(信号前已涨{pre_jump3:.0f}%，+2%减50%/+4%减25%)'
+        if buy_count >= 3:
+            return 'opportunity', 'trend', '持续抢筹·可持有到收盘(安静吸货，分批锁利+宽跟踪)'
+        return 'pulse', 'watch', '单次抢筹·观察(安静但未确认，冲高减仓)'
 
     # ==================== 强度评分 ====================
 
