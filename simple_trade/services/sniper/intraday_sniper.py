@@ -48,6 +48,12 @@ class SniperSignal:
     severity: str = "high"  # high / medium
     strength: int = 0       # 信号强度评分 (0-100)，仅 mega_buy 使用
     strength_label: str = ""  # 强度标签，如 "★★★ 强"
+    # 提醒分层(mega_buy)：按"持续抢筹次数 + 当日已涨幅"分层，6天验证最强稳健单因子
+    tier: str = ""          # opportunity(机会·持续抢筹) / pulse(脉冲) / reference(参考)
+    mode: str = ""          # trend(趋势型·可持有) / spike(脉冲型·快出) / chase(追高)
+    buy_count: int = 0      # 当日该股第几次 mega_buy
+    intraday_gain: float = 0.0  # 信号时当日已涨幅%
+    posture: str = ""       # 配套出场动作提示
 
     @property
     def emoji(self) -> str:
@@ -69,6 +75,12 @@ class SniperSignal:
         if self.strength > 0:
             d["strength"] = self.strength
             d["strength_label"] = self.strength_label
+        if self.tier:
+            d["tier"] = self.tier
+            d["mode"] = self.mode
+            d["buy_count"] = self.buy_count
+            d["intraday_gain"] = self.intraday_gain
+            d["posture"] = self.posture
         return d
 
     def to_wechat_text(self) -> str:
@@ -281,6 +293,16 @@ class IntradaySniper:
                                 )
                                 sig.strength = strength
                                 sig.strength_label = label
+                                # 提醒分层(6天验证最强稳健单因子): 持续抢筹次数 + 当日已涨幅
+                                prior_mb = sum(
+                                    1 for s in self._today_signals
+                                    if s.stock_code == stock_code and s.signal_type == 'mega_buy'
+                                )
+                                sig.buy_count = prior_mb + 1
+                                sig.intraday_gain = change_pct
+                                sig.tier, sig.mode, sig.posture = self._classify_alert(
+                                    sig.buy_count, change_pct
+                                )
                                 if ctx:
                                     sig.detail += f" [{label} {strength}分: {ctx}]"
                                 else:
@@ -562,6 +584,24 @@ class IntradaySniper:
         accel_min = mega_floor * 0.5   # accel阈值 = mega地板的一半
         reversal_min = mega_floor       # reversal阈值 = mega地板
         return accel_min, mega_floor, reversal_min
+
+    # ==================== 提醒分层 ====================
+
+    @staticmethod
+    def _classify_alert(buy_count: int, gain: float):
+        """按"持续抢筹次数 + 当日已涨幅"给 mega_buy 提醒分层(6 天逐日验证最强稳健单因子)。
+
+        - 已涨≥12% → 参考(追高): 第3次+ 已涨≥12% 那批后续 -1.2%，切掉追高尾巴。
+        - 第3次+(持续抢筹) 且 已涨≤8% → 机会(趋势型): 6/6 天收盘胜率高于第1次,
+          持有到收盘就赢(多在低位陪跑触发,确认≠太高)。
+        - 其余(第1/2次/孤立) → 脉冲型: 峰值高但回吐,配尖冲出场快出。
+        返回 (tier, mode, posture)。
+        """
+        if gain >= 12:
+            return 'reference', 'chase', '已涨≥12% 追高风险，观望/不追'
+        if buy_count >= 3 and gain <= 8:
+            return 'opportunity', 'trend', '趋势型·可持有到收盘(分批锁利 + 宽跟踪)'
+        return 'pulse', 'spike', '脉冲型·冲高快出(+2%减50% / +4%减25%)'
 
     # ==================== 强度评分 ====================
 
