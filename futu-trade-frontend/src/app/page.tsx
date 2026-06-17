@@ -8,7 +8,7 @@ import { useSocket } from "@/lib/socket";
 import { systemApi } from "@/lib/api";
 import { useToast } from "@/components/common/Toast";
 import { MonitorStartModal, StrategyPanel } from "@/components/monitor";
-import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel, MultiSignalDashboard } from "@/components/cockpit";
+import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel, DailyPickCard, MultiSignalDashboard } from "@/components/cockpit";
 import { usePositions } from "./hooks/useDashboard";
 import { useSignalPipeline } from "@/lib/hooks/useSignalPipeline";
 import type { QuoteData } from "@/types/socket";
@@ -126,6 +126,11 @@ export default function CockpitPage() {
       {/* ═══ 信号强度 TOP 5 排名 ═══ */}
       <div className="mb-4 md:mb-5">
         <SignalRankingPanel />
+      </div>
+
+      {/* ═══ 今日可买精选(手动交易用) ═══ */}
+      <div className="mb-4 md:mb-5">
+        <DailyPickCard onSelectStock={setSelectedStockCode} />
       </div>
 
       {/* ═══ 核心区域：双列布局 ═══ */}
