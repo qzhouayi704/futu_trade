@@ -22,6 +22,12 @@ interface SniperSignal {
   severity: string;
   strength?: number;
   strength_label?: string;
+  // 提醒分层(mega_buy): 持续抢筹次数 + 已涨幅
+  tier?: string;
+  mode?: string;
+  buy_count?: number;
+  intraday_gain?: number;
+  posture?: string;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -139,8 +145,14 @@ export default function SniperSignalsPage() {
       }
     }
 
-    // 按时间倒序
-    result.sort((a, b) => b.primary.time.localeCompare(a.primary.time));
+    // 提醒分层优先: 机会(持续抢筹) > 其它 > 追高·参考; 同层按时间倒序
+    const tierRank = (s: SniperSignal) =>
+      s.tier === "opportunity" ? 0 : s.tier === "reference" ? 2 : 1;
+    result.sort(
+      (a, b) =>
+        tierRank(a.primary) - tierRank(b.primary) ||
+        b.primary.time.localeCompare(a.primary.time)
+    );
     return result;
   }, [signals]);
 
@@ -369,6 +381,17 @@ export default function SniperSignalsPage() {
                             {p.strength_label?.split(" ")[0]} {p.strength}
                           </span>
                         )}
+                        {/* 提醒分层徽章: 持续抢筹 / 脉冲 / 追高·参考 */}
+                        {p.signal_type === "mega_buy" && p.tier && (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold shrink-0 ${
+                            p.tier === "opportunity" ? "bg-emerald-400/90 text-white dark:bg-emerald-600/80" :
+                            p.tier === "reference" ? "bg-gray-200/70 text-gray-500 dark:bg-gray-700/50 dark:text-gray-400" :
+                            "bg-sky-200/70 text-sky-800 dark:bg-sky-800/50 dark:text-sky-200"
+                          }`}>
+                            {p.tier === "opportunity" ? `持续抢筹×${p.buy_count ?? ""}` :
+                             p.tier === "reference" ? "追高·参考" : "脉冲"}
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-2 shrink-0 ml-2">
                         <span className="text-xs font-bold tabular-nums text-foreground/70">
@@ -382,6 +405,17 @@ export default function SniperSignalsPage() {
                     <div className="text-[11px] text-muted-foreground/80 mt-1 line-clamp-2">
                       {p.detail}
                     </div>
+                    {p.signal_type === "mega_buy" && p.posture && (
+                      <div className="text-[11px] mt-1 font-medium text-foreground/75 flex items-center gap-1">
+                        <span>📍</span>
+                        <span className="truncate">{p.posture}</span>
+                        {p.intraday_gain != null && (
+                          <span className="text-muted-foreground shrink-0">
+                            · 已涨{p.intraday_gain > 0 ? "+" : ""}{p.intraday_gain}%
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </Link>
 
                   {/* 确认信号折叠区域 */}
