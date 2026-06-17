@@ -1,8 +1,11 @@
-// 驾驶舱持仓面板 — 实时盈亏 + Sniper止盈状态
+// 驾驶舱持仓面板 — 实时盈亏 + Sniper止盈状态 + 日内/波段 影子卖出建议
+// [2026-06-18] 新增: 每只持仓一个"日内/波段"开关(localStorage, 默认日内) + 实时"该怎么卖"影子提示。
+//   纯展示, 不下任何真单。日内=混合出场口径(+2/+4分批/−5止损); 波段=宽跟踪(回撤≥10%/−8%止损)。
+//   注: 波段的"距高点回撤"用本会话峰值近似(刷新会重置); 接后端自动卖时再用真实多日峰值。
 
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Card } from "@/components/common";
 import { sniperApi } from "@/lib/api/sniper";
 
@@ -31,8 +34,47 @@ interface PositionPanelProps {
   realtimePrices: Record<string, number>;
 }
 
+type ExitMode = "intraday" | "swing";
+
+// 影子卖出建议(纯提示, 不下单)
+function getAdvice(mode: ExitMode, plPct: number, curPrice: number, peakPrice: number) {
+  const dd = peakPrice > 0 ? ((peakPrice - curPrice) / peakPrice) * 100 : 0; // 距高点回撤%
+  if (mode === "swing") {
+    if (plPct <= -8) return { icon: "🔴", text: "止损:跌破 −8%,建议清仓" };
+    if (plPct > 2 && dd >= 10) return { icon: "🟠", text: `距高点回撤 ${dd.toFixed(1)}% ≥10%,趋势转弱,建议了结` };
+    return { icon: "🟢", text: `波段持有中(回撤 ${dd.toFixed(1)}%);跌破 −8% 或回撤 ≥10% 再走` };
+  }
+  // 日内
+  if (plPct <= -5) return { icon: "🔴", text: "止损:跌破 −5%,建议清仓" };
+  if (plPct >= 4) return { icon: "🟠", text: "已 +4%:二档减仓锁利,余量冲高/收盘了结" };
+  if (plPct >= 2) return { icon: "🟠", text: "已 +2%:先减一半锁利" };
+  if (plPct >= 0) return { icon: "🟢", text: "持有等冲高;临近收盘没冲高就了结" };
+  return { icon: "⚪", text: "持有;跌破 −5% 止损" };
+}
+
+const MODE_KEY = "positionExitModes";
+
 export function PositionPanel({ positions, loading, realtimePrices }: PositionPanelProps) {
   const [trailingStatus, setTrailingStatus] = useState<Record<string, TrailingStatus>>({});
+  const [modes, setModes] = useState<Record<string, ExitMode>>({});
+  const peakRef = useRef<Record<string, number>>({}); // 本会话每股峰值价
+
+  // 读取本地保存的"日内/波段"标记
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(MODE_KEY);
+      if (saved) setModes(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  const toggleMode = useCallback((code: string) => {
+    setModes((prev) => {
+      const cur: ExitMode = prev[code] === "swing" ? "swing" : "intraday";
+      const next = { ...prev, [code]: cur === "swing" ? "intraday" : "swing" } as Record<string, ExitMode>;
+      try { localStorage.setItem(MODE_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
 
   // 加载Sniper止盈状态
   useEffect(() => {
@@ -115,49 +157,42 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
               const plPct = pos.profit_loss_pct;
               const isProfit = plPct >= 0;
 
-              // Sniper状态指示
-              let sniperIcon = "⚪";
-              let sniperText = "";
-              let sniperColor = "text-muted-foreground";
+              // 本会话峰值价(波段回撤用)
+              const peak = Math.max(peakRef.current[pos.stock_code] ?? pos.current_price, pos.current_price);
+              peakRef.current[pos.stock_code] = peak;
 
-              if (ts) {
-                if (ts.mega_sell) {
-                  sniperIcon = "🔴";
-                  sniperText = "mega_sell→即将止盈";
-                  sniperColor = "text-red-500";
-                } else if (ts.activated) {
-                  sniperIcon = "🟢";
-                  const drawdown = ts.peak_price > 0
-                    ? ((1 - pos.current_price / ts.peak_price) * 100).toFixed(1)
-                    : "0.0";
-                  sniperText = `追踪中 峰值${ts.peak_price.toFixed(2)} 回撤${drawdown}%/${ts.stop_pct}%`;
-                  if (ts.mega_buy_count >= 2) {
-                    sniperText += ` ×${ts.mega_buy_count}`;
-                  }
-                  sniperColor = "text-emerald-500";
-                }
-              }
+              // 日内/波段 + 影子卖出建议
+              const mode: ExitMode = modes[pos.stock_code] === "swing" ? "swing" : "intraday";
+              const advice = getAdvice(mode, plPct, pos.current_price, peak);
 
               return (
                 <div
                   key={pos.stock_code}
                   className={`px-3 py-2.5 rounded-lg border transition-all hover:shadow-sm ${
-                    ts?.mega_sell
+                    advice.icon === "🔴"
                       ? "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-800/30"
-                      : ts?.activated
-                        ? "bg-emerald-50/40 border-emerald-200/40 dark:bg-emerald-950/15 dark:border-emerald-800/25"
+                      : mode === "swing"
+                        ? "bg-indigo-50/40 border-indigo-200/40 dark:bg-indigo-950/15 dark:border-indigo-800/25"
                         : "bg-card border-border/50"
                   }`}
                 >
-                  {/* 第一行：名称 + 盈亏 */}
+                  {/* 第一行：名称 + 模式开关 + 盈亏 */}
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex items-center gap-1.5 min-w-0">
                       <span className="font-bold text-sm text-foreground truncate">
                         {pos.stock_name}
                       </span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {pos.stock_code}
-                      </span>
+                      <button
+                        onClick={() => toggleMode(pos.stock_code)}
+                        title="点击切换 日内/波段(决定卖出建议口径)"
+                        className={`text-[9px] px-1.5 py-px rounded-full font-bold shrink-0 transition-colors ${
+                          mode === "swing"
+                            ? "bg-indigo-500 text-white"
+                            : "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                        }`}
+                      >
+                        {mode === "swing" ? "波段" : "日内"}
+                      </button>
                     </div>
                     <div className={`text-right ${isProfit ? "text-red-500" : "text-green-500"}`}>
                       <span className="text-sm font-bold tabular-nums">
@@ -169,28 +204,31 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                     </div>
                   </div>
 
-                  {/* 第二行：Sniper止盈状态 */}
-                  {(ts?.activated || ts?.mega_sell) && (
-                    <div className={`flex items-center gap-1.5 mt-1 ${sniperColor}`}>
-                      <span className="text-xs">{sniperIcon}</span>
-                      <span className="text-[10px] font-medium">
-                        {sniperText}
-                      </span>
-                    </div>
-                  )}
+                  {/* 第二行：影子卖出建议(纯提示, 不下单) */}
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <span className="text-xs">{advice.icon}</span>
+                    <span className="text-[10px] text-foreground/75 truncate">{advice.text}</span>
+                  </div>
 
-                  {/* 无Sniper信号时显示默认止盈 */}
-                  {!ts && plPct >= 5 && (
-                    <div className="flex items-center gap-1.5 mt-1 text-muted-foreground">
-                      <span className="text-xs">⚪</span>
+                  {/* Sniper止盈状态(后端追踪, 若有) */}
+                  {ts?.activated && ts.peak_price > 0 && (
+                    <div className="flex items-center gap-1.5 mt-0.5 text-emerald-500/80">
                       <span className="text-[10px]">
-                        默认止盈: 涨≥5%已激活, 回撤3%触发
+                        Sniper追踪 峰值{ts.peak_price.toFixed(2)} 回撤{((1 - pos.current_price / ts.peak_price) * 100).toFixed(1)}%/{ts.stop_pct}%
+                        {ts.mega_buy_count >= 2 ? ` ×${ts.mega_buy_count}` : ""}
                       </span>
                     </div>
                   )}
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* 脚注：影子提示说明 */}
+        {livePositions.length > 0 && (
+          <div className="text-[10px] text-muted-foreground mt-2 pt-2 border-t border-border/40 leading-relaxed">
+            💡 卖出建议为<b>影子提示</b>(不自动下单):默认<b>日内</b>(冲高分批+收盘了结);看好的日线机会点徽章切<b>波段</b>(宽跟踪、拿几天)。
           </div>
         )}
       </div>
