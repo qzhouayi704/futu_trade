@@ -571,6 +571,12 @@ class RiskCoordinator:
                     ))
                     if action.action == 'SELL_ALL':
                         triggered_stocks.add(code)
+                    # 影子观察日志：SMART_POSITION 决策当前只记录不执行（未接执行环），
+                    # 便于上线前对照混合出场实际会怎么卖。
+                    self.logger.info(
+                        f"【智能持仓·影子】{code} {action.action} "
+                        f"{action.qty_to_sell}股 — {action.reason}"
+                    )
 
         except Exception as e:
             self.logger.error(f"【风险协调】智能持仓检查异常: {e}", exc_info=True)

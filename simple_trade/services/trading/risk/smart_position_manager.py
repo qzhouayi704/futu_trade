@@ -54,6 +54,17 @@ class PositionConfig:
     # 最小持仓
     min_hold_seconds: int = 300    # 5分钟
 
+    # ── 混合两模式出场（opt-in 'hybrid' profile，回测验证 2026-06-16）──
+    # 脉冲(快冲高回吐)与趋势(慢拉守得住)两种盈利模式最优出场相反：分批锁仓防脉冲回吐，
+    # 末仓 runner 默认持有吃趋势、仅在"3分钟回看涨速"暴力陡拉时砍(卖在脉冲顶)。
+    hybrid_tp1_pct: float = 2.0        # 盈利+2% → 卖50%(锁脉冲)
+    hybrid_tp1_ratio: float = 0.5
+    hybrid_tp2_pct: float = 4.0        # 盈利+4% → 再卖25%
+    hybrid_tp2_ratio: float = 0.25
+    hybrid_hard_stop_pct: float = 5.0  # -5% 硬止损(回测证明 -2.5% 紧止损负贡献)
+    hybrid_velocity_thr: float = 4.0   # runner: 3分钟回看涨速 ≥ 4% → 砍(脉冲顶)
+    hybrid_velocity_window_sec: int = 180
+
 
 @dataclass
 class PositionState:
@@ -67,6 +78,8 @@ class PositionState:
     highest_price: float        # 持仓期间最高价
     atr: float                  # ATR值（绝对值）
     current_stage: TakeProfitStage = TakeProfitStage.NONE
+    exit_profile: str = 'standard'   # 'standard'(默认阶梯) | 'hybrid'(两模式混合, opt-in)
+    price_window: list = field(default_factory=list)  # hybrid 用: [(epoch_sec, price)] 近3分钟
 
     @property
     def atr_pct(self) -> float:
@@ -122,8 +135,9 @@ class SmartPositionManager:
 
     def register_position(self, stock_code: str, stock_name: str,
                           entry_price: float, qty: int, atr: float,
-                          entry_time: Optional[datetime] = None):
-        """注册新持仓"""
+                          entry_time: Optional[datetime] = None,
+                          exit_profile: str = 'standard'):
+        """注册新持仓。exit_profile='hybrid' 启用两模式混合出场(opt-in)。"""
         self._positions[stock_code] = PositionState(
             stock_code=stock_code,
             stock_name=stock_name,
@@ -133,9 +147,10 @@ class SmartPositionManager:
             remaining_qty=qty,
             highest_price=entry_price,
             atr=atr,
+            exit_profile=exit_profile,
         )
         logger.info(
-            f"[PositionMgr] 注册持仓 {stock_code} | "
+            f"[PositionMgr] 注册持仓 {stock_code} | profile={exit_profile} | "
             f"价格={entry_price} 数量={qty} ATR={atr}({atr/entry_price*100:.1f}%)"
         )
 
@@ -154,6 +169,10 @@ class SmartPositionManager:
             return PositionAction('HOLD', 0, '无持仓')
 
         now = current_time or datetime.now()
+
+        # opt-in 两模式混合出场（独立分支，不影响 'standard' 行为）
+        if pos.exit_profile == 'hybrid':
+            return self._evaluate_hybrid(pos, current_price, now)
 
         # 更新最高价
         if current_price > pos.highest_price:
@@ -236,6 +255,74 @@ class SmartPositionManager:
         # ── 继续持有 ──────────────────────────
         return PositionAction('HOLD', 0,
             f"持有 | 盈亏{pnl_pct:+.1f}% | 最高{pos.highest_price:.2f} | 止损{stop_loss_price:.2f}")
+
+    def _evaluate_hybrid(self, pos: PositionState, price: float,
+                         now: datetime) -> PositionAction:
+        """两模式混合出场（回测验证 2026-06-16）：
+
+        分批锁仓 50%@+2% / 25%@+4%（防脉冲冲高回吐）+ 末仓 25% runner 默认持有、
+        仅当"3分钟回看涨速 ≥ 阈值"的暴力陡拉时清仓（卖在脉冲顶 / 让趋势慢拉一路骑）。
+        硬止损 -5%。脉冲快出、趋势守住，两种盈利模式自然分流，无需入场预判。
+        """
+        c = self.config
+        if price > pos.highest_price:
+            pos.highest_price = price
+
+        # 维护 3 分钟价格窗口，算"回看涨速" rise3 = price/窗口最低 - 1
+        ts = now.timestamp()
+        pos.price_window.append((ts, price))
+        cutoff = ts - c.hybrid_velocity_window_sec
+        if pos.price_window and pos.price_window[0][0] < cutoff:
+            pos.price_window = [(t, p) for (t, p) in pos.price_window if t >= cutoff]
+        win_min = min((p for _, p in pos.price_window), default=price)
+        rise3 = (price / win_min - 1) * 100 if win_min > 0 else 0.0
+
+        pnl_pct = (price - pos.entry_price) / pos.entry_price * 100
+
+        # ── 硬止损 -5% ──
+        if pnl_pct <= -c.hybrid_hard_stop_pct:
+            return PositionAction(
+                'SELL_ALL', pos.remaining_qty,
+                f"混合-硬止损: 盈亏{pnl_pct:.1f}% ≤ -{c.hybrid_hard_stop_pct}%",
+                is_emergency=True,
+            )
+
+        # ── 分批锁仓（支持跳涨：一次冲过 +4% 直接锁 75%）──
+        if pos.current_stage == TakeProfitStage.NONE:
+            if pnl_pct >= c.hybrid_tp2_pct:
+                ratio = c.hybrid_tp1_ratio + c.hybrid_tp2_ratio
+                qty = min(int(pos.total_qty * ratio), pos.remaining_qty)
+                if qty > 0:
+                    pos.current_stage = TakeProfitStage.STAGE2
+                    return PositionAction(
+                        'SELL_PARTIAL', qty,
+                        f"混合-跳涨锁仓: {pnl_pct:.1f}%≥{c.hybrid_tp2_pct}%，卖{ratio*100:.0f}%")
+            if pnl_pct >= c.hybrid_tp1_pct:
+                qty = min(int(pos.total_qty * c.hybrid_tp1_ratio), pos.remaining_qty)
+                if qty > 0:
+                    pos.current_stage = TakeProfitStage.STAGE1
+                    return PositionAction(
+                        'SELL_PARTIAL', qty,
+                        f"混合-锁仓1: {pnl_pct:.1f}%≥{c.hybrid_tp1_pct}%，卖{c.hybrid_tp1_ratio*100:.0f}%")
+
+        if pos.current_stage == TakeProfitStage.STAGE1 and pnl_pct >= c.hybrid_tp2_pct:
+            qty = min(int(pos.total_qty * c.hybrid_tp2_ratio), pos.remaining_qty)
+            if qty > 0:
+                pos.current_stage = TakeProfitStage.STAGE2
+                return PositionAction(
+                    'SELL_PARTIAL', qty,
+                    f"混合-锁仓2: {pnl_pct:.1f}%≥{c.hybrid_tp2_pct}%，卖{c.hybrid_tp2_ratio*100:.0f}%")
+
+        # ── runner（分批后剩余仓）：默认持有，暴力陡拉才砍 ──
+        if pos.current_stage == TakeProfitStage.STAGE2:
+            if rise3 >= c.hybrid_velocity_thr and pnl_pct > 0.5:
+                return PositionAction(
+                    'SELL_ALL', pos.remaining_qty,
+                    f"混合-脉冲顶: 3分钟涨速{rise3:.1f}%≥{c.hybrid_velocity_thr}%，清runner(当前{pnl_pct:+.1f}%)")
+
+        return PositionAction(
+            'HOLD', 0,
+            f"混合-持有 | 盈亏{pnl_pct:+.1f}% | 阶段{pos.current_stage.value} | 3分涨速{rise3:.1f}%")
 
     def update_after_sell(self, stock_code: str, sold_qty: int):
         """卖出后更新状态"""

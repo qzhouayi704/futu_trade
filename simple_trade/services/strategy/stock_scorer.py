@@ -61,6 +61,8 @@ class ScoringResult:
     details: List[ScoreDetail] = field(default_factory=list)
     trade_params: Optional[TradeParams] = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    # 原始指标(prev_day_change/day_amplitude/kline_pos_20d 等)，供下游因子门读取
+    indicators: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -151,7 +153,7 @@ class StockScorer:
             stock_code=stock_code, stock_name=stock_name,
             total_score=total, passed=passed, mode=mode,
             veto_reason=veto, details=details,
-            trade_params=trade_params,
+            trade_params=trade_params, indicators=indicators,
         )
         self._scored_cache[stock_code] = result
         return result
@@ -172,6 +174,7 @@ class StockScorer:
                 stock_code=stock_code, stock_name=stock_name,
                 total_score=score, passed=passed, mode=mode,
                 veto_reason=v if not passed else '', details=details,
+                indicators=indicators,
             )
 
         trend_result = _build('TREND', trend_score, trend_details)

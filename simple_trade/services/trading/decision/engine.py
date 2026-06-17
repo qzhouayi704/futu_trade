@@ -30,6 +30,19 @@ from .models import (
 
 logger = logging.getLogger("decision_engine")
 
+# 因子门(阶段2, opt-in 默认关闭) —— 已验证强单因子的"软门"参数。
+# 启用: 环境变量 FACTOR_GATE_ENABLED=1。软门含义=只拦"非在动票 且 评分不足以越过更高门槛"，
+# 强评分票仍放行；非硬杀(出货陷阱硬门负贡献的前车之鉴)。阈值取自夜间回测的单因子结论:
+#   前日大涨≥5%(+31pp) / 今日振幅≥8%(在动) / 日线高位≥0.67(+34pp) / 午后≥14点近随机(降权)
+FACTOR_GATE_CONFIG = {
+    'prev_change_min': 5.0,       # 前日涨跌% 视为"在动"的下限
+    'amplitude_min': 8.0,         # 今日振幅% 视为"在动"的下限
+    'kline_pos_min': 0.67,        # 日线位置(0-1) 视为"高位/突破"的下限
+    'non_inplay_score_bar': 75,   # 非在动票放行所需的更高评分(正常 PASSING_SCORE=60)
+    'afternoon_hour': 14,         # 午后降权起点(港股午后≥14点脉冲近随机)
+    'afternoon_score_bar': 75,    # 午后放行所需的更高评分
+}
+
 
 class UnifiedTradeDecisionEngine:
     """统一交易决策引擎"""
@@ -581,6 +594,12 @@ class UnifiedTradeDecisionEngine:
             #    检测仍保留在诊断链路(_explain，约1025行)与 AI 分析中仅作展示参考。
             #    详见 scripts/analysis/warning_signal_backtest_report.md
 
+            # 5. 因子门(阶段2, opt-in 默认关闭) —— 已验证强单因子软门
+            if os.environ.get('FACTOR_GATE_ENABLED', '').lower() in ('1', 'true', 'yes'):
+                block = self._check_factor_gates(stock_code)
+                if block:
+                    return {'passed': False, 'reason': block}
+
             return {'passed': True, 'reason': ''}
 
         except Exception as e:
@@ -705,10 +724,30 @@ class UnifiedTradeDecisionEngine:
             )
 
             if result.get('success'):
+                entry_est = decision.price * (1 - decision.buy_dip_pct / 100)
                 logger.info(
                     f"[DecisionEngine] ✅ 交易任务创建成功 {decision.stock_code} "
-                    f"入场价≈{decision.price * (1 - decision.buy_dip_pct / 100):.3f}"
+                    f"入场价≈{entry_est:.3f}"
                 )
+                # 两模式混合出场（opt-in 影子）：把该持仓登记进 SmartPositionManager(hybrid)，
+                # 由 5 秒风控环用混合出场逻辑评估。注意：当前 SMART_POSITION 决策只记录不执行
+                # → 纯影子观察，绝不会下真实卖单。需 HYBRID_EXIT_ENABLED 显式开启。
+                try:
+                    import os
+                    if os.environ.get('HYBRID_EXIT_ENABLED', '').lower() in ('1', 'true', 'yes'):
+                        spm = getattr(self.container, 'smart_position_manager', None)
+                        if spm:
+                            spm.register_position(
+                                stock_code=decision.stock_code,
+                                stock_name=getattr(decision, 'stock_name', '') or decision.stock_code,
+                                entry_price=round(entry_est, 3),
+                                qty=decision.quantity,
+                                atr=round(entry_est * 0.02, 3),  # hybrid 不使用 atr，占位
+                                exit_profile='hybrid',
+                            )
+                            logger.info(f"[DecisionEngine] 🌓 hybrid影子登记 {decision.stock_code} @≈{entry_est:.3f}")
+                except Exception as _e:
+                    logger.warning(f"[DecisionEngine] hybrid影子登记失败 {decision.stock_code}: {_e}")
             else:
                 logger.warning(
                     f"[DecisionEngine] ❌ 交易任务创建失败 {decision.stock_code}: "
@@ -795,6 +834,46 @@ class UnifiedTradeDecisionEngine:
         except Exception:
             pass
         return 0
+
+    def _check_factor_gates(self, stock_code: str) -> str:
+        """已验证单因子"软门"(opt-in, 由 FACTOR_GATE_ENABLED 控制)。
+
+        返回非空字符串=拦截原因，''=放行。软门设计: 仅当"非在动票 且 评分不足以
+        越过更高门槛"时拦截，强评分票照常放行；午后(≥14点)同理抬高放行门槛。
+        因子值取自 StockScorer 缓存(score_all_strategies 已算)，无额外查询。
+        """
+        try:
+            scorer = getattr(self.container, 'stock_scorer', None)
+            if not scorer:
+                return ''
+            cached = scorer.get_score(stock_code)
+            if not cached:
+                return ''  # 无评分缓存 → 不拦截(交由其它门处理)
+            ind = cached.indicators or {}
+            score = cached.total_score or 0
+            cfg = FACTOR_GATE_CONFIG
+
+            prev_chg = ind.get('prev_day_change')   # 前日涨跌%
+            amp = ind.get('day_amplitude')          # 今日振幅%
+            kpos = ind.get('kline_pos_20d')         # 日线位置 0-1
+
+            # "在动票"判定: 前日大涨 / 今日振幅大 / 日线高位突破 任一成立
+            in_play = (
+                (prev_chg is not None and prev_chg >= cfg['prev_change_min']) or
+                (amp is not None and amp >= cfg['amplitude_min']) or
+                (kpos is not None and kpos >= cfg['kline_pos_min'])
+            )
+            if not in_play and score < cfg['non_inplay_score_bar']:
+                return (f"[日线门] 非在动(prev={prev_chg} amp={amp} pos={kpos}) "
+                        f"且评分{score}<{cfg['non_inplay_score_bar']}")
+
+            # 午后降权: ≥14点脉冲近随机 → 抬高放行门槛
+            if datetime.now().hour >= cfg['afternoon_hour'] and score < cfg['afternoon_score_bar']:
+                return f"[午后门] ≥{cfg['afternoon_hour']}点 且评分{score}<{cfg['afternoon_score_bar']}"
+
+            return ''
+        except Exception:
+            return ''  # 门异常不阻止交易
 
     def _is_in_cooldown(self, stock_code: str) -> bool:
         """检查是否在冷却期"""
