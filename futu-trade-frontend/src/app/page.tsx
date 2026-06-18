@@ -12,7 +12,11 @@ import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel, 
 import { usePositions } from "./hooks/useDashboard";
 import { useSignalPipeline } from "@/lib/hooks/useSignalPipeline";
 import { useSocketQuerySync } from "@/lib/hooks/useSocketQuerySync";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import type { QuoteData } from "@/types/socket";
+
+const EVIDENCE_TAB_KEY = "cockpitEvidenceTab";
 
 export default function CockpitPage() {
   const { socket, isConnected } = useSocket();
@@ -36,6 +40,19 @@ export default function CockpitPage() {
   const [startModalOpen, setStartModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [selectedStockCode, setSelectedStockCode] = useState<string | null>(null);
+
+  // 证据区当前 tab（记住上次选择）
+  const [evidenceTab, setEvidenceTab] = useState("feed");
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(EVIDENCE_TAB_KEY);
+      if (saved) setEvidenceTab(saved);
+    } catch {}
+  }, []);
+  const handleEvidenceTab = (v: string) => {
+    setEvidenceTab(v);
+    try { localStorage.setItem(EVIDENCE_TAB_KEY, v); } catch {}
+  };
 
   // 持仓股票代码
   const positionStockCodes = useMemo(
@@ -122,44 +139,49 @@ export default function CockpitPage() {
         />
       </div>
 
-      {/* ═══ 策略面板 ═══ */}
-      <div className="mb-4 md:mb-5">
-        <StrategyPanel />
-      </div>
-
-      {/* ═══ 信号强度 TOP 5 排名 ═══ */}
-      <div className="mb-4 md:mb-5">
-        <SignalRankingPanel />
-      </div>
-
-      {/* ═══ 今日可买精选(手动交易用) ═══ */}
-      <div className="mb-4 md:mb-5">
+      {/* ═══ A 区「现在该做什么」：今日可买精选 + 持仓教练 ═══ */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5 mb-4 md:mb-5">
         <DailyPickCard onSelectStock={setSelectedStockCode} />
+        <PositionPanel
+          positions={positions}
+          loading={positionsLoading}
+          realtimePrices={realtimePrices}
+        />
       </div>
 
-      {/* ═══ 核心区域：双列布局 ═══ */}
-      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4 md:gap-5 mb-4 md:mb-5">
-        {/* 左列：信号流 (3/5 宽度) */}
-        <div className="xl:col-span-3">
+      {/* ═══ 策略 / 监控概览（折叠，非即时） ═══ */}
+      <div className="mb-4 md:mb-5 rounded-xl border border-border/60 bg-card px-4">
+        <Accordion type="single" collapsible>
+          <AccordionItem value="strategy" className="border-b-0">
+            <AccordionTrigger>📊 策略 / 监控概览</AccordionTrigger>
+            <AccordionContent>
+              <StrategyPanel />
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      </div>
+
+      {/* ═══ B 区「证据 / 信号流」：标签收纳，减少长滚动 ═══ */}
+      <Tabs value={evidenceTab} onValueChange={handleEvidenceTab} className="mb-4 md:mb-5">
+        <TabsList className="overflow-x-auto no-scrollbar max-w-full">
+          <TabsTrigger value="feed">📡 信号流</TabsTrigger>
+          <TabsTrigger value="ranking">🏆 强度排名</TabsTrigger>
+          <TabsTrigger value="decision">📋 决策日志</TabsTrigger>
+        </TabsList>
+        <TabsContent value="feed">
           <SignalFeed
             positionStockCodes={positionStockCodes}
             pipelineRecords={pipelineRecords}
             onSelectStock={setSelectedStockCode}
           />
-        </div>
-
-        {/* 右列：持仓 + Sniper止盈状态 (2/5 宽度) */}
-        <div className="xl:col-span-2">
-          <PositionPanel
-            positions={positions}
-            loading={positionsLoading}
-            realtimePrices={realtimePrices}
-          />
-        </div>
-      </div>
-
-      {/* ═══ 底部：决策日志 ═══ */}
-      <DecisionLog records={pipelineRecords} />
+        </TabsContent>
+        <TabsContent value="ranking">
+          <SignalRankingPanel />
+        </TabsContent>
+        <TabsContent value="decision">
+          <DecisionLog records={pipelineRecords} />
+        </TabsContent>
+      </Tabs>
 
       {/* ═══ 多维信号驾驶舱 Modal ═══ */}
       {selectedStockCode && (
