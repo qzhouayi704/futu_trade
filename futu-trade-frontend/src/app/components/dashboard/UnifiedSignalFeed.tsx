@@ -8,22 +8,11 @@ import Link from "next/link";
 import { Card } from "@/components/common";
 import { useSocket } from "@/lib/socket";
 import apiClient from "@/lib/api/client";
+import { useSniperSignals } from "@/app/hooks/useSniper";
+import type { SniperSignal } from "@/types/trade";
 import { QuickOrderPopover } from "./QuickOrderPopover";
 
 // ── 类型定义 ──────────────────────────────────────
-
-interface SniperSignal {
-  time: string;
-  stock_code: string;
-  stock_name: string;
-  signal_type: string;
-  is_red: boolean;
-  emoji: string;
-  price: number;
-  detail: string;
-  action: string;
-  severity: string;
-}
 
 interface VolumePriceAlert {
   detected: boolean;
@@ -154,7 +143,8 @@ export function UnifiedSignalFeed({
   onSelectStock,
 }: UnifiedSignalFeedProps) {
   const { socket } = useSocket();
-  const [sniperSignals, setSniperSignals] = useState<SniperSignal[]>([]);
+  // 共享 ["sniperSignals"] 缓存：与 DailyPickCard 去重为一次请求；WS 推送由 useSocketQuerySync 写缓存
+  const { data: sniperSignals = [] } = useSniperSignals();
   const [vpAlerts, setVpAlerts] = useState<VolumePriceAlert[]>([]);
   const [localPipelineRecords, setLocalPipelineRecords] = useState<PipelineRecord[]>([]);
   const [momentumSignals, setMomentumSignals] = useState<MomentumSignal[]>([]);
@@ -169,16 +159,15 @@ export function UnifiedSignalFeed({
 
   const loadData = useCallback(async () => {
     try {
+      // 注: /sniper/signals 已移到共享 useSniperSignals 钩子，避免与 DailyPickCard 重复请求
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const [sigRes, vpRes, pipeRes, momRes]: any[] = await Promise.all([
-        apiClient.get("/sniper/signals"),
+      const [vpRes, pipeRes, momRes]: any[] = await Promise.all([
         apiClient.get("/enhanced-heat/volume-price-alerts?source=all"),
         hasExternalPipelineRecords
           ? Promise.resolve(null)
           : apiClient.get("/sniper/signal-pipeline?limit=20"),
         apiClient.get("/signals/multi-dimensional/list?limit=15"),
       ]);
-      if (sigRes.success && Array.isArray(sigRes.data)) setSniperSignals(sigRes.data);
       if (vpRes.success && Array.isArray(vpRes.data)) setVpAlerts(vpRes.data);
       if (pipeRes?.success && Array.isArray(pipeRes.data)) setLocalPipelineRecords(pipeRes.data);
       
@@ -220,20 +209,7 @@ export function UnifiedSignalFeed({
   useEffect(() => {
     if (!socket) return;
 
-    const handleSniper = (data: SniperSignal) => {
-      setSniperSignals(prev => {
-        const updated = [data, ...prev];
-        const seen = new Set<string>();
-        return updated.filter(s => {
-          const key = `${s.stock_code}:${s.signal_type}:${s.time}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      });
-      setLastUpdate(new Date());
-    };
-
+    // sniper_signal 推送已由全局 useSocketQuerySync 写入共享缓存(本组件经 useSniperSignals 读取)
     const handlePipeline = (data: PipelineRecord) => {
       setLocalPipelineRecords(prev => [data, ...prev].slice(0, 50));
       setLastUpdate(new Date());
@@ -253,13 +229,11 @@ export function UnifiedSignalFeed({
       setLastUpdate(new Date());
     };
 
-    socket.on("sniper_signal", handleSniper);
     if (!hasExternalPipelineRecords) {
       socket.on("signal_pipeline", handlePipeline);
     }
     socket.on("momentum_signal", handleMomentum);
     return () => {
-      socket.off("sniper_signal", handleSniper);
       if (!hasExternalPipelineRecords) {
         socket.off("signal_pipeline", handlePipeline);
       }

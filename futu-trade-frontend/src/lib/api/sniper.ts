@@ -14,6 +14,10 @@ export const sniperApi = {
   /** 获取TOP排行榜 */
   getRanking: (): Promise<ApiResponse> => apiClient.get("/sniper/ranking"),
 
+  /** 批量盘口判定(追高/洗盘)，codes 逗号分隔 */
+  getTapeVerdicts: (codes: string): Promise<ApiResponse> =>
+    apiClient.get(`/sniper/tape-verdicts?codes=${encodeURIComponent(codes)}`),
+
   /** 获取Sniper止盈追踪状态 */
   getTrailingStatus: (): Promise<ApiResponse> => apiClient.get("/sniper/trailing-status"),
 

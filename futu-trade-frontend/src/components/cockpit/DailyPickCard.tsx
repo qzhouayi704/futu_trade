@@ -1,75 +1,17 @@
 // 今日可买精选 — 为手动交易做的"一眼可买"清单
 // 只挑「持续抢筹·可持有」(被反复大买、且未追高)的 mega_buy,按抢筹次数排好,
-// 每只直接给出"现价 / 当日已涨 / 怎么卖"。数据来自 /sniper/signals(已含 tier 字段)+ WS。
+// 每只直接给出"现价 / 当日已涨 / 怎么卖"。数据来自共享 RQ 钩子(与信号流去重)+ WS 缓存同步。
 
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { useSocket } from "@/lib/socket";
-import apiClient from "@/lib/api/client";
-
-interface SniperSignal {
-  time: string;
-  stock_code: string;
-  stock_name: string;
-  signal_type: string;
-  price: number;
-  tier?: string;          // opportunity / pulse / reference
-  mode?: string;
-  buy_count?: number;     // 当日该股第几次 mega_buy(持续抢筹次数)
-  intraday_gain?: number; // 当日已涨幅%
-  posture?: string;       // 配套出场动作
-  strength?: number;
-}
+import { useMemo } from "react";
+import { useSniperSignals, useSniperTapeVerdicts } from "@/app/hooks/useSniper";
+import type { SniperSignal } from "@/types/trade";
 
 export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string) => void }) {
-  const { socket } = useSocket();
-  const [signals, setSignals] = useState<SniperSignal[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  // 盘口判定(追高/洗盘)：候选可能"早是好票、现已冲高"——别追；回踩有承接可低吸
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [tapeMap, setTapeMap] = useState<Record<string, any>>({});
-
-  const load = useCallback(async () => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const res: any = await apiClient.get("/sniper/signals");
-      if (res.success && Array.isArray(res.data)) {
-        setSignals(res.data);
-        setLastUpdate(new Date());
-      }
-    } catch (e) {
-      console.error("加载今日精选失败:", e);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 180000); // 3分钟
-    return () => clearInterval(t);
-  }, [load]);
-
-  useEffect(() => {
-    if (!socket) return;
-    const handler = (data: SniperSignal) => {
-      setSignals((prev) => {
-        const updated = [data, ...prev];
-        const seen = new Set<string>();
-        return updated.filter((s) => {
-          const key = `${s.stock_code}:${s.signal_type}:${s.time}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      });
-      setLastUpdate(new Date());
-    };
-    socket.on("sniper_signal", handler);
-    return () => { socket.off("sniper_signal", handler); };
-  }, [socket]);
+  // 共享 ["sniperSignals"] 缓存：与 UnifiedSignalFeed 去重为一次请求；WS 推送由 useSocketQuerySync 写缓存
+  const { data: signals = [], isLoading: loading, dataUpdatedAt } = useSniperSignals();
+  const lastUpdate = dataUpdatedAt ? new Date(dataUpdatedAt) : null;
 
   // 只取「持续抢筹·可持有」(tier=opportunity) 的 mega_buy;每只股票保留抢筹次数最高的一条
   const picks = useMemo(() => {
@@ -88,20 +30,11 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
       .slice(0, 8);
   }, [signals]);
 
-  // 拉精选股的实时盘口判定(追高/洗盘)，给每只打标
+  // 精选股的实时盘口判定(追高/洗盘)，给每只打标
   const pickCodes = picks.map((p) => p.stock_code).join(",");
-  useEffect(() => {
-    if (!pickCodes) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const res: any = await apiClient.get(`/sniper/tape-verdicts?codes=${encodeURIComponent(pickCodes)}`);
-        if (!cancelled && res?.success && res.data) setTapeMap(res.data);
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, [pickCodes]);
+  const tapeQuery = useSniperTapeVerdicts(pickCodes);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tapeMap: Record<string, any> = (tapeQuery.data as Record<string, any>) ?? {};
 
   return (
     <div className="rounded-xl border border-emerald-100 bg-white/80 backdrop-blur-sm shadow-sm">

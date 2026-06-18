@@ -11,11 +11,15 @@ import { MonitorStartModal, StrategyPanel } from "@/components/monitor";
 import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel, DailyPickCard, MultiSignalDashboard } from "@/components/cockpit";
 import { usePositions } from "./hooks/useDashboard";
 import { useSignalPipeline } from "@/lib/hooks/useSignalPipeline";
+import { useSocketQuerySync } from "@/lib/hooks/useSocketQuerySync";
 import type { QuoteData } from "@/types/socket";
 
 export default function CockpitPage() {
   const { socket, isConnected } = useSocket();
   const { showToast } = useToast();
+
+  // WS 推送 → React Query 共享缓存（sniper_signal 等），各卡统一更新
+  useSocketQuerySync();
 
   // 持仓数据
   const { data: positions = [], isLoading: positionsLoading, refetch: refetchPositions } = usePositions();

@@ -123,6 +123,15 @@ export interface SniperSignal {
   detail: string;
   action: string;
   severity: string;
+  // mega_buy 运行时分层/强度字段（仅部分信号/接口携带，可选）
+  tier?: string;          // opportunity / pulse / reference
+  mode?: string;
+  buy_count?: number;     // 当日该股第几次 mega_buy
+  intraday_gain?: number; // 当日已涨幅%
+  posture?: string;       // 配套出场动作
+  strength?: number;      // 0-100
+  strength_label?: string;
+  pre_jump3?: number;     // 信号前3分钟急涨%
 }
 
 export interface PositionCapitalFlow {
