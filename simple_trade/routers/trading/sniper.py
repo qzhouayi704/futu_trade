@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """IntradaySniper API 路由"""
 
+import asyncio
+
 from fastapi import APIRouter
 from ...dependencies import get_container
 
@@ -38,6 +40,39 @@ async def get_recent_signals(minutes: int = 30):
         "message": f"最近{minutes}分钟内 {len(signals)} 条信号",
         "data": signals,
     }
+
+
+@router.get("/tape-verdicts")
+async def get_tape_verdicts(codes: str = ""):
+    """批量盘口判定(追高/洗盘)，供买入候选卡/信号流标注。
+
+    codes 逗号分隔(最多30只)；返回 {code: analyze_intraday_tape(code)}。
+    买入候选用 chase(追高·别追)，回踩用 selloff(洗盘=低吸/出货=别接)。
+    """
+    container = get_container()
+    sniper = getattr(container, 'intraday_sniper', None)
+    if not sniper:
+        return {"success": False, "message": "IntradaySniper 未初始化", "data": {}}
+
+    norm = []
+    for c in (codes or "").split(","):
+        c = c.strip()
+        if not c:
+            continue
+        norm.append(c if c.startswith("HK.") else f"HK.{c}")
+    norm = norm[:30]
+
+    def _compute():
+        out = {}
+        for c in norm:
+            try:
+                out[c] = sniper.analyze_intraday_tape(c)
+            except Exception:
+                out[c] = {"available": False}
+        return out
+
+    data = await asyncio.to_thread(_compute)
+    return {"success": True, "data": data, "message": f"{len(data)} 只盘口判定"}
 
 
 @router.get("/ranking")

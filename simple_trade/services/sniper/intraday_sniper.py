@@ -177,6 +177,171 @@ class IntradaySniper:
         """获取当前 TOP 排行榜"""
         return self._top_ranking
 
+    def analyze_intraday_tape(self, stock_code: str) -> dict:
+        """实时盘口判定，供「交易前检查」使用。
+
+        基于当日分钟级 tape 同时给出两类判定（与信号检测同源：复用
+        _load_minute_data / _pre_jump_pct / 动态mega阈值）：
+          - chase(追高)：当前是否处于"已涨高位 + 急拉脉冲"的接盘区(买入风险)。
+          - selloff(砸盘/洗盘)：当前若在回踩，是"洗盘有承接(非卖点)"还是
+            "放量出货(该走)"——用来拦住恐慌割肉。
+
+        返回 dict；任一异常/数据不足时 {"available": False}，绝不抛出。
+        """
+        out = {"available": False}
+        try:
+            db = getattr(self.container, 'db_manager', None)
+            if not db:
+                return out
+            today = date.today().isoformat()
+            with db.get_connection() as conn:
+                timeline, avg_turnover, day_total = self._load_minute_data(
+                    conn, stock_code, today
+                )
+            mega_sell_today = any(
+                s.stock_code == stock_code and s.signal_type == 'mega_sell'
+                for s in self._today_signals
+            )
+            return self._judge_intraday_tape(
+                timeline, avg_turnover, day_total, mega_sell_today
+            )
+        except Exception as e:
+            logger.debug(f"analyze_intraday_tape 失败 {stock_code}: {e}")
+            return out
+
+    def _judge_intraday_tape(self, timeline, avg_turnover, day_total,
+                             mega_sell_today: bool = False) -> dict:
+        """对已加载的分钟级 tape 给出追高/洗盘判定（纯函数，便于回放验证）。"""
+        out = {"available": False}
+        try:
+            valid = [(i, p) for i, p in enumerate(timeline) if p['price'] > 0]
+            if len(valid) < 3:
+                return out
+            last_idx = valid[-1][0]
+            pts = [p for _, p in valid]
+
+            open_p = pts[0]['price']
+            cur = pts[-1]['price']
+            prices = [p['price'] for p in pts]
+            high, low = max(prices), min(prices)
+            rng = high - low
+            gain_pct = round((cur / open_p - 1) * 100, 2) if open_p > 0 else 0.0
+            position_pct = round((cur - low) / rng * 100, 1) if rng > 0 else 50.0
+            from_high_pct = round((cur / high - 1) * 100, 2) if high > 0 else 0.0
+            pre_jump3 = self._pre_jump_pct(timeline, last_idx, 3)
+            run10 = self._pre_jump_pct(timeline, last_idx, 10)
+
+            # 动态 mega 阈值（与 _detect_signals 同源）
+            _, mega_min, _ = self._get_tier_thresholds(day_total)
+            abs_nets = [abs(p['net']) for p in timeline if p['net'] != 0]
+            avg_abs_net = sum(abs_nets) / len(abs_nets) if abs_nets else avg_turnover
+            dynamic_mega = max(mega_min, avg_abs_net * MEGA_MULTIPLIER)
+
+            # 当日是否真正触发过"巨量砸盘"(mega_sell_today 由调用方按实际信号传入)
+            worst_net_sell = min((p['net'] for p in timeline), default=0.0)
+            worst_sell_mult = (round(abs(worst_net_sell) / dynamic_mega, 2)
+                               if dynamic_mega > 0 else 0.0)
+
+            # ===== 追高判定（买入风险）=====
+            # 位置(position_pct)与急拉(run10/pre_jump3)都不依赖参考价，最稳健。
+            if pre_jump3 >= 6:
+                chase, chase_reason = "high", (
+                    f"信号前3分钟急涨{pre_jump3:.0f}%，正打在脉冲冲高区，追高大概率回吐"
+                )
+            elif position_pct >= 90 and run10 >= 4:
+                chase, chase_reason = "high", (
+                    f"处于日内最高位{position_pct:.0f}%、近10分钟急拉+{run10:.1f}%，"
+                    f"典型冲高接盘区，别追"
+                )
+            elif (position_pct >= 80 and run10 >= 2.5) or pre_jump3 >= 1.5 or position_pct >= 88:
+                bits = []
+                if position_pct >= 80:
+                    bits.append(f"日内高位{position_pct:.0f}%")
+                if run10 >= 2.5:
+                    bits.append(f"近10分钟+{run10:.1f}%")
+                if pre_jump3 >= 1.5:
+                    bits.append(f"刚急涨+{pre_jump3:.1f}%")
+                chase, chase_reason = "caution", (
+                    "、".join(bits) + "，追高风险偏高，建议等回调再买"
+                )
+            else:
+                chase, chase_reason = "none", ""
+
+            # ===== 砸盘/洗盘判定（卖出/持有参考）=====
+            recent = pts[-10:]
+            rec_high = max(p['price'] for p in recent)
+            pullback = round((cur / rec_high - 1) * 100, 2) if rec_high > 0 else 0.0
+            in_dip = position_pct <= 35 or pullback <= -1.0
+
+            selloff = {
+                "in_dip": in_dip, "force": "none", "verdict": "neutral",
+                "mega_sell_today": mega_sell_today,
+                "from_open_pct": gain_pct, "from_high_pct": from_high_pct,
+                "position_pct": position_pct, "reason": "",
+            }
+
+            if in_dip:
+                low_min = min(pts, key=lambda p: p['price'])
+                lo_tv, lo_net = low_min['turnover'], low_min['net']
+                lo_buy = (lo_tv + lo_net) / 2
+                lo_sell = (lo_tv - lo_net) / 2
+                low_bs = round(lo_buy / lo_sell, 2) if lo_sell > 0 else 9.9
+                floor_band = low * 1.003
+                floor_tests = sum(1 for p in pts if p['price'] <= floor_band)
+                recovering = cur >= low * 1.003
+                shallow = from_high_pct > -5.0 and gain_pct > -5.0
+                absorption = low_bs >= 0.5
+
+                if mega_sell_today or worst_sell_mult >= 1.0 or from_high_pct <= -6.0:
+                    force = "strong"
+                elif worst_sell_mult >= 0.6 or from_high_pct <= -3.0:
+                    force = "medium"
+                else:
+                    force = "weak"
+                selloff["force"] = force
+
+                is_distribution = (
+                    mega_sell_today
+                    or (not shallow)
+                    or (force == "strong" and not absorption and not recovering)
+                )
+                is_shakeout = (not mega_sell_today) and shallow and absorption
+
+                if is_distribution and not is_shakeout:
+                    selloff["verdict"] = "distribution"
+                    selloff["reason"] = (
+                        f"放量下跌且缺承接（最强单分钟净卖{worst_sell_mult:.1f}×巨量阈值"
+                        + ("、已触发巨量砸盘" if mega_sell_today else "")
+                        + f"，较日内高{from_high_pct:.1f}%），更像真出货，卖出/止损合理"
+                    )
+                elif is_shakeout:
+                    selloff["verdict"] = "shakeout"
+                    selloff["reason"] = (
+                        f"虽在日内低位{position_pct:.0f}%，但有承接"
+                        f"（低点买卖比{low_bs:.2f}、地板被试探{floor_tests}次未破"
+                        + ("、已回收" if recovering else "")
+                        + "），未触发巨量砸盘，更像洗盘——非卖点，别被恐慌甩下车"
+                    )
+                else:
+                    selloff["verdict"] = "neutral"
+                    selloff["reason"] = (
+                        f"回踩中、力度{force}，方向未明，别急着割，等承接或破位确认"
+                    )
+
+            out.update({
+                "available": True, "as_of": pts[-1]['time'],
+                "open": open_p, "current": cur, "high": high, "low": low,
+                "gain_pct": gain_pct, "position_pct": position_pct,
+                "from_high_pct": from_high_pct,
+                "pre_jump3": pre_jump3, "run10": run10,
+                "chase": chase, "chase_reason": chase_reason,
+                "selloff": selloff,
+            })
+            return out
+        except Exception as e:
+            logger.debug(f"_judge_intraday_tape 失败: {e}")
+            return out
+
     # ==================== 扫描循环 ====================
 
     async def _scan_loop(self):

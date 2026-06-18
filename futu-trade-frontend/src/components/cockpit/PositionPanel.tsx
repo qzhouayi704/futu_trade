@@ -8,6 +8,18 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Card } from "@/components/common";
 import { sniperApi } from "@/lib/api/sniper";
+import apiClient from "@/lib/api/client";
+
+// 持仓教练卡(纯咨询)：今日交易计数(churn)/成本买高/洗盘别割/持有规则
+interface CoachInfo {
+  stock_code: string;
+  trade_count: number;
+  churn: boolean;
+  cost_drift_pct: number | null;
+  blunt: string;
+  selloff: { verdict: string; reason: string } | null;
+  hold_recommendation: { label: string; detail: string; activate_pct: number; pullback_pct: number };
+}
 
 interface Position {
   stock_code: string;
@@ -56,6 +68,7 @@ const MODE_KEY = "positionExitModes";
 
 export function PositionPanel({ positions, loading, realtimePrices }: PositionPanelProps) {
   const [trailingStatus, setTrailingStatus] = useState<Record<string, TrailingStatus>>({});
+  const [coachMap, setCoachMap] = useState<Record<string, CoachInfo>>({});
   const [modes, setModes] = useState<Record<string, ExitMode>>({});
   const peakRef = useRef<Record<string, number>>({}); // 本会话每股峰值价
 
@@ -88,6 +101,24 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
     };
     load();
     const timer = setInterval(load, 15000); // 15秒刷新
+    return () => clearInterval(timer);
+  }, []);
+
+  // 加载持仓教练卡(纪律:今日交易计数/成本买高/洗盘别割)
+  useEffect(() => {
+    const load = async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const res: any = await apiClient.get("/trading/positions/coach");
+        if (res?.success && Array.isArray(res.data)) {
+          const m: Record<string, CoachInfo> = {};
+          for (const c of res.data) m[c.stock_code] = c;
+          setCoachMap(m);
+        }
+      } catch {}
+    };
+    load();
+    const timer = setInterval(load, 15000);
     return () => clearInterval(timer);
   }, []);
 
@@ -209,6 +240,51 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                     <span className="text-xs">{advice.icon}</span>
                     <span className="text-[10px] text-foreground/75 truncate">{advice.text}</span>
                   </div>
+
+                  {/* 纪律教练条：今日交易计数/成本买高/洗盘别割(纯咨询) */}
+                  {(() => {
+                    const coach = coachMap[pos.stock_code];
+                    if (!coach) return null;
+                    const so = coach.selloff;
+                    const drift = coach.cost_drift_pct ?? 0;
+                    const showStrip = coach.churn || drift > 0 || !!so;
+                    return (
+                      <>
+                        {showStrip && (
+                          <div className="flex items-center flex-wrap gap-1 mt-1">
+                            {coach.churn && (
+                              <span className="text-[9px] px-1.5 py-px rounded-full bg-red-500 text-white font-bold">
+                                🔁 今日{coach.trade_count}笔
+                              </span>
+                            )}
+                            {drift > 0 && (
+                              <span className="text-[9px] px-1.5 py-px rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
+                                成本买高+{drift.toFixed(1)}%
+                              </span>
+                            )}
+                            {so?.verdict === "shakeout" && (
+                              <span className="text-[9px] px-1.5 py-px rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400">
+                                🟢 洗盘·别割
+                              </span>
+                            )}
+                            {so?.verdict === "distribution" && (
+                              <span className="text-[9px] px-1.5 py-px rounded-full bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400">
+                                🔴 出货·该走
+                              </span>
+                            )}
+                            <span className="text-[9px] px-1.5 py-px rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                              🏦 {coach.hold_recommendation.activate_pct}%/{coach.hold_recommendation.pullback_pct}%
+                            </span>
+                          </div>
+                        )}
+                        {coach.churn && coach.blunt && (
+                          <div className="mt-1 text-[10px] text-red-600 dark:text-red-400 bg-red-50/70 dark:bg-red-950/30 rounded px-1.5 py-1 leading-snug">
+                            {coach.blunt}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
 
                   {/* Sniper止盈状态(后端追踪, 若有) */}
                   {ts?.activated && ts.peak_price > 0 && (

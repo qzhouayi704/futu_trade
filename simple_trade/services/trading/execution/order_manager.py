@@ -495,3 +495,55 @@ class OrderManager:
             result['message'] = f"获取历史成交异常: {str(e)}"
 
         return result
+
+    def get_today_deals(self, stock_code: str = '') -> Dict[str, Any]:
+        """获取今日成交（实时，用于交易纪律检查）。
+
+        调用富途 deal_list_query（当日 T 日成交），比 history_deal_list_query
+        更轻、天然限定当日。列结构与 get_history_deals 一致。
+
+        Args:
+            stock_code: 股票代码（空字符串表示全部）
+
+        Returns:
+            {'success', 'message', 'deals': [{stock_code, stock_name, trd_side,
+             price, qty, create_time, deal_id}]}
+        """
+        result = {'success': False, 'message': '', 'deals': []}
+
+        if not self.trade_client:
+            result['message'] = "交易客户端未初始化"
+            return result
+
+        try:
+            kwargs = {'trd_env': self.trd_env}
+            if stock_code:
+                kwargs['code'] = stock_code
+
+            ret, data = self.trade_client.deal_list_query(**kwargs)
+
+            if ret == RET_OK and data is not None:
+                deals = []
+                for _, row in data.iterrows():
+                    deals.append({
+                        'deal_id': str(row.get('deal_id', '')),
+                        'stock_code': row.get('code', ''),
+                        'stock_name': row.get('stock_name', ''),
+                        'trd_side': row.get('trd_side', ''),
+                        'price': float(row.get('price', 0)),
+                        'qty': int(row.get('qty', 0)),
+                        'create_time': row.get('create_time', ''),
+                    })
+                result.update({
+                    'success': True,
+                    'message': f"获取到 {len(deals)} 条今日成交",
+                    'deals': deals
+                })
+            else:
+                result['message'] = f"获取今日成交失败: ret={ret}, data={data}"
+
+        except Exception as e:
+            logging.error(f"获取今日成交异常: {e}")
+            result['message'] = f"获取今日成交异常: {str(e)}"
+
+        return result

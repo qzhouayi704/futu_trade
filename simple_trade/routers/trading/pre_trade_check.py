@@ -17,6 +17,22 @@ router = APIRouter(prefix="/api/pre-trade-check", tags=["买入前检查"])
 logger = logging.getLogger("router.pre_trade_check")
 
 
+def _find_position(trade_service, stock_code: str):
+    """从富途持仓中找到该股的持仓 dict；失败/无持仓返回 None。"""
+    try:
+        if not trade_service:
+            return None
+        res = trade_service.get_positions()
+        if not res or not res.get("success"):
+            return None
+        for p in res.get("positions", []):
+            if p.get("stock_code") == stock_code and float(p.get("qty", 0) or 0) > 0:
+                return p
+    except Exception:
+        return None
+    return None
+
+
 @router.get("/recommendations", response_model=APIResponse)
 async def get_recommendations(container=Depends(get_container)):
     """
@@ -331,6 +347,7 @@ async def get_recommendations(container=Depends(get_container)):
 async def pre_trade_check(
     stock_code: str,
     trade_type: str = Query("buy"),
+    price: float | None = Query(None, description="拟下单价格(可选)，用于追买更贵/成本摊薄判定"),
     container=Depends(get_container),
 ):
     """
@@ -364,6 +381,7 @@ async def pre_trade_check(
         "trade_signals": [],         # 策略信号
         "warnings": [],              # 预警信息
         "holding_strategy": None,    # 持有策略建议
+        "intraday": None,            # 日内盘口：追高/洗盘判定
     }
 
     score = 50  # 基础分
@@ -403,13 +421,22 @@ async def pre_trade_check(
         max_sell_conf = 0
         max_buy_conf = 0
 
+        # 仅参考规则(回测无边际, 默认 R4/R11/R12)：仍展示在 flow_signals，但不计入评分/门控
+        try:
+            from ...services.analysis.flow.capital_flow_signal_engine import ADVISORY_RULE_IDS
+        except Exception:
+            ADVISORY_RULE_IDS = set()
+
         for r in (flow_rows or []):
+            advisory = (r[0] or "").upper() in ADVISORY_RULE_IDS
             sig = {
                 "rule_id": r[0], "rule_name": r[1], "signal_type": r[2],
                 "price": r[3], "reason": r[4], "confidence": r[5],
-                "priority": r[6], "created_at": r[7],
+                "priority": r[6], "created_at": r[7], "advisory": advisory,
             }
             flow_signals.append(sig)
+            if advisory:
+                continue  # 仅参考: 不影响 GO/CAUTION/STOP 评分, 也不出持有建议
             if r[2] == "SELL":
                 has_sell_signal = True
                 max_sell_conf = max(max_sell_conf, float(r[5] or 0))
@@ -589,6 +616,93 @@ async def pre_trade_check(
                 "impact": f"{signed:+d}",
             })
 
+        # ---- 5.5 日内盘口：追高(买) / 洗盘(卖) 判定 ----
+        # 复用 IntradaySniper 的分钟级 tape，拦"在日内高位接盘"和"在低位恐慌割肉"。
+        try:
+            sniper = getattr(container, 'intraday_sniper', None)
+            tape = sniper.analyze_intraday_tape(stock_code) if sniper else None
+        except Exception as e:
+            logger.debug(f"日内盘口分析失败: {e}")
+            tape = None
+
+        if tape and tape.get("available"):
+            result["intraday"] = tape
+            if not is_sell:
+                # 买入方向：追高风险（评分越高越安全，追高扣分）
+                chase = tape.get("chase")
+                reason = tape.get("chase_reason", "")
+                if chase == "high":
+                    score -= 28
+                    checks.append({
+                        "name": "日内追高", "status": "DANGER",
+                        "detail": reason, "impact": "-28",
+                    })
+                    warnings.append(f"🔴 追高风险：{reason}")
+                elif chase == "caution":
+                    score -= 10
+                    checks.append({
+                        "name": "日内追高", "status": "WARNING",
+                        "detail": reason, "impact": "-10",
+                    })
+                    warnings.append(f"🟡 {reason}")
+                else:
+                    checks.append({
+                        "name": "日内位置", "status": "GOOD",
+                        "detail": f"日内位置 {tape.get('position_pct')}%，非追高区",
+                        "impact": "0",
+                    })
+            else:
+                # 卖出方向：洗盘=不该卖(压低卖出分→STOP)，出货=支持卖出(加分)
+                so = tape.get("selloff") or {}
+                v_so = so.get("verdict")
+                reason = so.get("reason", "")
+                if v_so == "shakeout":
+                    score -= 22
+                    checks.append({
+                        "name": "砸盘力度·洗盘", "status": "DANGER",
+                        "detail": reason, "impact": "-22",
+                    })
+                    warnings.append(f"🟢 非卖点(洗盘)：{reason}")
+                elif v_so == "distribution":
+                    score += 12
+                    checks.append({
+                        "name": "砸盘力度·出货", "status": "GOOD",
+                        "detail": reason, "impact": "+12",
+                    })
+                    warnings.append(f"🔴 {reason}")
+                elif so.get("in_dip"):
+                    checks.append({
+                        "name": "砸盘力度", "status": "WARNING",
+                        "detail": reason, "impact": "0",
+                    })
+
+        # ---- 5.6 交易纪律（基于真实富途成交 + 持仓，拦过度交易/反向/追买更贵/成本摊薄）----
+        try:
+            from ...services.trading.discipline import analyze_discipline, DisciplineThresholds
+            tsvc = getattr(container, 'futu_trade_service', None)
+            om = getattr(tsvc, 'order_manager', None) if tsvc else None
+            today_deals = om.get_today_deals(stock_code).get('deals', []) if om else []
+            pos = _find_position(tsvc, stock_code)
+            th = DisciplineThresholds()
+            guard_cfg = getattr(getattr(container, 'trade_frequency_guard', None), 'config', None)
+            if guard_cfg:
+                th.overtrade_buys = getattr(guard_cfg, 'max_same_stock_buys', th.overtrade_buys)
+                th.reverse_cool_min = getattr(guard_cfg, 'min_rotation_interval_min', th.reverse_cool_min)
+                th.min_hold_seconds = getattr(guard_cfg, 'min_hold_seconds', th.min_hold_seconds)
+            disc = analyze_discipline(stock_code, trade_type, price, today_deals, pos, th)
+            if disc.get("available"):
+                result["discipline"] = disc
+                for f in disc.get("findings", []):
+                    score += int(f.get("impact", 0))
+                    checks.append({
+                        "name": f["name"], "status": f["status"],
+                        "detail": f["detail"], "impact": f"{int(f.get('impact', 0)):+d}",
+                    })
+                    if f.get("warning"):
+                        warnings.append(f["warning"])
+        except Exception as e:
+            logger.debug(f"交易纪律检查失败: {e}")
+
         # ---- 6. 预警（提取对当前操作不利的资金流信号） ----
         # 买入：SELL 信号是风险；卖出：BUY 信号(主力仍在买)才是踏空风险
         adverse_type = "BUY" if is_sell else "SELL"
@@ -625,6 +739,25 @@ async def pre_trade_check(
             result["verdict_reason"] = (
                 "主力仍在买入、技术面偏多，暂不建议卖出" if is_sell
                 else "多个维度发出负面信号，不建议买入"
+            )
+
+        # 日内盘口判定优先体现在结论上（更贴近当下该不该动手）：
+        # 明确的洗盘 → 卖出硬拦截(STOP，让用户二次确认)；明确的追高顶 → 绝不显示为可买。
+        _intra = result.get("intraday") or {}
+        if is_sell and (_intra.get("selloff") or {}).get("verdict") == "shakeout":
+            result["verdict"] = "STOP"
+            result["verdict_reason"] = "日内洗盘有承接、未见巨量出货——非卖点，别被恐慌甩下车"
+        elif (not is_sell) and _intra.get("chase") == "high":
+            if result["verdict"] == "GO":
+                result["verdict"] = "CAUTION"
+            result["verdict_reason"] = _intra.get("chase_reason") or result["verdict_reason"]
+
+        # 过度交易（churn）：被反复交易的票，绝不显示为绿色"可买/可卖"
+        if (result.get("discipline") or {}).get("churn") and result["verdict"] == "GO":
+            result["verdict"] = "CAUTION"
+            result["verdict_reason"] = (
+                f"今日已在该股成交{result['discipline'].get('trade_count')}笔，"
+                + ("先停手别再来回折腾" if not is_sell else "别在来回交易里追涨杀跌")
             )
 
         result["checks"] = checks

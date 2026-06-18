@@ -473,3 +473,61 @@ async def get_positions_advice(container=Depends(get_container)):
             meta={'count': 0, 'error': True}
         )
 
+
+@router.get("/positions/coach", response_model=APIResponse)
+async def get_positions_coach(container=Depends(get_container)):
+    """持仓教练卡：每只真实持仓 → 今日成交计数(churn)/成本漂移/盈亏/持有规则/洗盘别割。
+
+    纯咨询：基于真实富途成交 + 持仓，专治盈利持仓上的来回交易/追涨杀跌。
+    """
+    try:
+        from ...services.trading.discipline import (
+            analyze_discipline, build_coach, DisciplineThresholds,
+        )
+        trade_service = ensure_trade_service(container)
+
+        def _compute():
+            pos_res = trade_service.get_positions()
+            if not pos_res.get('success'):
+                return None, pos_res.get('message', '')
+            om = getattr(trade_service, 'order_manager', None)
+            all_deals = om.get_today_deals('').get('deals', []) if om else []
+            by_code = {}
+            for d in all_deals:
+                c = d.get('stock_code', '')
+                if c and not str(c).startswith('HK.'):
+                    c = f"HK.{c}"
+                by_code.setdefault(c, []).append(d)
+
+            th = DisciplineThresholds()
+            guard_cfg = getattr(getattr(container, 'trade_frequency_guard', None), 'config', None)
+            if guard_cfg:
+                th.overtrade_buys = getattr(guard_cfg, 'max_same_stock_buys', th.overtrade_buys)
+                th.reverse_cool_min = getattr(guard_cfg, 'min_rotation_interval_min', th.reverse_cool_min)
+                th.min_hold_seconds = getattr(guard_cfg, 'min_hold_seconds', th.min_hold_seconds)
+
+            sniper = getattr(container, 'intraday_sniper', None)
+            out = []
+            for p in pos_res.get('positions', []):
+                if float(p.get('qty', 0) or 0) <= 0:
+                    continue
+                code = p.get('stock_code', '')
+                disc = analyze_discipline(code, None, None, by_code.get(code, []), p, th)
+                try:
+                    tape = sniper.analyze_intraday_tape(code) if sniper else None
+                except Exception:
+                    tape = None
+                out.append(build_coach(p, disc, th, tape))
+            return out, None
+
+        data, err = await asyncio.to_thread(_compute)
+        if data is None:
+            return APIResponse(success=True, data=[], message=f"获取持仓失败: {err}",
+                               meta={'count': 0, 'error': True})
+        return APIResponse(success=True, data=data, message=f"{len(data)} 只持仓教练卡",
+                           meta={'count': len(data)})
+    except Exception as e:
+        logging.error(f"获取持仓教练卡失败: {e}")
+        return APIResponse(success=True, data=[], message=f"获取失败: {str(e)}",
+                           meta={'count': 0, 'error': True})
+

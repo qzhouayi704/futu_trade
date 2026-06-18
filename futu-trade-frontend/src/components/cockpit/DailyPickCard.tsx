@@ -27,6 +27,9 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
   const [signals, setSignals] = useState<SniperSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  // 盘口判定(追高/洗盘)：候选可能"早是好票、现已冲高"——别追；回踩有承接可低吸
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [tapeMap, setTapeMap] = useState<Record<string, any>>({});
 
   const load = useCallback(async () => {
     try {
@@ -84,6 +87,21 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
       .sort((a, b) => (b.buy_count ?? 0) - (a.buy_count ?? 0) || b.time.localeCompare(a.time))
       .slice(0, 8);
   }, [signals]);
+
+  // 拉精选股的实时盘口判定(追高/洗盘)，给每只打标
+  const pickCodes = picks.map((p) => p.stock_code).join(",");
+  useEffect(() => {
+    if (!pickCodes) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const res: any = await apiClient.get(`/sniper/tape-verdicts?codes=${encodeURIComponent(pickCodes)}`);
+        if (!cancelled && res?.success && res.data) setTapeMap(res.data);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [pickCodes]);
 
   return (
     <div className="rounded-xl border border-emerald-100 bg-white/80 backdrop-blur-sm shadow-sm">
@@ -148,6 +166,34 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
                     <span>📍</span>
                     <span className="truncate">{s.posture || "可持有到收盘(分批锁利+宽跟踪)"}</span>
                   </div>
+
+                  {/* 盘口判定标：现已冲高别追 / 追高风险 / 回踩可低吸 */}
+                  {(() => {
+                    const tape = tapeMap[s.stock_code];
+                    if (!tape?.available) return null;
+                    const chase = tape.chase;
+                    const soV = tape.selloff?.verdict;
+                    if (chase !== "high" && chase !== "caution" && soV !== "shakeout") return null;
+                    return (
+                      <div className="mt-1 flex items-center flex-wrap gap-1">
+                        {chase === "high" && (
+                          <span className="text-[9px] px-1.5 py-px rounded-full bg-red-500 text-white font-bold">
+                            ⚠️ 现已冲高·别追
+                          </span>
+                        )}
+                        {chase === "caution" && (
+                          <span className="text-[9px] px-1.5 py-px rounded-full bg-amber-100 text-amber-700">
+                            🟡 追高风险
+                          </span>
+                        )}
+                        {soV === "shakeout" && (
+                          <span className="text-[9px] px-1.5 py-px rounded-full bg-emerald-100 text-emerald-700">
+                            🟢 回踩有承接·可低吸
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}
