@@ -8,7 +8,7 @@
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from ...dependencies import get_container
 from ...schemas.common import APIResponse
@@ -328,14 +328,24 @@ async def get_recommendations(container=Depends(get_container)):
 
 
 @router.get("/{stock_code}", response_model=APIResponse)
-async def pre_trade_check(stock_code: str, container=Depends(get_container)):
+async def pre_trade_check(
+    stock_code: str,
+    trade_type: str = Query("buy"),
+    container=Depends(get_container),
+):
     """
-    买入前综合检查：聚合资金流、大单、仲裁、预警等多维度数据，
+    交易前综合检查：聚合资金流、大单、仲裁、预警等多维度数据，
     给出 GO / CAUTION / STOP 判定。
+
+    trade_type 控制评分方向：
+    - buy（建仓）：看多信号利好（加分）。
+    - sell（卖出）：看多信号利空（应继续持有、不卖，扣分），方向取反。
     """
     # 规范化股票代码
     if not stock_code.startswith("HK."):
         stock_code = f"HK.{stock_code}"
+
+    is_sell = str(trade_type).lower() == "sell"
 
     db = getattr(container, 'db_manager', None)
     if not db:
@@ -359,6 +369,18 @@ async def pre_trade_check(stock_code: str, container=Depends(get_container)):
     score = 50  # 基础分
     checks = []
     warnings = []
+
+    # 把"看多强度"按交易方向折算成实际加减分：
+    # 买入时看多=利好(加分)，卖出时看多=利空(应继续持有、不卖，扣分)。
+    def _signed(bullishness):
+        return int(bullishness) if not is_sell else -int(bullishness)
+
+    def _status(signed):
+        if signed > 0:
+            return "GOOD"
+        if signed < 0:
+            return "DANGER"
+        return "NEUTRAL"
 
     try:
         # ---- 1. 股票名称 ----
@@ -402,22 +424,22 @@ async def pre_trade_check(stock_code: str, container=Depends(get_container)):
         result["capital_flow_signals"] = flow_signals
 
         if has_sell_signal:
-            penalty = int(max_sell_conf * 30)
-            score -= penalty
+            signed = _signed(-int(max_sell_conf * 30))
+            score += signed
             checks.append({
                 "name": "资金流卖出信号",
-                "status": "DANGER",
+                "status": _status(signed),
                 "detail": f"存在 SELL 信号（最高置信度 {max_sell_conf:.0%}）",
-                "impact": f"-{penalty}",
+                "impact": f"{signed:+d}",
             })
         elif has_buy_signal:
-            bonus = int(max_buy_conf * 15)
-            score += bonus
+            signed = _signed(int(max_buy_conf * 15))
+            score += signed
             checks.append({
                 "name": "资金流买入信号",
-                "status": "GOOD",
+                "status": _status(signed),
                 "detail": f"存在 BUY 信号（最高置信度 {max_buy_conf:.0%}）",
-                "impact": f"+{bonus}",
+                "impact": f"{signed:+d}",
             })
         else:
             checks.append({
@@ -450,35 +472,40 @@ async def pre_trade_check(stock_code: str, container=Depends(get_container)):
             }
             result["big_order_summary"] = big_summary
 
-            # 评分
+            # 评分（strength 即看多强度：正=主力在买，负=主力在卖）
             if strength < -0.2:
-                penalty = int(abs(strength) * 40)
-                score -= penalty
+                signed = _signed(-int(abs(strength) * 40))
+                score += signed
                 checks.append({
                     "name": "大单强度",
-                    "status": "DANGER",
+                    "status": _status(signed),
                     "detail": f"大单强度 {strength:.2f}（主力在卖，买卖比 {ratio:.2f}）",
-                    "impact": f"-{penalty}",
+                    "impact": f"{signed:+d}",
                 })
-                warnings.append(f"⚠️ 大单净卖出，强度 {strength:.2f}，主力资金在撤离")
+                if signed < 0:
+                    warnings.append(f"⚠️ 大单净卖出，强度 {strength:.2f}，主力资金在撤离")
             elif strength < 0.1:
+                # 方向不明确：无论买卖，不确定性都是一种风险
+                signed = _signed(-5)
+                score += signed
                 checks.append({
                     "name": "大单强度",
                     "status": "WARNING",
                     "detail": f"大单强度 {strength:.2f}（方向不明确，买卖比 {ratio:.2f}）",
-                    "impact": "-5",
+                    "impact": f"{signed:+d}",
                 })
-                score -= 5
                 warnings.append(f"⚠️ 大单强度仅 {strength:.2f}，资金方向不明确")
             elif strength >= 0.2:
-                bonus = int(strength * 20)
-                score += bonus
+                signed = _signed(int(strength * 20))
+                score += signed
                 checks.append({
                     "name": "大单强度",
-                    "status": "GOOD",
+                    "status": _status(signed),
                     "detail": f"大单强度 {strength:.2f}（主力在买，买卖比 {ratio:.2f}）",
-                    "impact": f"+{bonus}",
+                    "impact": f"{signed:+d}",
                 })
+                if is_sell and signed < 0:
+                    warnings.append(f"⚠️ 大单强度 {strength:.2f}，主力仍在买，卖出可能踏空")
             else:
                 checks.append({
                     "name": "大单强度",
@@ -503,22 +530,22 @@ async def pre_trade_check(stock_code: str, container=Depends(get_container)):
                     result["arbiter_summary"] = verdict
                     arb_score = verdict.get('score', 50)
                     if arb_score < 40:
-                        penalty = int((50 - arb_score) * 0.5)
-                        score -= penalty
+                        signed = _signed(-int((50 - arb_score) * 0.5))
+                        score += signed
                         checks.append({
                             "name": "信号仲裁",
-                            "status": "DANGER",
+                            "status": _status(signed),
                             "detail": f"仲裁评分 {arb_score}（偏空：多{verdict.get('bull',0)}/空{verdict.get('bear',0)}）",
-                            "impact": f"-{penalty}",
+                            "impact": f"{signed:+d}",
                         })
                     elif arb_score >= 60:
-                        bonus = int((arb_score - 50) * 0.3)
-                        score += bonus
+                        signed = _signed(int((arb_score - 50) * 0.3))
+                        score += signed
                         checks.append({
                             "name": "信号仲裁",
-                            "status": "GOOD",
+                            "status": _status(signed),
                             "detail": f"仲裁评分 {arb_score}（偏多）",
-                            "impact": f"+{bonus}",
+                            "impact": f"{signed:+d}",
                         })
         except Exception as e:
             logger.debug(f"仲裁查询异常: {e}")
@@ -544,26 +571,29 @@ async def pre_trade_check(stock_code: str, container=Depends(get_container)):
         buy_strategies = [s for s in trade_signals if s["signal_type"] == "BUY"]
         sell_strategies = [s for s in trade_signals if s["signal_type"] == "SELL"]
         if buy_strategies:
-            score += 5
+            signed = _signed(5)
+            score += signed
             checks.append({
                 "name": "策略信号",
-                "status": "GOOD",
+                "status": _status(signed),
                 "detail": f"{len(buy_strategies)} 个策略发出 BUY 信号",
-                "impact": "+5",
+                "impact": f"{signed:+d}",
             })
         if sell_strategies:
-            score -= 10
+            signed = _signed(-10)
+            score += signed
             checks.append({
                 "name": "策略信号",
-                "status": "DANGER",
+                "status": _status(signed),
                 "detail": f"{len(sell_strategies)} 个策略发出 SELL 信号",
-                "impact": "-10",
+                "impact": f"{signed:+d}",
             })
 
-        # ---- 6. 预警（从日志/信号提取跌幅预警） ----
-        # 检查该股是否有资金流卖出的特定规则
+        # ---- 6. 预警（提取对当前操作不利的资金流信号） ----
+        # 买入：SELL 信号是风险；卖出：BUY 信号(主力仍在买)才是踏空风险
+        adverse_type = "BUY" if is_sell else "SELL"
         for sig in flow_signals:
-            if sig["signal_type"] == "SELL":
+            if sig["signal_type"] == adverse_type:
                 warnings.append(
                     f"🔴 {sig['rule_name']}: {sig['reason']}"
                 )
@@ -580,13 +610,22 @@ async def pre_trade_check(stock_code: str, container=Depends(get_container)):
 
         if score >= 65:
             result["verdict"] = "GO"
-            result["verdict_reason"] = "资金面和技术面整体偏多，可以考虑买入"
+            result["verdict_reason"] = (
+                "资金转弱、主力流出，适合卖出落袋" if is_sell
+                else "资金面和技术面整体偏多，可以考虑买入"
+            )
         elif score >= 40:
             result["verdict"] = "CAUTION"
-            result["verdict_reason"] = "信号不够明确，建议观望或小仓位试探"
+            result["verdict_reason"] = (
+                "信号不够明确，可分批减仓或继续观察" if is_sell
+                else "信号不够明确，建议观望或小仓位试探"
+            )
         else:
             result["verdict"] = "STOP"
-            result["verdict_reason"] = "多个维度发出负面信号，不建议买入"
+            result["verdict_reason"] = (
+                "主力仍在买入、技术面偏多，暂不建议卖出" if is_sell
+                else "多个维度发出负面信号，不建议买入"
+            )
 
         result["checks"] = checks
 
@@ -596,41 +635,65 @@ async def pre_trade_check(stock_code: str, container=Depends(get_container)):
 
         if has_sustained_inflow:
             result["holding_strategy"] = {
-                "type": "trailing_stop",
-                "label": "持有 + 移动止盈",
+                "type": "reduce_partial" if is_sell else "trailing_stop",
+                "label": "分批减仓 + 保留底仓" if is_sell else "持有 + 移动止盈",
                 "icon": "🏦",
                 "color": "emerald",
-                "reason": f"检测到多日持续资金流入信号，机构中线建仓特征明显。"
-                          f"建议设置移动止盈（触发6%/回撤2%），不要急于止盈。",
+                "reason": (
+                    "检测到多日持续资金流入，主力中线仍在建仓，不必急于清仓。"
+                    "建议分批减仓、保留底仓跟随趋势。"
+                    if is_sell else
+                    "检测到多日持续资金流入信号，机构中线建仓特征明显。"
+                    "建议设置移动止盈（触发6%/回撤2%），不要急于止盈。"
+                ),
                 "detail": sustained_inflow_reason,
             }
         elif current_strength >= 0.3:
             result["holding_strategy"] = {
-                "type": "swing",
-                "label": "短线持有（1-3日）",
+                "type": "hold_partial" if is_sell else "swing",
+                "label": "暂缓卖出 / 分批" if is_sell else "短线持有（1-3日）",
                 "icon": "📈",
                 "color": "blue",
-                "reason": f"当前大单强度 {current_strength:.2f} 较强，"
-                          f"可短线持有，但需密切关注 strength 变化。",
-                "detail": "如 strength 降至 0.1 以下，应立即止盈退出。",
+                "reason": (
+                    f"当前大单强度 {current_strength:.2f} 较强，主力仍在买，"
+                    f"可分批减仓、保留部分仓位等待更明确的转弱信号。"
+                    if is_sell else
+                    f"当前大单强度 {current_strength:.2f} 较强，"
+                    f"可短线持有，但需密切关注 strength 变化。"
+                ),
+                "detail": (
+                    "如 strength 跌破 0.1，再考虑加快减仓。" if is_sell
+                    else "如 strength 降至 0.1 以下，应立即止盈退出。"
+                ),
             }
         elif score >= 40:
             result["holding_strategy"] = {
-                "type": "scalp_only",
-                "label": "仅适合超短线",
+                "type": "reduce_on_rally" if is_sell else "scalp_only",
+                "label": "可逢高减仓" if is_sell else "仅适合超短线",
                 "icon": "⚡",
                 "color": "amber",
-                "reason": "资金方向不够明确，只适合10分钟级别的快进快出。"
-                          "一旦盈利2-3%应立即止盈，不要贪。",
-                "detail": "如果你打算持仓过夜，请等待更强的确认信号。",
+                "reason": (
+                    "资金方向不够明确，可在反弹时分批减仓控制风险，不必一次清仓。"
+                    if is_sell else
+                    "资金方向不够明确，只适合10分钟级别的快进快出。"
+                    "一旦盈利2-3%应立即止盈，不要贪。"
+                ),
+                "detail": (
+                    "若随后转弱明显，再加快减仓节奏。" if is_sell
+                    else "如果你打算持仓过夜，请等待更强的确认信号。"
+                ),
             }
         else:
             result["holding_strategy"] = {
-                "type": "no_entry",
-                "label": "不建议入场",
-                "icon": "🚫",
+                "type": "exit_all" if is_sell else "no_entry",
+                "label": "建议清仓离场" if is_sell else "不建议入场",
+                "icon": "🚪" if is_sell else "🚫",
                 "color": "red",
-                "reason": "多个维度显示负面信号，无论短线还是中线都不建议买入。",
+                "reason": (
+                    "多个维度显示负面信号、主力撤离，建议尽快清仓离场。"
+                    if is_sell else
+                    "多个维度显示负面信号，无论短线还是中线都不建议买入。"
+                ),
                 "detail": "",
             }
 

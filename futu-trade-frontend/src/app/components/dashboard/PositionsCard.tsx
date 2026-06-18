@@ -245,11 +245,18 @@ export function PositionsCard({ positions, loading = false }: PositionsCardProps
                             🔍分析
                           </Link>
                           <Link
-                            href={`/trading?stock=${position.stock_code}`}
+                            href={`/trading?stock=${position.stock_code}&action=buy`}
                             onClick={(e) => e.stopPropagation()}
-                            className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors font-medium"
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/30 dark:text-red-400 transition-colors font-medium"
                           >
-                            📈交易
+                            🟢买
+                          </Link>
+                          <Link
+                            href={`/trading?stock=${position.stock_code}&action=sell`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/30 dark:text-green-400 transition-colors font-medium"
+                          >
+                            🔴卖
                           </Link>
                         </div>
                       </div>

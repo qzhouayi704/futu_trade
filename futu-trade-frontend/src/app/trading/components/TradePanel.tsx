@@ -2,7 +2,8 @@
 
 "use client";
 
-import { useState, useEffect, Fragment } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
+import { useSearchParams } from "next/navigation";
 import { Card, Button, Modal } from "@/components/common";
 import { tradeApi } from "@/lib/api";
 import { useSocket } from "@/lib/socket";
@@ -18,6 +19,8 @@ export default function TradePanel() {
   const { socket } = useSocket();
   const { showToast } = useToast();
   const { signals, positions, setSignals, setPositions } = useTradingStore();
+  const searchParams = useSearchParams();
+  const urlInitDone = useRef(false);
 
   const [selectedStock, setSelectedStock] = useState<TradeSignal | null>(null);
   const [tradeQuantity, setTradeQuantity] = useState(100);
@@ -105,6 +108,58 @@ export default function TradePanel() {
     };
   }, [socket]);
 
+  // 从首页等入口跳转：URL 带 stock/action 时，预填并自动跑对应方向的条件检查
+  useEffect(() => {
+    if (urlInitDone.current) return;
+    const rawCode = searchParams.get("stock");
+    if (!rawCode) return;
+    const action = searchParams.get("action") === "sell" ? "sell" : "buy";
+    const code = rawCode.startsWith("HK.") ? rawCode : `HK.${rawCode}`;
+    const pos = positions.find((p) => p.stock_code === code);
+    // 卖出需带出持仓数量：等持仓加载完成再触发
+    if (action === "sell" && positions.length === 0) return;
+    urlInitDone.current = true;
+    const stock = {
+      stock_code: code,
+      stock_name: pos?.stock_name || "",
+      signal_type: action,
+      signal_price: pos?.current_price || 0,
+      id: 0,
+    } as TradeSignal;
+    const qty = action === "sell" ? (pos?.qty || pos?.quantity || 0) : undefined;
+    runPreCheckAndOpen(stock, action, qty);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, positions]);
+
+  // 共用：预填股票 + 按方向跑 pre-check + 弹确认框
+  const runPreCheckAndOpen = async (
+    stock: TradeSignal,
+    type: "buy" | "sell",
+    qty?: number
+  ) => {
+    setSelectedStock(stock);
+    setTradeType(type);
+    if (qty && qty > 0) setTradeQuantity(qty);
+    setCheckingTrade(true);
+    setPreCheckResult(null);
+    try {
+      const res = await fetch(
+        `/api/pre-trade-check/${encodeURIComponent(stock.stock_code)}?trade_type=${type}`
+      );
+      const json = await res.json();
+      if (json.success && json.data) {
+        setPreCheckResult(json.data);
+      }
+    } catch (err) {
+      console.error("pre-trade-check 失败:", err);
+      // 检查失败不阻止交易，只给提示
+      setPreCheckResult(null);
+    } finally {
+      setCheckingTrade(false);
+      setShowConfirmModal(true);
+    }
+  };
+
   // 显示交易确认（先调 pre-trade-check 检查）
   const handleShowConfirm = async (type: "buy" | "sell") => {
     // 如果手动输入了代码但没按回车，自动创建 selectedStock
@@ -119,32 +174,13 @@ export default function TradePanel() {
         signal_price: 0,
         id: 0,
       } as TradeSignal;
-      setSelectedStock(stock);
       setManualCode("");
     }
     if (!stock) {
       showToast("warning", "提示", "请先输入或选择股票");
       return;
     }
-    setTradeType(type);
-    setCheckingTrade(true);
-    setPreCheckResult(null);
-
-    try {
-      const code = stock.stock_code;
-      const res = await fetch(`/api/pre-trade-check/${encodeURIComponent(code)}`);
-      const json = await res.json();
-      if (json.success && json.data) {
-        setPreCheckResult(json.data);
-      }
-    } catch (err) {
-      console.error("pre-trade-check 失败:", err);
-      // 检查失败不阻止交易，只给提示
-      setPreCheckResult(null);
-    } finally {
-      setCheckingTrade(false);
-      setShowConfirmModal(true);
-    }
+    await runPreCheckAndOpen(stock, type);
   };
 
   // 执行交易
@@ -522,7 +558,7 @@ export default function TradePanel() {
                                 🎯
                               </button>
                               <button
-                                onClick={async () => {
+                                onClick={() => {
                                   const sellSignal = {
                                     stock_code: position.stock_code,
                                     stock_name: position.stock_name,
@@ -530,18 +566,11 @@ export default function TradePanel() {
                                     signal_price: position.current_price || 0,
                                     id: 0,
                                   } as TradeSignal;
-                                  setSelectedStock(sellSignal);
-                                  setTradeQuantity(position.qty || position.quantity || 0);
-                                  setTradeType("sell");
-                                  // 内联 pre-check + 弹窗（避免 React 闭包问题）
-                                  setCheckingTrade(true);
-                                  setPreCheckResult(null);
-                                  try {
-                                    const res = await fetch(`/api/pre-trade-check/${encodeURIComponent(position.stock_code)}`);
-                                    const json = await res.json();
-                                    if (json.success && json.data) setPreCheckResult(json.data);
-                                  } catch { setPreCheckResult(null); }
-                                  finally { setCheckingTrade(false); setShowConfirmModal(true); }
+                                  runPreCheckAndOpen(
+                                    sellSignal,
+                                    "sell",
+                                    position.qty || position.quantity || 0
+                                  );
                                 }}
                                 className="text-[10px] px-1.5 py-1 rounded bg-green-50 text-green-700 hover:bg-green-100 transition-colors font-medium"
                                 title="快速卖出"
