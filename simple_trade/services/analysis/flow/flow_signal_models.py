@@ -94,6 +94,7 @@ class FlowSignal:
     action_suggestion: str = ""  # 具体操作建议文案
     source: str = "capital_flow_signal"
     timestamp: str = ""
+    advisory: bool = False    # 仅参考(回测无边际): 不弹Toast/不影响交易评分, 但仍检测+入库供再回测
 
     def __post_init__(self):
         if not self.timestamp:
@@ -116,6 +117,7 @@ class FlowSignal:
             'action': f'flow_signal_{self.rule_id.lower()}',
             'source': self.source,
             'timestamp': self.timestamp,
+            'advisory': self.advisory,
             # 扩展字段
             'flow_signal_detail': {
                 'rule_id': self.rule_id,
@@ -123,5 +125,6 @@ class FlowSignal:
                 'confidence': self.confidence,
                 'priority': self.priority,
                 'action_suggestion': self.action_suggestion,
+                'advisory': self.advisory,
             },
         }

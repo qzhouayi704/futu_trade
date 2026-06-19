@@ -75,7 +75,7 @@ class AdaptiveTimeoutManager:
 try:
     from futu import (
         OpenQuoteContext, Market, KLType, AuType, KL_FIELD,
-        RET_OK, RET_ERROR, PeriodType
+        RET_OK, RET_ERROR, PeriodType, TradeDateMarket
     )
     FUTU_AVAILABLE = True
 except ImportError:
@@ -88,6 +88,7 @@ except ImportError:
     RET_OK = None
     RET_ERROR = None
     PeriodType = None
+    TradeDateMarket = None
 
 
 class FutuClient:
@@ -351,6 +352,30 @@ class FutuClient:
         self._throttle()  # 全局QPS限流
         self._plate_limiter.wait_if_needed()
         return self.client.get_plate_stock(plate_code)
+
+    def request_trading_days(self, market=None, start=None, end=None, code=None):
+        """获取交易日历（含节假日）
+
+        低频接口（约每自然日一次，由 TradingCalendar 缓存复用），故单次调用、
+        不挂重试装饰器，避免 OpenD 抖动时多次退避重试阻塞调用方；失败交由
+        调用方 fail-open 兜底。
+
+        Args:
+            market: 市场枚举 TradeDateMarket.HK / TradeDateMarket.US（即字符串 'HK'/'US'）
+            start/end: 日期字符串 'YYYY-MM-DD'，留空按 FUTU 默认 365 天窗口
+
+        Returns:
+            (ret, data)。成功时 data 为 [{'time': 'YYYY-MM-DD', 'trade_date_type': ...}, ...]
+        """
+        if not self.is_available():
+            return RET_ERROR, "富途API不可用"
+        if market is None:
+            market = TradeDateMarket.HK
+        self._throttle()  # 全局QPS限流
+        self._quote_limiter.wait_if_needed()
+        return self.client.request_trading_days(
+            market=market, start=start, end=end, code=code
+        )
 
     # ========== K线相关方法 ==========
 

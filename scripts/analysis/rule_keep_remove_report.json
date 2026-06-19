@@ -1,0 +1,42 @@
+{
+  "generated": "2026-06-18",
+  "db": "production read-only (mode=ro)",
+  "tick_days": ["2026-06-11", "2026-06-12", "2026-06-15", "2026-06-16", "2026-06-17"],
+  "method": "placebo control (6 same-stock same-day random entries) + lift-over-baseline; buy rules also vs buy@open; factor conditioning = intraday-pop label + leave-one-day",
+  "caveats": [
+    "ticker_data rolls; only ~5-6 tick days survive (06-08..06-10 already dropped) -> hypothesis-level, needs forward validation",
+    "BUY-rule verdicts are exit-dependent: report both peak (spike exit) and hold-to-close",
+    "n<100 rules are lower-confidence; factor COMBOS overfit on 5 days, only single-factor used",
+    "report-only: no production rule/gate/frontend changed this round"
+  ],
+  "sell_alert_rules": {
+    "R10": {"name": "量价背离/价格接近日高", "popup": "自动防守触发", "n": 533, "hit_lift_pp": 20.8, "ret_lift": 0.62, "next_day_lift_pp": 3.8, "verdict": "keep"},
+    "R3": {"name": "流入不足逢高卖", "n": 241, "hit_lift_pp": 24.4, "ret_lift": 1.24, "next_day_lift_pp": 6.8, "verdict": "keep"},
+    "R2": {"name": "资金净流出卖", "n": 98, "hit_lift_pp": 22.9, "ret_lift": 1.46, "next_day_lift_pp": 7.8, "verdict": "keep_low_confidence"},
+    "R4": {"name": "资金转正高抛", "popup": "风险警告", "n": 254, "hit_lift_pp": 8.9, "ret_lift": 0.13, "next_day_lift_pp": -2.9, "verdict": "demote", "note": "previously never tested (ALERT type was filtered out)"},
+    "R13": {"name": "日内波段高抛", "n": 7, "verdict": "insufficient_data"},
+    "R7": {"name": "跌破VWAP", "n": 0, "verdict": "dormant"},
+    "absorption": {"n": 635, "hit_lift_pp": -6.9, "verdict": "demote"},
+    "dump": {"n": 706, "hit_lift_pp": -3.5, "verdict": "demote"},
+    "distribution_trap": {"n": 1492, "hit_lift_pp": -4.8, "verdict": "demote"},
+    "broker_trap": {"n": 663, "hit_lift_pp": 3.4, "verdict": "demote"},
+    "accumulation_signal": {"n": 1493, "hit_lift_pp": 9.8, "ret_lift": 0.70, "next_day_lift_pp": 8.5, "verdict": "keep_candidate", "note": "disabled 2026-06-12 but backtests bullish-positive; reconsider"}
+  },
+  "buy_rules": {
+    "baseline_buy_at_open": {"peak": 2.62, "eod": 0.34, "next_day": 1.42},
+    "R11": {"name": "连续净流入", "popup": "买入机会", "n": 181, "peak": 2.60, "eod_avg": 0.26, "eod_median": -0.22, "eod_pos_pct": 41.4, "mins_to_peak": 197, "verdict": "demote", "note": "no edge over buy@open; pop-alpha exists only with in-play + spike exit"},
+    "R12": {"name": "资金趋势反转", "n": 94, "peak": 2.47, "eod_avg": 0.26, "eod_median": -0.18, "next_day": -0.03, "verdict": "demote"},
+    "R1": {"name": "资金净流入买", "n": 200, "peak": 1.87, "eod_avg": 0.55, "eod_median": 0.25, "eod_pos_pct": 57.0, "verdict": "borderline"},
+    "R5": {"name": "前日大涨追买", "n": 102, "peak": 3.77, "eod_avg": 0.17, "eod_median": -0.16, "max_dd": -2.97, "verdict": "spike_exit_only"},
+    "R14": {"name": "日内波段回补", "n": 0, "verdict": "dormant"}
+  },
+  "factor_conditioning": {
+    "question": "do other factors lift these rules (and was this done before)?",
+    "history": "done before ONLY on sniper mega_buy: factors are exit-dependent, combos overfit, strongest robust = today_mega_buy_count",
+    "new_flow_buy_all": {"n": 569, "pop_hit": 20.0, "placebo": 13.1, "lift_vs_placebo_pp": 7.0,
+      "best_robust_factor": {"name": "前日振幅>=8 (in-play)", "n": 159, "hit": 34.6, "lift_pp": 14.6, "pos_days": "6/6", "min_day_rel": 6.6}},
+    "new_flow_buy_R11": {"n": 180, "pop_hit": 22.2, "placebo": 14.4, "lift_vs_placebo_pp": 7.8,
+      "best_robust_factor": {"name": "前日振幅>=8 (in-play)", "n": 46, "hit": 41.3, "lift_pp": 19.1, "pos_days": "5/5", "min_day_rel": 3.8}},
+    "conclusion": "capital-flow BUY has modest pulse alpha (+7pp, ~1.5x random, far below mega_buy +16pp); only robust amplifier is in-play (prev-day amplitude>=8); edge is intraday-pulse (exit-dependent), not hold-to-close"
+  }
+}

@@ -119,7 +119,8 @@ def _sim_exit(fwd_prices: list, entry: float, spec: dict):
 class BuySignalBacktester:
     def __init__(self, db: str, days: int, include_today: bool, min_ticks: int,
                  exclude_sources: Optional[set] = None) -> None:
-        self.conn = sqlite3.connect(db)
+        # uri=True lets callers pass 'file:/path?mode=ro' for a safe read-only run.
+        self.conn = sqlite3.connect(db, uri=db.startswith("file:"))
         self.conn.row_factory = sqlite3.Row
         self.days = days
         self.include_today = include_today
@@ -208,6 +209,35 @@ class BuySignalBacktester:
                                "name": r["stock_name"] or r["stock_code"], "epoch": ep,
                                "time": dt.strftime("%H:%M"), "strength": r["strength"],
                                "price": 0.0})
+                seen.add(key)
+        # capital_flow BUY rules (R1/R5/R11/R12/R14) live ONLY in capital_flow_signals,
+        # are NOT mirrored into signal_pipeline -> the loaders above miss them entirely.
+        # Bucket each rule separately (flow_buy_rN). created_at is UTC; market-hours UTC
+        # date == HK trade_date, but we still verify the HK-converted date to be safe.
+        if self._table_exists("capital_flow_signals"):
+            rows = self.conn.execute(
+                "SELECT created_at, rule_id, stock_code, stock_name, price "
+                "FROM capital_flow_signals WHERE signal_type='BUY' "
+                "AND date(created_at) BETWEEN date(?, '-1 day') AND date(?, '+1 day') "
+                "ORDER BY created_at", (td, td)).fetchall()
+            seen = set()
+            for r in rows:
+                dt = _parse_dt(r["created_at"])
+                if dt is None:
+                    continue
+                dt_hk = dt.replace(tzinfo=timezone.utc).astimezone(HK)
+                if dt_hk.date().isoformat() != td:
+                    continue
+                rid = (r["rule_id"] or "R?").lower()
+                key = (rid, r["stock_code"])
+                if key in seen:
+                    continue
+                ep = int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+                events.append({"date": td, "cat": "flow_buy_" + rid,
+                               "code": r["stock_code"],
+                               "name": r["stock_name"] or r["stock_code"], "epoch": ep,
+                               "time": dt_hk.strftime("%H:%M"), "strength": 0,
+                               "price": float(r["price"] or 0)})
                 seen.add(key)
         return events
 

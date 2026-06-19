@@ -84,7 +84,8 @@ class PipelineBroadcast:
                 'reason': action['reason'],
                 'timestamp': action.get('timestamp', datetime.now().isoformat()),
                 'strategy_name': action.get('strategy_id', '未知策略'),
-                'preset_name': ''
+                'preset_name': '',
+                'advisory': bool(action.get('advisory', False)),  # 仅参考信号→前端不弹Toast
             }
             # 关键信号重试（最多2次）
             for attempt in range(3):

@@ -28,7 +28,11 @@ HK = timezone(timedelta(hours=8))
 
 
 def connect(db):
-    c = sqlite3.connect(db); c.row_factory = sqlite3.Row; return c
+    c = sqlite3.connect(db, uri=db.startswith("file:")); c.row_factory = sqlite3.Row; return c
+
+
+# set in main(); flow_buy events carry no sniper-detail factors so only daily/session apply
+_DAILY_ONLY = False
 
 
 def tick_days(conn, min_ticks=50000):
@@ -92,7 +96,12 @@ def label_pop(prices, i, T, S):
     return 0
 
 
-def load_events(conn, d: Data, dates, T, S, rng):
+def load_events(conn, d: Data, dates, T, S, rng, source="mega_buy", rule=None):
+    """source: 'mega_buy' (sniper) or 'flow_buy' (capital_flow_signals BUY rules).
+    flow_buy lets us condition the capital-flow buy popups (R1/R5/R11/R12) on the
+    SAME daily factors + session, instead of only sniper mega_buy."""
+    if source == "flow_buy":
+        return _load_flow_buy(conn, d, dates, T, S, rng, rule)
     evs = []; placebo = []
     for td in dates:
         seen = set()
@@ -139,9 +148,61 @@ def load_events(conn, d: Data, dates, T, S, rng):
     return evs, placebo
 
 
+def _load_flow_buy(conn, d: Data, dates, T, S, rng, rule=None):
+    """Capital-flow BUY events (created_at = UTC). Sniper-detail factors are absent
+    here, so only the daily/session factors are meaningful (run with daily_only)."""
+    UTC = timezone.utc
+    evs = []; placebo = []
+    valid = set(dates)
+    sql = ("SELECT created_at,rule_id,stock_code,price FROM capital_flow_signals "
+           "WHERE signal_type='BUY'")
+    params = []
+    if rule:
+        sql += " AND rule_id=?"; params.append(rule)
+    sql += " ORDER BY created_at"
+    seen = set()
+    for r in conn.execute(sql, params):
+        try:
+            dt = datetime.strptime(r["created_at"][:19], "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            continue
+        dt_hk = dt.replace(tzinfo=UTC).astimezone(HK)
+        td = dt_hk.date().isoformat()
+        if td not in valid:
+            continue
+        key = (td, r["rule_id"], r["stock_code"])
+        if key in seen:
+            continue
+        seen.add(key)
+        tk = d.ticks(td, r["stock_code"])
+        if len(tk) < 20:
+            continue
+        ts = [t[0] for t in tk]; prices = [t[1] for t in tk]
+        ep = int(dt.replace(tzinfo=UTC).timestamp() * 1000)
+        j = bisect_left(ts, ep)
+        if j >= len(tk):
+            continue
+        entry = float(r["price"]) if (r["price"] and r["price"] > 0) else prices[j]
+        v2 = v2_factors(d, td, r["stock_code"], entry)
+        if v2 is None:
+            continue
+        e = {
+            "td": td, "lab": label_pop(prices, j, T, S),
+            "j": j, "prices": prices, "entry": entry, "ep": ep, "ts": ts,
+            "strength": 0, "sev_high": 0, "trap": 0, "confirm": 0,
+            "mult": 0, "acc": 0, "pos_txt": -1, "hour": dt_hk.hour,
+            "rule_id": r["rule_id"],
+        }
+        e.update(v2)
+        evs.append(e)
+        for _ in range(3):
+            placebo.append(label_pop(prices, rng.randint(0, len(prices) - 1), T, S))
+    return evs, placebo
+
+
 # binary factor conditions
 def conditions():
-    return {
+    daily = {
         "前日振幅>=8": lambda e: e["prev_amp"] >= 8,
         "前日大涨>=5": lambda e: e["prev_chg"] >= 5,
         "5日涨>=10": lambda e: e["chg5"] >= 10,
@@ -150,14 +211,20 @@ def conditions():
         "日线高位>=67": lambda e: e["pos20"] >= 67,
         "日线低位<33": lambda e: e["pos20"] < 33,
         "近20高>=95": lambda e: e["near_high"] >= 95,
+        "早盘<11": lambda e: e["hour"] < 11,
+        "午后>=14": lambda e: e["hour"] >= 14,
+    }
+    if _DAILY_ONLY:
+        return daily
+    daily.update({
         "强度>=60": lambda e: e["strength"] >= 60,
         "净买>=5倍": lambda e: e["mult"] >= 5,
         "无席位警示": lambda e: e["trap"] == 0,
         "有席位确认": lambda e: e["confirm"] == 1,
         "severity高": lambda e: e["sev_high"] == 1,
         "连续建仓>=3": lambda e: e["acc"] >= 3,
-        "早盘<11": lambda e: e["hour"] < 11,
-    }
+    })
+    return daily
 
 
 def _hit(evs, preds):
@@ -307,14 +374,24 @@ def main():
     ap.add_argument("--perm", type=int, default=200)
     ap.add_argument("--topn", type=int, default=15)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--source", choices=["mega_buy", "flow_buy"], default="mega_buy",
+                    help="event population to condition: sniper mega_buy or capital-flow BUY rules")
+    ap.add_argument("--rule", default=None,
+                    help="for --source flow_buy: restrict to one rule_id (e.g. R11)")
     a = ap.parse_args()
+    global _DAILY_ONLY
+    _DAILY_ONLY = (a.source != "mega_buy")
     rng = random.Random(a.seed)
     conn = connect(a.db); d = Data(conn)
     dates = tick_days(conn)
-    evs, placebo = load_events(conn, d, dates, a.T, a.S, rng)
+    evs, placebo = load_events(conn, d, dates, a.T, a.S, rng, source=a.source, rule=a.rule)
+    if not evs:
+        print(json.dumps({"error": "no events", "source": a.source, "rule": a.rule,
+                          "dates": dates}, ensure_ascii=False)); conn.close(); return
     n = len(evs); base = sum(e["lab"] for e in evs) / n * 100
     pbase = sum(placebo) / len(placebo) * 100
-    head = {"mode": a.mode, "T": a.T, "S": a.S, "dates": dates, "n_events": n,
+    head = {"mode": a.mode, "source": a.source, "rule": a.rule, "T": a.T, "S": a.S,
+            "dates": dates, "n_events": n,
             "base_hit": round(base, 1), "placebo_hit": round(pbase, 1),
             "signal_lift_vs_placebo": round(base - pbase, 1)}
     if a.mode == "combo":

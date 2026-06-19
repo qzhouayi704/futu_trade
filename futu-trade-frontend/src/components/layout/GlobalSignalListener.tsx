@@ -18,6 +18,10 @@ export function GlobalSignalListener() {
       const signal = data as Record<string, unknown>;
       if (!signal || !signal.stock_code) return;
 
+      // [2026-06-18] 仅参考规则(回测无边际, 如 R4 资金转正高抛 / R11·R12 资金流买入)
+      // 不再弹 Toast 打扰；仍在信号流中作灰色参考、后端仍入库供再回测。
+      if (signal.advisory === true) return;
+
       const sigType = String(signal.signal_type).toUpperCase();
       const reason = String(signal.reason || "策略触发");
       const stockInfo = `[${signal.stock_code}] ${signal.stock_name || ""}`;

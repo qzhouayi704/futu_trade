@@ -100,7 +100,9 @@ class WarningSignalBacktester:
         self.categories = categories      # None == all
         self.max_per_category = max_per_category
         self.rng = random.Random(seed)
-        self.conn = sqlite3.connect(db_path)
+        # uri=True lets callers pass 'file:/path?mode=ro' for a safe read-only run
+        # against the live production DB (SELECT-only, no sidecar writes, no writer lock).
+        self.conn = sqlite3.connect(db_path, uri=db_path.startswith("file:"))
         self.conn.row_factory = sqlite3.Row
         self._next_close_cache: dict = {}   # (trade_date, stock_code) -> next-day close or None
 
@@ -291,11 +293,14 @@ class WarningSignalBacktester:
         # created_at is UTC; widen the BETWEEN by a day on each side then filter by HK date
         lo = (date.fromisoformat(dates[0]) - timedelta(days=1)).isoformat()
         hi = (date.fromisoformat(dates[-1]) + timedelta(days=1)).isoformat()
+        # SELL + ALERT: ALERT rules (e.g. R4 资金转正高抛) are bearish warnings too and
+        # were previously dropped by a SELL-only filter -> never validated. Each rule_id
+        # gets its own bucket (flow_sell_rN) so per-rule keep/demote/anti verdicts fall out.
         rows = self.conn.execute(
             """
             SELECT id, rule_id, rule_name, stock_code, stock_name, price, reason, created_at
             FROM capital_flow_signals
-            WHERE signal_type = 'SELL' AND date(created_at) BETWEEN ? AND ?
+            WHERE signal_type IN ('SELL', 'ALERT') AND date(created_at) BETWEEN ? AND ?
             ORDER BY created_at, stock_code, id
             """,
             (lo, hi),

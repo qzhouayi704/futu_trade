@@ -351,8 +351,9 @@ class IntradaySniper:
                 now = datetime.now()
                 hhmm = now.strftime("%H:%M")
 
-                # 只在交易时间扫描 (09:25-16:05)
-                if "09:25" <= hhmm <= "16:05":
+                # 只在交易时间扫描 (09:25-16:05)，且当天须为港股交易日（节假日不扫描）
+                from ...utils.market_helper import MarketTimeHelper
+                if "09:25" <= hhmm <= "16:05" and MarketTimeHelper.is_trading_day('HK', now):
                     await self._do_scan()
                 elif hhmm > "16:10":
                     # 收盘后清理状态，准备下一天

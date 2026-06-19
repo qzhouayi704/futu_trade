@@ -8,6 +8,7 @@
 """
 
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -17,6 +18,20 @@ from .flow_signal_rules import ALL_RULES, BaseFlowRule
 
 
 logger = logging.getLogger("capital_flow.engine")
+
+# 仅参考规则：2026-06-18/06-19 全量回测显示无边际 → 全部资金流"买入"规则静默：
+#   R4 资金转正高抛 +8.9pp/次日反向；R1 峰值+1.76(比开盘买+2.86还差)；
+#   R11/R12 ≈基线、收盘转负；R5 峰值高但出场依赖(回撤-2.92/284min才到峰)，单独持有无边际；
+#   R14 近期未触发(无数据，一并静默)。对照 buy@open：所有信号持到收盘均打不过开盘买入。
+# 这些规则继续检测并写入 capital_flow_signals(signal_type 不变，供日后扩大窗口再回测)，
+# 但 advisory=True → 前端不弹 Toast、pre_trade_check 不计入评分。
+# 卖出/预警类 R10/R3/R2 有边际(+20~24pp)，不在此列、维持门控。
+# 用环境变量 FLOW_ADVISORY_RULES 覆盖；置空字符串=全部恢复门控。
+ADVISORY_RULE_IDS = {
+    r.strip().upper()
+    for r in os.environ.get("FLOW_ADVISORY_RULES", "R1,R4,R5,R11,R12,R14").split(",")
+    if r.strip()
+}
 
 
 class CapitalFlowSignalEngine:
@@ -124,6 +139,9 @@ class CapitalFlowSignalEngine:
                 for rule in self._rules:
                     signal = rule.check(ctx)
                     if signal:
+                        # 仅参考规则：标记 advisory（停Toast/停评分），但 signal_type 与入库不变
+                        if signal.rule_id in ADVISORY_RULE_IDS:
+                            signal.advisory = True
                         results.append(signal.to_trade_action())
                         self._save_signal(signal)
             except Exception as e:

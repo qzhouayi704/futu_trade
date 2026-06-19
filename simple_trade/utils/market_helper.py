@@ -275,15 +275,36 @@ class MarketTimeHelper:
         elif weekday == 6:  # 周日
             return False
         
-        # 检查港股
-        if MarketTimeHelper._is_hk_trading_time(current_time_only):
+        # 检查港股（含交易日历：节假日不视为交易，即便处于交易时段）
+        if (MarketTimeHelper._is_hk_trading_time(current_time_only)
+                and MarketTimeHelper.is_trading_day('HK', current_time)):
             return True
-        
+
         # 检查美股
         if MarketTimeHelper._is_us_trading_time(current_time, current_time_only):
             return True
-        
+
         return False
+
+    @staticmethod
+    def is_trading_day(market: str, current_time: Optional[datetime] = None) -> bool:
+        """判断指定市场在当天是否为交易日（含节假日）
+
+        数据来源：FUTU 交易日历（TradingCalendar，按自然日缓存）。
+        fail-open：无法确定（OpenD 不可用 / 接口失败 / 数据缺口）时返回 True，
+        绝不因日历问题误拦真实交易日。仅当日历明确表示当天非交易日时返回 False。
+
+        Args:
+            market: 市场代码 'HK' 或 'US'
+            current_time: 待判断时间，默认系统当前时间
+        """
+        if current_time is None:
+            current_time = datetime.now()
+        try:
+            from .trading_calendar import get_trading_calendar
+            return get_trading_calendar().is_trading_day(market, current_time.date())
+        except Exception:
+            return True
 
 
 # 便捷函数
