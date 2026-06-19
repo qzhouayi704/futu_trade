@@ -420,6 +420,10 @@ async def pre_trade_check(
         sustained_inflow_reason = ""
         max_sell_conf = 0
         max_buy_conf = 0
+        validated_sell = []   # 已回测有边际的卖出/警示规则(R10/R3/R2)命中的 reason
+
+        # 已验证有边际(2026-06 回测 +20~24pp)的卖出/警示规则: 逆高减/出货/量价背离
+        VALIDATED_SELL_RULES = {"R2", "R3", "R10"}
 
         # 仅参考规则(回测无边际, 默认 R4/R11/R12)：仍展示在 flow_signals，但不计入评分/门控
         try:
@@ -440,6 +444,8 @@ async def pre_trade_check(
             if r[2] == "SELL":
                 has_sell_signal = True
                 max_sell_conf = max(max_sell_conf, float(r[5] or 0))
+                if (r[0] or "").upper() in VALIDATED_SELL_RULES:
+                    validated_sell.append(f"{r[1]}: {r[4] or ''}")
             elif r[2] == "BUY":
                 has_buy_signal = True
                 max_buy_conf = max(max_buy_conf, float(r[5] or 0))
@@ -450,7 +456,21 @@ async def pre_trade_check(
 
         result["capital_flow_signals"] = flow_signals
 
-        if has_sell_signal:
+        if validated_sell:
+            # 已验证有边际的逆高减/出货/量价背离(R10/R3/R2)单列；诚实表述为概率性偏移
+            signed = _signed(-22)
+            score += signed
+            checks.append({
+                "name": "逆高减/出货警示",
+                "status": "DANGER",
+                "detail": (f"{validated_sell[0][:48]}（已验证: 下行风险约2×、"
+                           f"平均多跌~0.6%，考虑减/别追，非必跌）"),
+                "impact": f"{signed:+d}",
+            })
+            warnings.append(f"⚠️ 逆高减/出货警示(有边际)：{validated_sell[0][:60]}")
+            if is_sell:
+                warnings.append("（卖出方向：该警示支持你的减仓判断）")
+        elif has_sell_signal:
             signed = _signed(-int(max_sell_conf * 30))
             score += signed
             checks.append({

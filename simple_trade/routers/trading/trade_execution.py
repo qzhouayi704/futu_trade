@@ -518,6 +518,25 @@ async def get_positions_coach(container=Depends(get_container)):
                 except Exception:
                     tape = None
                 out.append(build_coach(p, disc, th, tape))
+
+            # 已验证有边际(回测+20~24pp)的逆高减/出货警示(R10/R3/R2): 为每只持仓附今日最新一条
+            try:
+                db = getattr(container, 'db_manager', None)
+                codes = [c["stock_code"] for c in out]
+                if db and codes:
+                    ph = ",".join("?" for _ in codes)
+                    rows = db.execute_query(
+                        f"""SELECT stock_code, rule_id, rule_name, reason FROM capital_flow_signals
+                            WHERE stock_code IN ({ph}) AND rule_id IN ('R2','R3','R10')
+                              AND signal_type='SELL' AND date(created_at)=date('now')
+                            ORDER BY created_at DESC""", codes)
+                    fw = {}
+                    for rr in (rows or []):
+                        fw.setdefault(rr[0], f"{rr[2] or rr[1]}: {(rr[3] or '')[:42]}")
+                    for c in out:
+                        c["flow_warning"] = fw.get(c["stock_code"])
+            except Exception:
+                pass
             return out, None
 
         data, err = await asyncio.to_thread(_compute)

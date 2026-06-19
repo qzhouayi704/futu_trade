@@ -18,6 +18,7 @@ interface CoachInfo {
   cost_drift_pct: number | null;
   blunt: string;
   selloff: { verdict: string; reason: string } | null;
+  flow_warning?: string | null;   // 已验证有边际的逆高减/出货警示(R10/R3/R2)
   hold_recommendation: { label: string; detail: string; activate_pct: number; pullback_pct: number };
 }
 
@@ -268,6 +269,11 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                         {coach.churn && coach.blunt && (
                           <div className="mt-1 text-[10px] text-red-600 dark:text-red-400 bg-red-50/70 dark:bg-red-950/30 rounded px-1.5 py-1 leading-snug">
                             {coach.blunt}
+                          </div>
+                        )}
+                        {coach.flow_warning && (
+                          <div className="mt-1 text-[10px] text-rose-600 dark:text-rose-400 bg-rose-50/70 dark:bg-rose-950/30 rounded px-1.5 py-1 leading-snug">
+                            ⚠️ 逆高减/出货警示(有边际)：{coach.flow_warning}
                           </div>
                         )}
                       </>

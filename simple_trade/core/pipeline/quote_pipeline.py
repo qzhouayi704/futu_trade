@@ -568,6 +568,10 @@ class QuotePipeline:
         position_codes = set(positions.keys()) if positions else set()
 
         for action in trade_actions:
+            # advisory(回测无边际,已静默的资金流买入规则 R1/R5/R11/R12/R14 等)不推企业微信,
+            # 与信号流撤广播保持一致(避免无边际信号刷推送)。
+            if action.get('advisory'):
+                continue
             stock_code = action.get('stock_code', '')
             signal_type = action.get('signal_type', '')
             reason = action.get('reason', '')
