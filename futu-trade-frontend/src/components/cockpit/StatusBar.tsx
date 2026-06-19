@@ -11,7 +11,7 @@ interface StatusBarProps {
   onStopMonitor: () => void;
 }
 
-export function StatusBar({ onStartMonitor, onStopMonitor }: StatusBarProps) {
+export function StatusBar({ onStartMonitor }: StatusBarProps) {
   const { isConnected } = useSocket();
   const [status, setStatus] = useState<any>(null);
   const [stats, setStats] = useState<any>(null);
@@ -37,7 +37,8 @@ export function StatusBar({ onStartMonitor, onStopMonitor }: StatusBarProps) {
     return () => clearInterval(timer);
   }, []);
 
-  const isRunning = status?.is_monitoring;
+  // 后端字段为 is_running / monitor_status（之前误读 is_monitoring 导致永远显示"未启动"）
+  const isRunning = status?.is_running ?? status?.monitor_status === "running";
   const uptime = status?.uptime_seconds
     ? `${Math.floor(status.uptime_seconds / 3600)}h${Math.floor((status.uptime_seconds % 3600) / 60)}m`
     : "--";
@@ -62,17 +63,15 @@ export function StatusBar({ onStartMonitor, onStopMonitor }: StatusBarProps) {
           </span>
         </div>
 
-        {/* 启停按钮 */}
-        <button
-          onClick={isRunning ? onStopMonitor : onStartMonitor}
-          className={`px-3 py-1 text-xs font-medium rounded-lg transition-all ${
-            isRunning
-              ? "bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20"
-              : "bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20"
-          }`}
-        >
-          {isRunning ? "停止" : "启动"}
-        </button>
+        {/* 监控由后端每次启动自动开启；仅在确实停止时显示"启动"作为恢复入口 */}
+        {!isRunning && (
+          <button
+            onClick={onStartMonitor}
+            className="px-3 py-1 text-xs font-medium rounded-lg transition-all bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20"
+          >
+            启动
+          </button>
+        )}
       </div>
 
       {/* 右侧：核心数据指标 */}
