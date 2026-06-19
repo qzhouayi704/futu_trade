@@ -8,7 +8,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Card } from "@/components/common";
 import { sniperApi } from "@/lib/api/sniper";
-import apiClient from "@/lib/api/client";
+import { usePositionsCoach } from "@/app/hooks/useSniper";
 
 // 持仓教练卡(纯咨询)：今日交易计数(churn)/成本买高/洗盘别割/持有规则
 interface CoachInfo {
@@ -68,8 +68,14 @@ const MODE_KEY = "positionExitModes";
 
 export function PositionPanel({ positions, loading, realtimePrices }: PositionPanelProps) {
   const [trailingStatus, setTrailingStatus] = useState<Record<string, TrailingStatus>>({});
-  const [coachMap, setCoachMap] = useState<Record<string, CoachInfo>>({});
   const [modes, setModes] = useState<Record<string, ExitMode>>({});
+  // 持仓教练卡：共享 RQ 缓存(去掉本组件独立的 15s 轮询)
+  const { data: coachList = [] } = usePositionsCoach();
+  const coachMap = useMemo(() => {
+    const m: Record<string, CoachInfo> = {};
+    for (const c of coachList as unknown as CoachInfo[]) m[c.stock_code] = c;
+    return m;
+  }, [coachList]);
   const peakRef = useRef<Record<string, number>>({}); // 本会话每股峰值价
 
   // 读取本地保存的"日内/波段"标记
@@ -101,24 +107,6 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
     };
     load();
     const timer = setInterval(load, 15000); // 15秒刷新
-    return () => clearInterval(timer);
-  }, []);
-
-  // 加载持仓教练卡(纪律:今日交易计数/成本买高/洗盘别割)
-  useEffect(() => {
-    const load = async () => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const res: any = await apiClient.get("/trading/positions/coach");
-        if (res?.success && Array.isArray(res.data)) {
-          const m: Record<string, CoachInfo> = {};
-          for (const c of res.data) m[c.stock_code] = c;
-          setCoachMap(m);
-        }
-      } catch {}
-    };
-    load();
-    const timer = setInterval(load, 15000);
     return () => clearInterval(timer);
   }, []);
 
