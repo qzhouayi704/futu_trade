@@ -16,7 +16,7 @@ import { getOrderBookAnalysis } from "@/lib/api/enhanced-heat";
 const SIGNAL_STYLES: Record<SignalType, { bg: string; text: string; label: string }> = {
   bullish: { bg: "bg-red-100 border-red-200", text: "text-red-700", label: "看涨" },
   slightly_bullish: { bg: "bg-red-50 border-red-100", text: "text-red-600", label: "偏多" },
-  neutral: { bg: "bg-gray-100 border-gray-200", text: "text-gray-600", label: "中性" },
+  neutral: { bg: "bg-muted border-border", text: "text-muted-foreground", label: "中性" },
   slightly_bearish: { bg: "bg-green-50 border-green-100", text: "text-green-600", label: "偏空" },
   bearish: { bg: "bg-green-100 border-green-200", text: "text-green-700", label: "看跌" },
 };
@@ -39,7 +39,7 @@ function SummaryBadge({ data }: { data: OrderBookAnalysisData }) {
           评分: {data.total_score > 0 ? "+" : ""}{data.total_score}
         </span>
       </div>
-      <p className="text-sm text-gray-700">{data.summary}</p>
+      <p className="text-sm text-foreground">{data.summary}</p>
     </div>
   );
 }
@@ -60,17 +60,17 @@ function LevelRow({
 
   return (
     <div className={`flex items-center gap-2 py-0.5 px-1 rounded ${isHighlight ? "bg-yellow-50 ring-1 ring-yellow-300" : ""}`}>
-      <span className="w-8 text-xs text-gray-400 text-right shrink-0">{label}</span>
+      <span className="w-8 text-xs text-muted-foreground text-right shrink-0">{label}</span>
       <span className={`w-16 text-xs font-mono text-right shrink-0 ${priceColor}`}>
         {level.price.toFixed(2)}
       </span>
-      <div className="flex-1 h-4 bg-gray-100 rounded overflow-hidden">
+      <div className="flex-1 h-4 bg-muted rounded overflow-hidden">
         <div
           className={`h-full ${barColor} transition-all duration-300 rounded`}
           style={{ width: `${Math.min(pct, 100)}%` }}
         />
       </div>
-      <span className="w-16 text-xs text-gray-600 text-right shrink-0">
+      <span className="w-16 text-xs text-muted-foreground text-right shrink-0">
         {formatVolume(level.volume)}
       </span>
       {isHighlight && (
@@ -96,7 +96,7 @@ function OrderBookTable({ data }: { data: OrderBookAnalysisData }) {
 
   return (
     <div className="mb-4">
-      <div className="text-xs text-gray-500 mb-1 font-medium">买卖十档</div>
+      <div className="text-xs text-muted-foreground mb-1 font-medium">买卖十档</div>
       <div className="space-y-0.5">
         {askReversed.map((level, i) => (
           <LevelRow
@@ -111,11 +111,11 @@ function OrderBookTable({ data }: { data: OrderBookAnalysisData }) {
 
         {/* 价差分隔行 */}
         <div className="flex items-center gap-2 py-1 px-1">
-          <div className="flex-1 border-t border-dashed border-gray-300" />
-          <span className="text-xs text-gray-400 shrink-0">
+          <div className="flex-1 border-t border-dashed border-border" />
+          <span className="text-xs text-muted-foreground shrink-0">
             价差 {ob.spread.toFixed(2)} ({ob.spread_pct.toFixed(3)}%)
           </span>
-          <div className="flex-1 border-t border-dashed border-gray-300" />
+          <div className="flex-1 border-t border-dashed border-border" />
         </div>
 
         {ob.bid_levels.map((level, i) => (
@@ -131,7 +131,7 @@ function OrderBookTable({ data }: { data: OrderBookAnalysisData }) {
       </div>
 
       {/* 汇总行 */}
-      <div className="flex justify-between text-xs text-gray-500 mt-2 px-1">
+      <div className="flex justify-between text-xs text-muted-foreground mt-2 px-1">
         <span>买盘总量: <span className="text-red-600 font-medium">{formatVolume(ob.bid_total_volume)}</span></span>
         <span>卖盘总量: <span className="text-green-600 font-medium">{formatVolume(ob.ask_total_volume)}</span></span>
         <span>失衡: <span className={ob.imbalance > 0 ? "text-red-600" : "text-green-600"}>
@@ -152,8 +152,8 @@ function DimensionBar({ dim }: { dim: DimensionSignal }) {
 
   return (
     <div className="flex items-center gap-2 py-1">
-      <span className="w-16 text-xs text-gray-600 shrink-0">{dim.name}</span>
-      <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden relative">
+      <span className="w-16 text-xs text-muted-foreground shrink-0">{dim.name}</span>
+      <div className="flex-1 h-3 bg-muted rounded-full overflow-hidden relative">
         {/* 中线 */}
         <div className="absolute left-1/2 top-0 w-px h-full bg-gray-300 z-10" />
         {isPositive ? (
@@ -171,7 +171,7 @@ function DimensionBar({ dim }: { dim: DimensionSignal }) {
       <span className={`w-10 text-xs font-mono text-right shrink-0 ${style.text}`}>
         {dim.score > 0 ? "+" : ""}{dim.score.toFixed(0)}
       </span>
-      <span className="text-xs text-gray-500 shrink-0">{dim.description}</span>
+      <span className="text-xs text-muted-foreground shrink-0">{dim.description}</span>
     </div>
   );
 }
@@ -213,9 +213,9 @@ export function OrderBookPanel({ stockCode }: { stockCode: string }) {
   }, [stockCode, fetchData]);
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
+    <div className="bg-card rounded-lg shadow p-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+        <h3 className="text-lg font-semibold text-foreground flex items-center gap-2">
           <svg className="w-5 h-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
           </svg>
@@ -224,7 +224,7 @@ export function OrderBookPanel({ stockCode }: { stockCode: string }) {
         <button
           onClick={fetchData}
           disabled={loading}
-          className="text-xs text-gray-400 hover:text-gray-600 disabled:opacity-50"
+          className="text-xs text-muted-foreground hover:text-muted-foreground disabled:opacity-50"
         >
           {loading ? "刷新中..." : "刷新"}
         </button>
@@ -239,7 +239,7 @@ export function OrderBookPanel({ stockCode }: { stockCode: string }) {
 
           {/* 5维度分析 */}
           <div className="mt-4">
-            <div className="text-xs text-gray-500 mb-2 font-medium">5维度分析</div>
+            <div className="text-xs text-muted-foreground mb-2 font-medium">5维度分析</div>
             <div className="space-y-0.5">
               {data.dimensions.map((dim) => (
                 <DimensionBar key={dim.name} dim={dim} />
@@ -250,7 +250,7 @@ export function OrderBookPanel({ stockCode }: { stockCode: string }) {
       )}
 
       {!data && !loading && !error && (
-        <p className="text-sm text-gray-400 text-center py-8">
+        <p className="text-sm text-muted-foreground text-center py-8">
           在资金流向中输入股票代码后，盘口分析将自动加载
         </p>
       )}

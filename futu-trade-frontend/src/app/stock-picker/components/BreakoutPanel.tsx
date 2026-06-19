@@ -101,7 +101,7 @@ export default function BreakoutPanel() {
       {/* 标题栏 */}
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
             <svg className="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
             </svg>
@@ -112,10 +112,10 @@ export default function BreakoutPanel() {
               </span>
             )}
           </h1>
-          <p className="text-gray-500 mt-1 text-sm">
+          <p className="text-muted-foreground mt-1 text-sm">
             筛选刚突破核心阻力位且大单资金持续流入的股票
             {timestamp && (
-              <span className="ml-2 text-xs text-gray-400">
+              <span className="ml-2 text-xs text-muted-foreground">
                 扫描于 {new Date(timestamp).toLocaleString("zh-CN")}
               </span>
             )}
@@ -141,8 +141,8 @@ export default function BreakoutPanel() {
           <svg className="w-16 h-16 text-gray-200 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
           </svg>
-          <p className="text-gray-500 mb-2">暂无扫描结果</p>
-          <p className="text-gray-400 text-sm mb-6">
+          <p className="text-muted-foreground mb-2">暂无扫描结果</p>
+          <p className="text-muted-foreground text-sm mb-6">
             点击"开始扫描"，系统将筛选突破阻力位+资金流入的股票
           </p>
           <Button variant="primary" onClick={handleTrigger}>
@@ -158,8 +158,8 @@ export default function BreakoutPanel() {
       {running && candidates.length === 0 && (
         <Card className="text-center py-16">
           <i className="fas fa-spinner fa-spin text-4xl text-red-500 mb-4 block" />
-          <p className="text-gray-700 font-medium">{progress || "扫描中..."}</p>
-          <p className="text-gray-400 text-sm mt-2">正在检查阻力位突破+资金流入条件</p>
+          <p className="text-foreground font-medium">{progress || "扫描中..."}</p>
+          <p className="text-muted-foreground text-sm mt-2">正在检查阻力位突破+资金流入条件</p>
         </Card>
       )}
 
@@ -169,7 +169,7 @@ export default function BreakoutPanel() {
           {candidates.map((c) => (
             <div
               key={c.code}
-              className="relative overflow-hidden rounded-xl border border-gray-200 bg-white hover:shadow-lg transition-all hover:border-red-200"
+              className="relative overflow-hidden rounded-xl border border-border bg-card hover:shadow-lg transition-all hover:border-red-200"
             >
               {/* 评分角标 */}
               <div className={`absolute top-3 right-3 w-11 h-11 rounded-full bg-gradient-to-br ${scoreGradient(c.score)} flex items-center justify-center text-white text-sm font-bold shadow-md`}>
@@ -179,19 +179,19 @@ export default function BreakoutPanel() {
               {/* 股票信息 */}
               <div className="p-4 pb-3">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="font-bold text-gray-900 text-lg">{c.name || c.code}</span>
-                  <span className="text-xs text-gray-400">{c.code}</span>
+                  <span className="font-bold text-foreground text-lg">{c.name || c.code}</span>
+                  <span className="text-xs text-muted-foreground">{c.code}</span>
                 </div>
 
                 {/* 突破标签 */}
                 <div className="flex flex-wrap gap-1.5 mb-3">
                   {c.daily_breakout_level && (
-                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${levelColors[c.daily_breakout_level] || "bg-gray-100 text-gray-600"}`}>
+                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${levelColors[c.daily_breakout_level] || "bg-muted text-muted-foreground"}`}>
                       ↗ 突破{c.daily_breakout_level}
                     </span>
                   )}
                   {c.intraday_breakout && (
-                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${intradayColors[c.intraday_level_type] || "bg-gray-100 text-gray-600"}`}>
+                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${intradayColors[c.intraday_level_type] || "bg-muted text-muted-foreground"}`}>
                       ⚡ {c.intraday_level_label}
                     </span>
                   )}
@@ -204,20 +204,20 @@ export default function BreakoutPanel() {
 
                 {/* 核心数据网格 */}
                 <div className="grid grid-cols-3 gap-2 mb-3">
-                  <div className="bg-gray-50 rounded-lg p-2 text-center">
-                    <div className="text-[10px] text-gray-400">涨幅</div>
+                  <div className="bg-muted rounded-lg p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">涨幅</div>
                     <div className={`text-sm font-bold ${c.change_pct >= 0 ? "text-red-600" : "text-green-600"}`}>
                       {c.change_pct >= 0 ? "+" : ""}{c.change_pct.toFixed(1)}%
                     </div>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-2 text-center">
-                    <div className="text-[10px] text-gray-400">突破幅度</div>
+                  <div className="bg-muted rounded-lg p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">突破幅度</div>
                     <div className="text-sm font-bold text-orange-600">
                       +{c.daily_breakout_pct.toFixed(1)}%
                     </div>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-2 text-center">
-                    <div className="text-[10px] text-gray-400">量比</div>
+                  <div className="bg-muted rounded-lg p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">量比</div>
                     <div className="text-sm font-bold text-blue-600">
                       {c.volume_ratio.toFixed(1)}x
                     </div>
@@ -226,20 +226,20 @@ export default function BreakoutPanel() {
 
                 {/* 资金数据 */}
                 <div className="grid grid-cols-3 gap-2 mb-3">
-                  <div className="bg-gray-50 rounded-lg p-2 text-center">
-                    <div className="text-[10px] text-gray-400">净流入占比</div>
+                  <div className="bg-muted rounded-lg p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">净流入占比</div>
                     <div className={`text-sm font-bold ${c.net_inflow_ratio > 0 ? "text-red-600" : "text-green-600"}`}>
                       {(c.net_inflow_ratio * 100).toFixed(1)}%
                     </div>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-2 text-center">
-                    <div className="text-[10px] text-gray-400">大单买入比</div>
+                  <div className="bg-muted rounded-lg p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">大单买入比</div>
                     <div className="text-sm font-bold text-orange-600">
                       {(c.big_order_buy_ratio * 100).toFixed(0)}%
                     </div>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-2 text-center">
-                    <div className="text-[10px] text-gray-400">主力净流入</div>
+                  <div className="bg-muted rounded-lg p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">主力净流入</div>
                     <div className={`text-sm font-bold ${c.main_net_inflow > 0 ? "text-red-600" : "text-green-600"}`}>
                       {formatMoney(c.main_net_inflow)}
                     </div>
@@ -247,12 +247,12 @@ export default function BreakoutPanel() {
                 </div>
 
                 {/* 信号描述 */}
-                <div className="text-xs text-gray-600 bg-gradient-to-r from-red-50 to-orange-50 rounded-lg px-3 py-2 border border-red-100">
+                <div className="text-xs text-muted-foreground bg-gradient-to-r from-red-50 to-orange-50 rounded-lg px-3 py-2 border border-red-100">
                   💡 {c.signal_note}
                 </div>
 
                 {/* 底部 */}
-                <div className="flex items-center justify-between mt-2 text-[10px] text-gray-400">
+                <div className="flex items-center justify-between mt-2 text-[10px] text-muted-foreground">
                   <span>收盘 {c.close.toFixed(2)}</span>
                   <span>阻力位 {c.daily_resistance_price.toFixed(2)}</span>
                   <span>换手 {c.turnover_rate.toFixed(2)}%</span>

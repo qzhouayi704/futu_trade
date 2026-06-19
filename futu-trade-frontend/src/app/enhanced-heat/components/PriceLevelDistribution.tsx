@@ -59,7 +59,7 @@ function PriceLevelRow({ level, maxVolume, isCurrentPrice }: PriceLevelRowProps)
 
       {/* 中间：价格 */}
       <span className={`w-16 text-center font-mono shrink-0 ${
-        isCurrentPrice ? "text-blue-600 font-bold" : "text-gray-700"
+        isCurrentPrice ? "text-blue-600 font-bold" : "text-foreground"
       }`}>
         {formatPrice(level.price)}
       </span>
@@ -102,15 +102,15 @@ function SummaryRow({ levels }: SummaryRowProps) {
   const ratio = totalSell === 0 ? "∞" : (totalBuy / totalSell).toFixed(2);
 
   return (
-    <div className="flex items-center justify-between text-xs border-t border-gray-200 pt-2 mt-2 px-1">
-      <span className="text-gray-500">
+    <div className="flex items-center justify-between text-xs border-t border-border pt-2 mt-2 px-1">
+      <span className="text-muted-foreground">
         买入: <span className="text-red-600 font-medium">{formatVolume(totalBuy)}</span>
       </span>
-      <span className="text-gray-500">
+      <span className="text-muted-foreground">
         卖出: <span className="text-green-600 font-medium">{formatVolume(totalSell)}</span>
       </span>
-      <span className="text-gray-500">
-        买卖比: <span className="text-gray-800 font-medium">{ratio}</span>
+      <span className="text-muted-foreground">
+        买卖比: <span className="text-foreground font-medium">{ratio}</span>
       </span>
     </div>
   );
@@ -129,15 +129,15 @@ export function PriceLevelDistribution({ data, loading }: PriceLevelDistribution
     if (loading) {
       return (
         <div>
-          <div className="text-xs text-gray-500 mb-2 font-medium">价位成交分布</div>
-          <div className="text-sm text-gray-400 text-center py-4">加载中...</div>
+          <div className="text-xs text-muted-foreground mb-2 font-medium">价位成交分布</div>
+          <div className="text-sm text-muted-foreground text-center py-4">加载中...</div>
         </div>
       );
     }
     return (
       <div>
-        <div className="text-xs text-gray-500 mb-2 font-medium">价位成交分布</div>
-        <div className="text-sm text-gray-400 text-center py-4">暂无价位分布数据</div>
+        <div className="text-xs text-muted-foreground mb-2 font-medium">价位成交分布</div>
+        <div className="text-sm text-muted-foreground text-center py-4">暂无价位分布数据</div>
       </div>
     );
   }
@@ -158,14 +158,14 @@ export function PriceLevelDistribution({ data, loading }: PriceLevelDistribution
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <div className="text-xs text-gray-500 font-medium">价位成交分布</div>
-        <div className="text-[10px] text-gray-400">
+        <div className="text-xs text-muted-foreground font-medium">价位成交分布</div>
+        <div className="text-[10px] text-muted-foreground">
           共 {data.level_count} 个价位 · 总量 {formatVolume(data.total_volume)}
         </div>
       </div>
 
       {/* 表头 */}
-      <div className="flex items-center gap-1 text-[10px] text-gray-400 mb-1 px-1">
+      <div className="flex items-center gap-1 text-[10px] text-muted-foreground mb-1 px-1">
         <div className="flex-1 text-right">← 卖出量</div>
         <span className="w-16 text-center">价格</span>
         <div className="flex-1 text-left">买入量 →</div>

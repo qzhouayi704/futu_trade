@@ -18,7 +18,7 @@ const BIAS_STYLES: Record<string, { bg: string; text: string }> = {
   strong_bullish: { bg: "bg-red-500", text: "text-white" },
   bullish: { bg: "bg-red-100", text: "text-red-700" },
   bearish: { bg: "bg-green-100", text: "text-green-700" },
-  neutral: { bg: "bg-gray-100", text: "text-gray-500" },
+  neutral: { bg: "bg-muted", text: "text-muted-foreground" },
 };
 
 /** 格式化净额为万元 */
@@ -48,7 +48,7 @@ export default function TradeDirectionBadge({
 
   // 数据不可用
   if (!summary) {
-    return <span className="text-gray-400">-</span>;
+    return <span className="text-muted-foreground">-</span>;
   }
 
   const style = BIAS_STYLES[summary.bias] ?? BIAS_STYLES.neutral;

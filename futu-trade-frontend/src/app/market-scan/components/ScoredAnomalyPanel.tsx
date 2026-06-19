@@ -122,7 +122,7 @@ export default function ScoredAnomalyPanel() {
         </div>
         <button
           onClick={() => setDismissed(true)}
-          className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1"
+          className="text-xs text-muted-foreground hover:text-muted-foreground px-2 py-1"
         >
           <i className="fas fa-times" />
         </button>
@@ -137,18 +137,18 @@ export default function ScoredAnomalyPanel() {
           return (
             <div
               key={alert.code}
-              className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden"
+              className="bg-card rounded-lg border border-border shadow-sm overflow-hidden"
             >
               {/* 概要行 */}
               <div
-                className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors"
+                className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-muted transition-colors"
                 onClick={() => setExpandedCode(isExpanded ? null : alert.code)}
               >
                 <div className="flex items-center gap-3">
                   <div className="flex flex-col">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-gray-900">{alert.name}</span>
-                      <span className="text-xs text-gray-400">{alert.code.replace("HK.", "")}</span>
+                      <span className="text-sm font-bold text-foreground">{alert.name}</span>
+                      <span className="text-xs text-muted-foreground">{alert.code.replace("HK.", "")}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded text-white font-medium ${mode.bg}`}>
                         {mode.text}
                       </span>
@@ -158,13 +158,13 @@ export default function ScoredAnomalyPanel() {
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
+                    <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                       <span className="font-bold text-red-600">
                         {alert.change_rate >= 0 ? "+" : ""}{alert.change_rate.toFixed(1)}%
                       </span>
                       <span>量比 {alert.volume_ratio.toFixed(1)}</span>
                       <span>现价 {alert.price.toFixed(2)}</span>
-                      <span className="text-gray-400">{alert.detected_at}</span>
+                      <span className="text-muted-foreground">{alert.detected_at}</span>
                     </div>
                   </div>
                 </div>
@@ -182,26 +182,26 @@ export default function ScoredAnomalyPanel() {
                       />
                     </svg>
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-sm font-bold text-gray-800">{alert.score}</span>
+                      <span className="text-sm font-bold text-foreground">{alert.score}</span>
                     </div>
                   </div>
-                  <i className={`fas fa-chevron-${isExpanded ? "up" : "down"} text-gray-400 text-xs`} />
+                  <i className={`fas fa-chevron-${isExpanded ? "up" : "down"} text-muted-foreground text-xs`} />
                 </div>
               </div>
 
               {/* 展开详情 */}
               {isExpanded && (
-                <div className="border-t border-gray-100 px-4 py-3 space-y-3">
+                <div className="border-t border-border px-4 py-3 space-y-3">
                   {/* 各维度评分 */}
                   <div>
-                    <h4 className="text-xs font-semibold text-gray-500 mb-2">评分维度</h4>
+                    <h4 className="text-xs font-semibold text-muted-foreground mb-2">评分维度</h4>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       {alert.details.map((d, i) => {
                         const pct = d.max > 0 ? (d.score / d.max) * 100 : 0;
                         const label = dimLabels[d.dim] || d.dim;
                         return (
-                          <div key={i} className="bg-gray-50 rounded-lg p-2">
-                            <div className="text-[10px] text-gray-400 truncate" title={d.note || label}>
+                          <div key={i} className="bg-muted rounded-lg p-2">
+                            <div className="text-[10px] text-muted-foreground truncate" title={d.note || label}>
                               {label}
                             </div>
                             <div className="flex items-center gap-1 mt-1">
@@ -211,12 +211,12 @@ export default function ScoredAnomalyPanel() {
                                   style={{ width: `${Math.min(100, pct)}%` }}
                                 />
                               </div>
-                              <span className="text-xs font-semibold text-gray-700 w-10 text-right">
+                              <span className="text-xs font-semibold text-foreground w-10 text-right">
                                 {d.score}/{d.max}
                               </span>
                             </div>
                             {d.note && (
-                              <div className="text-[9px] text-gray-400 mt-0.5 truncate" title={d.note}>
+                              <div className="text-[9px] text-muted-foreground mt-0.5 truncate" title={d.note}>
                                 {d.note}
                               </div>
                             )}

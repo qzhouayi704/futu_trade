@@ -33,7 +33,7 @@ function BarRow({ item, maxAbs }: { item: CapitalFlowHistoryItem; maxAbs: number
 
   return (
     <div className="flex items-center gap-2 py-1">
-      <span className="text-xs text-gray-500 w-12 shrink-0">{dateLabel}</span>
+      <span className="text-xs text-muted-foreground w-12 shrink-0">{dateLabel}</span>
       <div className="flex-1 flex items-center">
         {/* 左半（流出） */}
         <div className="w-1/2 flex justify-end">
@@ -106,8 +106,8 @@ export function CapitalFlowHistory({ stockCode }: { stockCode: string }) {
   const positiveCount = history.filter(d => d.net_inflow > 0).length;
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+    <div className="bg-card rounded-lg shadow p-6">
+      <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
         <svg className="w-5 h-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6m6 0h6m-6 0V9a2 2 0 012-2h2a2 2 0 012 2v10m6 0v-4a2 2 0 00-2-2h-2a2 2 0 00-2 2v4" />
         </svg>
@@ -124,7 +124,7 @@ export function CapitalFlowHistory({ stockCode }: { stockCode: string }) {
             className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
               activeDays === days && history.length > 0
                 ? "bg-purple-600 text-white"
-                : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                : "bg-muted text-muted-foreground hover:bg-gray-200"
             } disabled:opacity-50`}
           >
             {label}
@@ -132,27 +132,27 @@ export function CapitalFlowHistory({ stockCode }: { stockCode: string }) {
         ))}
       </div>
 
-      {loading && <p className="text-sm text-gray-400 text-center py-4">加载中...</p>}
+      {loading && <p className="text-sm text-muted-foreground text-center py-4">加载中...</p>}
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
 
       {history.length > 0 && !loading && (
         <>
           {/* 汇总 */}
           <div className="grid grid-cols-3 gap-3 mb-4">
-            <div className="bg-gray-50 rounded-lg p-3 text-center">
-              <div className="text-xs text-gray-500 mb-1">累计净流入</div>
+            <div className="bg-muted rounded-lg p-3 text-center">
+              <div className="text-xs text-muted-foreground mb-1">累计净流入</div>
               <div className={`text-lg font-bold ${totalNetInflow >= 0 ? "text-red-600" : "text-green-600"}`}>
                 {formatAmount(totalNetInflow)}
               </div>
             </div>
-            <div className="bg-gray-50 rounded-lg p-3 text-center">
-              <div className="text-xs text-gray-500 mb-1">净流入天数</div>
-              <div className="text-lg font-bold text-gray-800">
+            <div className="bg-muted rounded-lg p-3 text-center">
+              <div className="text-xs text-muted-foreground mb-1">净流入天数</div>
+              <div className="text-lg font-bold text-foreground">
                 {positiveCount}/{history.length}
               </div>
             </div>
-            <div className="bg-gray-50 rounded-lg p-3 text-center">
-              <div className="text-xs text-gray-500 mb-1">流入占比</div>
+            <div className="bg-muted rounded-lg p-3 text-center">
+              <div className="text-xs text-muted-foreground mb-1">流入占比</div>
               <div className={`text-lg font-bold ${positiveCount > history.length / 2 ? "text-red-600" : "text-green-600"}`}>
                 {history.length > 0 ? ((positiveCount / history.length) * 100).toFixed(0) : 0}%
               </div>
@@ -169,7 +169,7 @@ export function CapitalFlowHistory({ stockCode }: { stockCode: string }) {
       )}
 
       {!loading && history.length === 0 && !error && (
-        <p className="text-sm text-gray-400 text-center py-8">
+        <p className="text-sm text-muted-foreground text-center py-8">
           {stockCode ? "选择日期范围查看历史资金流向" : "请先在上方输入股票代码"}
         </p>
       )}

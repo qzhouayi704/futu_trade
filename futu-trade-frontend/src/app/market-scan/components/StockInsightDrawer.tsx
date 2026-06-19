@@ -88,7 +88,7 @@ export function StockInsightDrawer({
             <div>
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
                 {stockName}
-                <span className="text-sm font-normal text-gray-400">{stockCode}</span>
+                <span className="text-sm font-normal text-muted-foreground">{stockCode}</span>
               </h2>
               {insight && (
                 <div className="flex items-center gap-2 mt-1">
@@ -104,7 +104,7 @@ export function StockInsightDrawer({
             </div>
             <button
               onClick={onClose}
-              className="w-8 h-8 rounded-full bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-colors"
+              className="w-8 h-8 rounded-full bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-muted-foreground hover:text-white transition-colors"
             >
               ✕
             </button>
@@ -113,7 +113,7 @@ export function StockInsightDrawer({
 
         {loading ? (
           <div className="flex items-center justify-center h-64">
-            <div className="text-gray-400 flex flex-col items-center gap-3">
+            <div className="text-muted-foreground flex flex-col items-center gap-3">
               <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
               <span className="text-sm">分析中...</span>
             </div>
@@ -172,7 +172,7 @@ function ScenarioSection({ scenarios }: { scenarios: Scenario[] }) {
 
   return (
     <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/40">
-      <h3 className="text-xs font-medium text-gray-400 mb-3 uppercase tracking-wider">情景预判</h3>
+      <h3 className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wider">情景预判</h3>
       <div className="space-y-2">
         {scenarios.map((s) => (
           <div key={s.name} className="flex items-center gap-3">
@@ -211,7 +211,7 @@ function CapitalFlowSection({ capitalFlow, capitalScore }: {
 
   return (
     <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/40">
-      <h3 className="text-xs font-medium text-gray-400 mb-3 uppercase tracking-wider">
+      <h3 className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wider">
         资金流 · 近{timeline.length}天
       </h3>
 
@@ -233,7 +233,7 @@ function CapitalFlowSection({ capitalFlow, capitalScore }: {
                     }}
                     title={`${t.date}: ${formatAmount(t.net_inflow)}`}
                   />
-                  <span className="text-[9px] text-gray-500 mt-1">{t.date.slice(-2)}</span>
+                  <span className="text-[9px] text-muted-foreground mt-1">{t.date.slice(-2)}</span>
                 </div>
               );
             })}
@@ -241,19 +241,19 @@ function CapitalFlowSection({ capitalFlow, capitalScore }: {
 
           {/* 统计 */}
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="flex justify-between text-gray-400">
+            <div className="flex justify-between text-muted-foreground">
               <span>连续流入</span>
               <span className="text-gray-200">{capitalFlow.continuity_days}天</span>
             </div>
-            <div className="flex justify-between text-gray-400">
+            <div className="flex justify-between text-muted-foreground">
               <span>资金评分</span>
               <span className="text-gray-200">{capitalScore.score.toFixed(0)}分</span>
             </div>
-            <div className="flex justify-between text-gray-400">
+            <div className="flex justify-between text-muted-foreground">
               <span>大单买入比</span>
               <span className="text-gray-200">{(capitalScore.big_order_ratio * 100).toFixed(1)}%</span>
             </div>
-            <div className="flex justify-between text-gray-400">
+            <div className="flex justify-between text-muted-foreground">
               <span>主力净流入</span>
               <span style={{ color: capitalScore.main_net_inflow >= 0 ? '#22c55e' : '#ef4444' }}>
                 {formatAmount(capitalScore.main_net_inflow)}
@@ -262,10 +262,10 @@ function CapitalFlowSection({ capitalFlow, capitalScore }: {
           </div>
         </>
       ) : (
-        <div className="text-xs text-gray-500 text-center py-4">暂无资金流数据</div>
+        <div className="text-xs text-muted-foreground text-center py-4">暂无资金流数据</div>
       )}
 
-      <div className="mt-2 text-xs text-gray-400">
+      <div className="mt-2 text-xs text-muted-foreground">
         趋势: <span className="text-gray-200">{capitalFlow.trend_text}</span>
       </div>
     </div>
@@ -279,15 +279,15 @@ function ActivitySection({ activity, klinePattern }: {
 }) {
   return (
     <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/40">
-      <h3 className="text-xs font-medium text-gray-400 mb-3 uppercase tracking-wider">活跃度 & K线</h3>
+      <h3 className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wider">活跃度 & K线</h3>
 
       {/* 活跃度 */}
       {activity.length > 0 ? (
         <div className="flex items-center gap-2 text-xs mb-3">
           {activity.map((a, i) => (
             <React.Fragment key={i}>
-              {i > 0 && <span className="text-gray-600">→</span>}
-              <span className="text-gray-400">{a.date}</span>
+              {i > 0 && <span className="text-muted-foreground">→</span>}
+              <span className="text-muted-foreground">{a.date}</span>
               <span className={`font-medium ${a.turnover_rate >= 20 ? 'text-orange-400' : 'text-gray-200'}`}>
                 {a.turnover_rate.toFixed(1)}%
                 {a.turnover_rate >= 30 && ' 🔥'}
@@ -296,7 +296,7 @@ function ActivitySection({ activity, klinePattern }: {
           ))}
         </div>
       ) : (
-        <div className="text-xs text-gray-500 mb-3">暂无活跃度数据</div>
+        <div className="text-xs text-muted-foreground mb-3">暂无活跃度数据</div>
       )}
 
       {/* K线形态 */}
@@ -332,7 +332,7 @@ function SignalsSection({ signals, verdict }: {
 }) {
   return (
     <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/40">
-      <h3 className="text-xs font-medium text-gray-400 mb-3 uppercase tracking-wider">多空信号汇总</h3>
+      <h3 className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wider">多空信号汇总</h3>
 
       {/* 看多 */}
       {signals.bullish.length > 0 && (
@@ -363,15 +363,15 @@ function SignalsSection({ signals, verdict }: {
       )}
 
       {signals.bullish.length === 0 && signals.bearish.length === 0 && (
-        <div className="text-xs text-gray-500 text-center py-2">暂无信号</div>
+        <div className="text-xs text-muted-foreground text-center py-2">暂无信号</div>
       )}
 
       {/* 综合得分 */}
       <div className="mt-3 pt-3 border-t border-gray-700/30 flex items-center justify-between text-xs">
-        <span className="text-gray-400">综合得分</span>
+        <span className="text-muted-foreground">综合得分</span>
         <div className="flex items-center gap-3">
           <span className="text-green-400 font-medium">看多 {verdict.bullish_score}</span>
-          <span className="text-gray-600">vs</span>
+          <span className="text-muted-foreground">vs</span>
           <span className="text-red-400 font-medium">看空 {verdict.bearish_score}</span>
         </div>
       </div>
@@ -388,15 +388,15 @@ function SignalItem({ signal, type }: { signal: Signal; type: 'bullish' | 'beari
       <div className="flex-1 min-w-0">
         <div className="font-medium text-gray-200">{signal.label}</div>
         {signal.reason && (
-          <div className="text-gray-500 mt-0.5 truncate">{signal.reason}</div>
+          <div className="text-muted-foreground mt-0.5 truncate">{signal.reason}</div>
         )}
         {signal.detail && (
-          <div className="text-gray-500 mt-0.5">{signal.detail}</div>
+          <div className="text-muted-foreground mt-0.5">{signal.detail}</div>
         )}
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-gray-600 text-[10px]">{signal.source}</span>
+          <span className="text-muted-foreground text-[10px]">{signal.source}</span>
           {signal.confidence && (
-            <span className="text-gray-600 text-[10px]">置信度 {(signal.confidence * 100).toFixed(0)}%</span>
+            <span className="text-muted-foreground text-[10px]">置信度 {(signal.confidence * 100).toFixed(0)}%</span>
           )}
         </div>
       </div>
@@ -408,7 +408,7 @@ function SignalItem({ signal, type }: { signal: Signal; type: 'bullish' | 'beari
 function NewsSection({ news, loading }: { news: StockNewsResult | null; loading: boolean }) {
   return (
     <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/40">
-      <h3 className="text-xs font-medium text-gray-400 mb-3 uppercase tracking-wider flex items-center gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wider flex items-center gap-2">
         📰 消息面
         {loading && (
           <span className="flex items-center gap-1 text-blue-400">
@@ -419,7 +419,7 @@ function NewsSection({ news, loading }: { news: StockNewsResult | null; loading:
       </h3>
 
       {loading && !news && (
-        <div className="text-xs text-gray-500 text-center py-4">
+        <div className="text-xs text-muted-foreground text-center py-4">
           Gemini 正在搜索最新消息...（约7秒）
         </div>
       )}
@@ -441,8 +441,8 @@ function NewsSection({ news, loading }: { news: StockNewsResult | null; loading:
                 }</span>
                 <div className="flex-1">
                   <div className="text-gray-200 font-medium">{item.title}</div>
-                  <div className="text-gray-500 mt-0.5">{item.summary}</div>
-                  <div className="text-gray-600 mt-0.5">{item.date}</div>
+                  <div className="text-muted-foreground mt-0.5">{item.summary}</div>
+                  <div className="text-muted-foreground mt-0.5">{item.date}</div>
                 </div>
               </div>
             </div>
@@ -455,7 +455,7 @@ function NewsSection({ news, loading }: { news: StockNewsResult | null; loading:
                 <div>
                   <div className="text-[10px] text-green-400 font-medium mb-1">催化剂</div>
                   {news.key_catalysts.map((c, i) => (
-                    <div key={i} className="text-[10px] text-gray-400 truncate">• {c}</div>
+                    <div key={i} className="text-[10px] text-muted-foreground truncate">• {c}</div>
                   ))}
                 </div>
               )}
@@ -463,7 +463,7 @@ function NewsSection({ news, loading }: { news: StockNewsResult | null; loading:
                 <div>
                   <div className="text-[10px] text-red-400 font-medium mb-1">风险</div>
                   {news.risk_factors.map((r, i) => (
-                    <div key={i} className="text-[10px] text-gray-400 truncate">• {r}</div>
+                    <div key={i} className="text-[10px] text-muted-foreground truncate">• {r}</div>
                   ))}
                 </div>
               )}
@@ -473,7 +473,7 @@ function NewsSection({ news, loading }: { news: StockNewsResult | null; loading:
       )}
 
       {news && !news.error && news.news.length === 0 && !loading && (
-        <div className="text-xs text-gray-500 text-center py-2">暂无近期消息</div>
+        <div className="text-xs text-muted-foreground text-center py-2">暂无近期消息</div>
       )}
     </div>
   );
@@ -486,7 +486,7 @@ function BattlePanelSection({ stockTag, keyLevels }: { stockTag?: StockTag; keyL
     '暴量拉升': { bg: 'bg-orange-900/40', text: 'text-orange-400', icon: '🚀' },
     '仙股炒作': { bg: 'bg-purple-900/40', text: 'text-purple-400', icon: '💀' },
     '明星高波动': { bg: 'bg-sky-900/40', text: 'text-sky-400', icon: '⭐' },
-    '正常': { bg: 'bg-gray-800/40', text: 'text-gray-400', icon: '✅' },
+    '正常': { bg: 'bg-gray-800/40', text: 'text-muted-foreground', icon: '✅' },
   };
 
   const stopLossPct: Record<string, string> = {
@@ -514,7 +514,7 @@ function BattlePanelSection({ stockTag, keyLevels }: { stockTag?: StockTag; keyL
     <div className={`rounded-xl p-4 border border-gray-700/40 ${style.bg}`}>
       {/* 标签头 */}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">作战面板</h3>
+        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">作战面板</h3>
         <div className="flex items-center gap-2">
           <span className={`px-2 py-0.5 rounded text-xs font-bold ${style.text}`}>
             {style.icon} {label}
@@ -538,30 +538,30 @@ function BattlePanelSection({ stockTag, keyLevels }: { stockTag?: StockTag; keyL
       {/* 关键价位 */}
       {keyLevels && keyLevels.prev_close > 0 && (
         <div className="mb-3">
-          <div className="text-[10px] text-gray-500 mb-2">📊 关键价位</div>
+          <div className="text-[10px] text-muted-foreground mb-2">📊 关键价位</div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
             <div className="flex justify-between">
-              <span className="text-gray-500">阻力位 (5日高)</span>
+              <span className="text-muted-foreground">阻力位 (5日高)</span>
               <span className="text-red-400 font-mono">{fmt(keyLevels.resistance_5d)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">前日高</span>
+              <span className="text-muted-foreground">前日高</span>
               <span className="text-gray-300 font-mono">{fmt(keyLevels.prev_high)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">前日收</span>
+              <span className="text-muted-foreground">前日收</span>
               <span className="text-gray-300 font-mono">{fmt(keyLevels.prev_close)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">前日低</span>
+              <span className="text-muted-foreground">前日低</span>
               <span className="text-gray-300 font-mono">{fmt(keyLevels.prev_low)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">支撑位 (5日低)</span>
+              <span className="text-muted-foreground">支撑位 (5日低)</span>
               <span className="text-green-400 font-mono">{fmt(keyLevels.support_5d)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">止损位</span>
+              <span className="text-muted-foreground">止损位</span>
               <span className="text-red-500 font-mono">{fmt(keyLevels.stop_loss)}</span>
             </div>
           </div>
@@ -569,11 +569,11 @@ function BattlePanelSection({ stockTag, keyLevels }: { stockTag?: StockTag; keyL
           {/* Fibonacci */}
           {keyLevels.fib_382 > 0 && (
             <div className="mt-2 pt-2 border-t border-gray-700/30">
-              <div className="text-[10px] text-gray-500 mb-1">Fibonacci 回撤</div>
+              <div className="text-[10px] text-muted-foreground mb-1">Fibonacci 回撤</div>
               <div className="flex gap-3 text-xs">
-                <span className="text-gray-400">38.2% <span className="text-gray-300 font-mono">{fmt(keyLevels.fib_382)}</span></span>
-                <span className="text-gray-400">50% <span className="text-gray-300 font-mono">{fmt(keyLevels.fib_500)}</span></span>
-                <span className="text-gray-400">61.8% <span className="text-gray-300 font-mono">{fmt(keyLevels.fib_618)}</span></span>
+                <span className="text-muted-foreground">38.2% <span className="text-gray-300 font-mono">{fmt(keyLevels.fib_382)}</span></span>
+                <span className="text-muted-foreground">50% <span className="text-gray-300 font-mono">{fmt(keyLevels.fib_500)}</span></span>
+                <span className="text-muted-foreground">61.8% <span className="text-gray-300 font-mono">{fmt(keyLevels.fib_618)}</span></span>
               </div>
             </div>
           )}
@@ -591,7 +591,7 @@ function BattlePanelSection({ stockTag, keyLevels }: { stockTag?: StockTag; keyL
       {/* VWAP 偏离度阈值 */}
       {keyLevels && (
         <div className="mb-3">
-          <div className="text-[10px] text-gray-500 mb-2">📈 VWAP 偏离度信号</div>
+          <div className="text-[10px] text-muted-foreground mb-2">📈 VWAP 偏离度信号</div>
           <div className="grid grid-cols-3 gap-2 text-xs">
             <div className="bg-green-900/30 rounded px-2 py-1.5 text-center">
               <div className="text-[10px] text-green-500">回踩买点</div>
@@ -611,13 +611,13 @@ function BattlePanelSection({ stockTag, keyLevels }: { stockTag?: StockTag; keyL
 
       {/* 策略参数 */}
       <div className="pt-2 border-t border-gray-700/30">
-        <div className="text-[10px] text-gray-500 mb-2">⚙️ 策略参数</div>
+        <div className="text-[10px] text-muted-foreground mb-2">⚙️ 策略参数</div>
         <div className="flex items-center gap-4 text-xs">
-          <span className="text-gray-400">止损 <span className="text-red-400 font-medium">{stopLossPct[label]}</span></span>
-          <span className="text-gray-400">止盈 <span className="text-green-400 font-medium">{takeProfitPct[label]}</span></span>
-          <span className="text-gray-400">仓位上限 <span className="text-gray-200 font-medium">{maxPosPct[label]}</span></span>
+          <span className="text-muted-foreground">止损 <span className="text-red-400 font-medium">{stopLossPct[label]}</span></span>
+          <span className="text-muted-foreground">止盈 <span className="text-green-400 font-medium">{takeProfitPct[label]}</span></span>
+          <span className="text-muted-foreground">仓位上限 <span className="text-gray-200 font-medium">{maxPosPct[label]}</span></span>
         </div>
-        <div className="mt-1 text-[10px] text-gray-500">
+        <div className="mt-1 text-[10px] text-muted-foreground">
           入场规则: <span className="text-gray-300">{entryRules[label]}</span>
         </div>
       </div>

@@ -23,7 +23,7 @@ function getLevelColorClass(level: string): string {
     case "D":
       return "text-red-700 bg-red-100";
     default:
-      return "text-gray-700 bg-gray-100";
+      return "text-foreground bg-muted";
   }
 }
 
@@ -58,7 +58,7 @@ export default function LiquidityScoreCell({
           {level}级
         </span>
       </Tooltip>
-      <span className="text-sm text-gray-700">{score.toFixed(1)}</span>
+      <span className="text-sm text-foreground">{score.toFixed(1)}</span>
       {isAnomaly && (
         <Tooltip content="检测到异常成交量放大">
           <i className="fas fa-exclamation-triangle text-orange-500 text-xs" />

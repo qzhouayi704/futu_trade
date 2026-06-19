@@ -195,21 +195,21 @@ export function CapitalFlowChart({ data, height = 380 }: CapitalFlowChartProps) 
       <div className="absolute top-2 left-3 z-10 flex items-center gap-4 text-[10px]">
         <span className="flex items-center gap-1">
           <span className="w-3 h-3 bg-red-400/60 inline-block rounded-sm" />
-          <span className="text-gray-600">净买入</span>
+          <span className="text-muted-foreground">净买入</span>
         </span>
         <span className="flex items-center gap-1">
           <span className="w-3 h-3 bg-green-400/60 inline-block rounded-sm" />
-          <span className="text-gray-600">净卖出</span>
+          <span className="text-muted-foreground">净卖出</span>
         </span>
         <span className="flex items-center gap-1">
           <span className="w-4 h-[2px] bg-blue-500 inline-block rounded" />
-          <span className="text-gray-600">累计净买</span>
+          <span className="text-muted-foreground">累计净买</span>
         </span>
         <span className="flex items-center gap-1">
           <span className="w-4 h-[2px] bg-violet-600 inline-block rounded" />
-          <span className="text-gray-600">股价</span>
+          <span className="text-muted-foreground">股价</span>
         </span>
-        <span className="text-gray-400">| 万元</span>
+        <span className="text-muted-foreground">| 万元</span>
       </div>
 
       {/* 实时数值 */}

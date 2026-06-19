@@ -22,10 +22,10 @@ function StrengthGauge({ strength }: { strength: number }) {
   const label = strength > 0.3 ? "买入强势" : strength < -0.3 ? "卖出强势" : "均衡";
 
   return (
-    <div className="bg-gray-50 rounded-lg p-3">
-      <div className="flex justify-between text-xs text-gray-500 mb-1">
+    <div className="bg-muted rounded-lg p-3">
+      <div className="flex justify-between text-xs text-muted-foreground mb-1">
         <span>卖出</span>
-        <span className="font-medium text-gray-700">{label}</span>
+        <span className="font-medium text-foreground">{label}</span>
         <span>买入</span>
       </div>
       <div className="relative w-full h-3 bg-gray-200 rounded-full">
@@ -53,7 +53,7 @@ function BuySellRatio({ data }: { data: BigOrderData }) {
 
   return (
     <div className="mb-4">
-      <div className="flex justify-between text-xs text-gray-600 mb-1">
+      <div className="flex justify-between text-xs text-muted-foreground mb-1">
         <span>大单买入 {formatAmount(data.big_buy_amount)}</span>
         <span>大单卖出 {formatAmount(data.big_sell_amount)}</span>
       </div>
@@ -119,8 +119,8 @@ export function BigOrderTracker({ stockCode: externalCode }: BigOrderTrackerProp
   };
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+    <div className="bg-card rounded-lg shadow p-6">
+      <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
         <svg className="w-5 h-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z" />
         </svg>
@@ -135,7 +135,7 @@ export function BigOrderTracker({ stockCode: externalCode }: BigOrderTrackerProp
           onChange={(e) => setLocalCode(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="输入股票代码，如 HK.00700"
-          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+          className="flex-1 px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
         />
         <button
           onClick={() => fetchData()}
@@ -168,8 +168,8 @@ export function BigOrderTracker({ stockCode: externalCode }: BigOrderTrackerProp
           <BuySellRatio data={data} />
 
           {/* 买卖比数值 */}
-          <div className="bg-gray-50 rounded-lg p-3 mb-4 flex justify-between items-center">
-            <span className="text-sm text-gray-600">买卖比</span>
+          <div className="bg-muted rounded-lg p-3 mb-4 flex justify-between items-center">
+            <span className="text-sm text-muted-foreground">买卖比</span>
             <span className={`text-lg font-bold ${data.buy_sell_ratio > 1 ? "text-red-600" : "text-green-600"}`}>
               {data.buy_sell_ratio.toFixed(2)}
             </span>
@@ -181,7 +181,7 @@ export function BigOrderTracker({ stockCode: externalCode }: BigOrderTrackerProp
       )}
 
       {!data && !loading && !error && (
-        <p className="text-sm text-gray-400 text-center py-8">输入股票代码查询大单数据</p>
+        <p className="text-sm text-muted-foreground text-center py-8">输入股票代码查询大单数据</p>
       )}
     </div>
   );

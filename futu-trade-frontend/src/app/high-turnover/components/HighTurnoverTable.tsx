@@ -50,7 +50,7 @@ function getTurnoverColorClass(rate: number): string {
   if (rate >= 5) return "text-red-600 bg-red-50";
   if (rate >= 2) return "text-orange-600 bg-orange-50";
   if (rate >= 1) return "text-yellow-600 bg-yellow-50";
-  return "text-gray-600 bg-gray-50";
+  return "text-muted-foreground bg-muted";
 }
 
 /** 格式化成交量（万/亿） */
@@ -104,7 +104,7 @@ export default function HighTurnoverTable({
 
   if (stocks.length === 0) {
     return (
-      <div className="text-center py-12 text-gray-500">
+      <div className="text-center py-12 text-muted-foreground">
         <i className="fas fa-inbox text-4xl mb-4" />
         <p>暂无活跃个股数据</p>
       </div>
@@ -114,12 +114,12 @@ export default function HighTurnoverTable({
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full divide-y divide-gray-200">
-        <thead className="bg-gray-50">
+        <thead className="bg-muted">
           <tr>
             {COLUMNS.map((col) => (
               <th
                 key={col.key}
-                className={`px-4 py-3 text-xs font-medium text-gray-500 uppercase ${col.align} ${col.sortable ? "cursor-pointer hover:bg-gray-100 select-none" : ""
+                className={`px-4 py-3 text-xs font-medium text-muted-foreground uppercase ${col.align} ${col.sortable ? "cursor-pointer hover:bg-muted select-none" : ""
                   }`}
                 onClick={() => col.sortable && onSortChange(col.key as SortField)}
               >
@@ -140,21 +140,21 @@ export default function HighTurnoverTable({
             ))}
           </tr>
         </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
+        <tbody className="bg-card divide-y divide-gray-200">
           {stocks.map((stock) => {
             const changeColor = stock.change_rate >= 0 ? "text-red-600" : "text-green-600";
             const changePrefix = stock.change_rate >= 0 ? "+" : "";
 
             return (
-              <tr key={stock.code} className={`hover:bg-gray-50 ${onRowClick ? "cursor-pointer" : ""}`} onClick={() => onRowClick?.(stock)}>
+              <tr key={stock.code} className={`hover:bg-muted ${onRowClick ? "cursor-pointer" : ""}`} onClick={() => onRowClick?.(stock)}>
                 {/* 排名 */}
-                <td className="px-4 py-3 text-sm text-center text-gray-500 font-medium">
+                <td className="px-4 py-3 text-sm text-center text-muted-foreground font-medium">
                   {stock.rank}
                 </td>
 
                 {/* 股票名称/代码 */}
                 <td className="px-4 py-3 text-sm">
-                  <div className="font-medium text-gray-900 flex items-center gap-1">
+                  <div className="font-medium text-foreground flex items-center gap-1">
                     {stock.name}
                     {stock.is_position && (
                       <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700" title="持仓股票">
@@ -162,7 +162,7 @@ export default function HighTurnoverTable({
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-gray-500">{stock.code}</div>
+                  <div className="text-xs text-muted-foreground">{stock.code}</div>
                 </td>
 
                 {/* 流动性评分（新增） */}
@@ -190,12 +190,12 @@ export default function HighTurnoverTable({
                 </td>
 
                 {/* 现价 */}
-                <td className="px-4 py-3 text-sm text-right text-gray-900">
+                <td className="px-4 py-3 text-sm text-right text-foreground">
                   {formatPrice(stock.last_price)}
                 </td>
 
                 {/* 成交额 */}
-                <td className="px-4 py-3 text-sm text-right text-gray-900">
+                <td className="px-4 py-3 text-sm text-right text-foreground">
                   {formatTurnoverZh(stock.turnover)}
                 </td>
 
@@ -228,7 +228,7 @@ export default function HighTurnoverTable({
                         </Link>
                       ))
                     ) : (
-                      <span className="text-gray-400 text-xs">-</span>
+                      <span className="text-muted-foreground text-xs">-</span>
                     )}
                   </div>
                 </td>

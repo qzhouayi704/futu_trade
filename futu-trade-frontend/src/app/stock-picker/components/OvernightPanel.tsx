@@ -155,7 +155,7 @@ export default function OvernightPanel() {
       {/* 标题栏 */}
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
             <i className="fas fa-moon text-indigo-600" />
             盘后优选
             {candidates.length > 0 && (
@@ -164,7 +164,7 @@ export default function OvernightPanel() {
               </span>
             )}
           </h1>
-          <p className="text-gray-500 mt-1 text-sm">
+          <p className="text-muted-foreground mt-1 text-sm">
             收盘后全规则综合评分，筛选明日交易候选
           </p>
         </div>
@@ -183,7 +183,7 @@ export default function OvernightPanel() {
       {/* 日期选择器 */}
       {availableDates.length > 0 && (
         <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1">
-          <span className="text-xs text-gray-400 shrink-0">日期：</span>
+          <span className="text-xs text-muted-foreground shrink-0">日期：</span>
           {availableDates.map(d => (
             <button
               key={d.date}
@@ -191,11 +191,11 @@ export default function OvernightPanel() {
               className={`px-3 py-1.5 text-xs rounded-lg border transition-all whitespace-nowrap ${
                 selectedDate === d.date
                   ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
-                  : "bg-white text-gray-600 border-gray-200 hover:border-indigo-300 hover:text-indigo-600"
+                  : "bg-card text-muted-foreground border-border hover:border-indigo-300 hover:text-indigo-600"
               }`}
             >
               {d.date}
-              <span className={`ml-1 ${selectedDate === d.date ? "text-indigo-200" : "text-gray-400"}`}>
+              <span className={`ml-1 ${selectedDate === d.date ? "text-indigo-200" : "text-muted-foreground"}`}>
                 ({d.count})
               </span>
             </button>
@@ -211,7 +211,7 @@ export default function OvernightPanel() {
             className={`px-3 py-1.5 text-xs rounded-full border transition-colors ${
               categoryFilter === "all"
                 ? "bg-gray-900 text-white border-gray-900"
-                : "bg-white text-gray-600 border-gray-300 hover:border-gray-400"
+                : "bg-card text-muted-foreground border-border hover:border-gray-400"
             }`}
           >
             全部 ({candidates.length})
@@ -223,7 +223,7 @@ export default function OvernightPanel() {
               className={`px-3 py-1.5 text-xs rounded-full border transition-colors ${
                 categoryFilter === cat
                   ? "bg-gray-900 text-white border-gray-900"
-                  : `${categoryColors[cat] || "bg-gray-50"} border hover:opacity-80`
+                  : `${categoryColors[cat] || "bg-muted"} border hover:opacity-80`
               }`}
             >
               {cat} ({candidates.filter(c => c.category === cat).length})
@@ -236,8 +236,8 @@ export default function OvernightPanel() {
       {candidates.length === 0 && !running && (
         <Card className="text-center py-20">
           <i className="fas fa-moon text-5xl text-gray-200 mb-4 block" />
-          <p className="text-gray-500 mb-4">暂无优选结果</p>
-          <p className="text-gray-400 text-sm mb-6">
+          <p className="text-muted-foreground mb-4">暂无优选结果</p>
+          <p className="text-muted-foreground text-sm mb-6">
             收盘后点击"生成明日优选"，系统将对市场扫描池股票执行全规则综合评分
           </p>
           <Button variant="primary" onClick={handleTrigger}>
@@ -251,8 +251,8 @@ export default function OvernightPanel() {
       {running && candidates.length === 0 && (
         <Card className="text-center py-16">
           <i className="fas fa-spinner fa-spin text-4xl text-indigo-500 mb-4 block" />
-          <p className="text-gray-700 font-medium">{progress || "评分中..."}</p>
-          <p className="text-gray-400 text-sm mt-2">正在对全部活跃股票执行多规则评分</p>
+          <p className="text-foreground font-medium">{progress || "评分中..."}</p>
+          <p className="text-muted-foreground text-sm mt-2">正在对全部活跃股票执行多规则评分</p>
         </Card>
       )}
 
@@ -261,12 +261,12 @@ export default function OvernightPanel() {
         <div className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <span className="text-lg">🚀</span>
-            <h2 className="text-lg font-bold text-gray-900">缩量蓄势 → 放量突破</h2>
+            <h2 className="text-lg font-bold text-foreground">缩量蓄势 → 放量突破</h2>
             <span className="text-xs font-medium text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full border border-orange-200">
               {breakoutList.length} 只信号
             </span>
           </div>
-          <p className="text-xs text-gray-500 mb-3">
+          <p className="text-xs text-muted-foreground mb-3">
             低换手率盘整后放量突破，建议明日早盘关注（开盘15分钟内确认放量再入场）
           </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -282,38 +282,38 @@ export default function OvernightPanel() {
 
                 {/* 股票名称 */}
                 <div className="mb-2">
-                  <span className="font-bold text-gray-900 text-base">{b.name || b.code}</span>
-                  <span className="text-xs text-gray-400 ml-2">{b.code}</span>
+                  <span className="font-bold text-foreground text-base">{b.name || b.code}</span>
+                  <span className="text-xs text-muted-foreground ml-2">{b.code}</span>
                 </div>
 
                 {/* 核心数据 */}
                 <div className="grid grid-cols-3 gap-2 mb-3 text-center">
-                  <div className="bg-white/70 rounded-lg p-1.5">
-                    <div className="text-[10px] text-gray-400">突破涨幅</div>
+                  <div className="bg-card/70 rounded-lg p-1.5">
+                    <div className="text-[10px] text-muted-foreground">突破涨幅</div>
                     <div className="text-sm font-bold text-red-600">+{b.change_pct?.toFixed(1)}%</div>
                   </div>
-                  <div className="bg-white/70 rounded-lg p-1.5">
-                    <div className="text-[10px] text-gray-400">放量倍数</div>
+                  <div className="bg-card/70 rounded-lg p-1.5">
+                    <div className="text-[10px] text-muted-foreground">放量倍数</div>
                     <div className="text-sm font-bold text-orange-600">{b.vol_ratio?.toFixed(1)}x</div>
                   </div>
-                  <div className="bg-white/70 rounded-lg p-1.5">
-                    <div className="text-[10px] text-gray-400">前3日换手</div>
+                  <div className="bg-card/70 rounded-lg p-1.5">
+                    <div className="text-[10px] text-muted-foreground">前3日换手</div>
                     <div className="text-sm font-bold text-blue-600">{b.prev3_avg_tr?.toFixed(2)}%</div>
                   </div>
                 </div>
 
                 {/* 信号描述 */}
-                <div className="text-xs text-gray-600 bg-white/50 rounded-lg px-2 py-1.5">
+                <div className="text-xs text-muted-foreground bg-card/50 rounded-lg px-2 py-1.5">
                   💡 {b.signal_note}
                 </div>
 
                 {/* 底部标签 */}
                 <div className="flex items-center gap-2 mt-2">
-                  <span className="text-[10px] text-gray-400">
+                  <span className="text-[10px] text-muted-foreground">
                     收盘 {b.close?.toFixed(2)}
                   </span>
-                  <span className="text-[10px] text-gray-400">·</span>
-                  <span className="text-[10px] text-gray-400">
+                  <span className="text-[10px] text-muted-foreground">·</span>
+                  <span className="text-[10px] text-muted-foreground">
                     前5日波幅 {b.prev5_range_pct?.toFixed(1)}%
                   </span>
                 </div>
@@ -328,12 +328,12 @@ export default function OvernightPanel() {
         <div className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <span className="text-lg">🏔️</span>
-            <h2 className="text-lg font-bold text-gray-900">底部横盘 → 放量启动</h2>
+            <h2 className="text-lg font-bold text-foreground">底部横盘 → 放量启动</h2>
             <span className="text-xs font-medium text-teal-600 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
               {consolList.length} 只信号
             </span>
           </div>
-          <p className="text-xs text-gray-500 mb-3">
+          <p className="text-xs text-muted-foreground mb-3">
             长期低位横盘后开始放量，类似富通式启动初期信号
           </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -346,33 +346,33 @@ export default function OvernightPanel() {
                   {c.score?.toFixed(0)}
                 </div>
                 <div className="mb-2">
-                  <span className="font-bold text-gray-900 text-base">{c.name || c.code}</span>
-                  <span className="text-xs text-gray-400 ml-2">{c.code}</span>
+                  <span className="font-bold text-foreground text-base">{c.name || c.code}</span>
+                  <span className="text-xs text-muted-foreground ml-2">{c.code}</span>
                   {c.breakout && (
                     <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-600 border border-red-200">已突破</span>
                   )}
                 </div>
                 <div className="grid grid-cols-3 gap-2 mb-3 text-center">
-                  <div className="bg-white/70 rounded-lg p-1.5">
-                    <div className="text-[10px] text-gray-400">90日位置</div>
+                  <div className="bg-card/70 rounded-lg p-1.5">
+                    <div className="text-[10px] text-muted-foreground">90日位置</div>
                     <div className="text-sm font-bold text-teal-700">{c.pos_90d?.toFixed(0)}%</div>
                   </div>
-                  <div className="bg-white/70 rounded-lg p-1.5">
-                    <div className="text-[10px] text-gray-400">放量倍数</div>
+                  <div className="bg-card/70 rounded-lg p-1.5">
+                    <div className="text-[10px] text-muted-foreground">放量倍数</div>
                     <div className="text-sm font-bold text-orange-600">{c.vol_ratio?.toFixed(1)}x</div>
                   </div>
-                  <div className="bg-white/70 rounded-lg p-1.5">
-                    <div className="text-[10px] text-gray-400">横盘振幅</div>
+                  <div className="bg-card/70 rounded-lg p-1.5">
+                    <div className="text-[10px] text-muted-foreground">横盘振幅</div>
                     <div className="text-sm font-bold text-blue-600">{c.consol_range?.toFixed(0)}%</div>
                   </div>
                 </div>
-                <div className="text-xs text-gray-600 bg-white/50 rounded-lg px-2 py-1.5">
+                <div className="text-xs text-muted-foreground bg-card/50 rounded-lg px-2 py-1.5">
                   💡 {c.signal_note}
                 </div>
                 <div className="flex items-center gap-2 mt-2">
-                  <span className="text-[10px] text-gray-400">现价 {c.price?.toFixed(2)}</span>
-                  <span className="text-[10px] text-gray-400">·</span>
-                  <span className="text-[10px] text-gray-400">3日涨 {c.change_3d >= 0 ? '+' : ''}{c.change_3d?.toFixed(1)}%</span>
+                  <span className="text-[10px] text-muted-foreground">现价 {c.price?.toFixed(2)}</span>
+                  <span className="text-[10px] text-muted-foreground">·</span>
+                  <span className="text-[10px] text-muted-foreground">3日涨 {c.change_3d >= 0 ? '+' : ''}{c.change_3d?.toFixed(1)}%</span>
                 </div>
               </div>
             ))}
@@ -403,9 +403,9 @@ export default function OvernightPanel() {
                   {/* 股票信息 */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold text-gray-900">{c.stock_name}</span>
-                      <span className="text-xs text-gray-400">{c.stock_code}</span>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${categoryColors[c.category] || "bg-gray-100 text-gray-600"}`}>
+                      <span className="font-semibold text-foreground">{c.stock_name}</span>
+                      <span className="text-xs text-muted-foreground">{c.stock_code}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${categoryColors[c.category] || "bg-muted text-muted-foreground"}`}>
                         {c.category}
                       </span>
                       {c.r5_candidate && (
@@ -419,7 +419,7 @@ export default function OvernightPanel() {
                         </span>
                       )}
                     </div>
-                    <div className="text-xs text-gray-500 mt-1 truncate">
+                    <div className="text-xs text-muted-foreground mt-1 truncate">
                       {c.reasons.slice(0, 2).join(" · ")}
                     </div>
                   </div>
@@ -427,36 +427,36 @@ export default function OvernightPanel() {
                   {/* 关键指标 */}
                   <div className="hidden sm:flex items-center gap-4 text-sm">
                     <div className="text-center">
-                      <div className="text-xs text-gray-400">现价</div>
+                      <div className="text-xs text-muted-foreground">现价</div>
                       <div className="font-medium">{formatPrice(c.key_metrics.last_price || 0)}</div>
                     </div>
                     <div className="text-center">
-                      <div className="text-xs text-gray-400">涨跌</div>
+                      <div className="text-xs text-muted-foreground">涨跌</div>
                       <div className={`font-medium ${(c.key_metrics.change_rate || 0) >= 0 ? "text-red-600" : "text-green-600"}`}>
                         {(c.key_metrics.change_rate || 0) >= 0 ? "+" : ""}{formatPercent(c.key_metrics.change_rate || 0)}
                       </div>
                     </div>
                     <div className="text-center">
-                      <div className="text-xs text-gray-400">换手</div>
+                      <div className="text-xs text-muted-foreground">换手</div>
                       <div className="font-medium">{formatPercent(c.key_metrics.turnover_rate || 0)}</div>
                     </div>
                   </div>
 
                   {/* 总分 */}
                   <div className="text-right w-20">
-                    <div className="text-2xl font-bold text-gray-900">{c.total_score.toFixed(0)}</div>
+                    <div className="text-2xl font-bold text-foreground">{c.total_score.toFixed(0)}</div>
                     <div className={`text-xs font-medium bg-gradient-to-r ${verdictColors[c.verdict] || ""} bg-clip-text text-transparent`}>
                       {c.verdict}
                     </div>
                   </div>
 
                   {/* 展开箭头 */}
-                  <i className={`fas fa-chevron-${isExpanded ? "up" : "down"} text-gray-400 text-xs`} />
+                  <i className={`fas fa-chevron-${isExpanded ? "up" : "down"} text-muted-foreground text-xs`} />
                 </div>
 
                 {/* 评分条 */}
                 <div className="px-4 pb-2">
-                  <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
                     <div
                       className={`h-full rounded-full transition-all ${scoreBarColor(c.total_score)}`}
                       style={{ width: `${Math.min(100, c.total_score)}%` }}
@@ -466,13 +466,13 @@ export default function OvernightPanel() {
 
                 {/* 展开详情 */}
                 {isExpanded && (
-                  <div className="px-4 pb-4 border-t border-gray-100 pt-3">
+                  <div className="px-4 pb-4 border-t border-border pt-3">
                     {/* 推荐理由 */}
                     <div className="mb-3">
-                      <h4 className="text-xs font-semibold text-gray-500 mb-1.5">推荐理由</h4>
+                      <h4 className="text-xs font-semibold text-muted-foreground mb-1.5">推荐理由</h4>
                       <div className="flex flex-wrap gap-1.5">
                         {c.reasons.map((r, i) => (
-                          <span key={i} className="px-2 py-1 bg-gray-50 text-gray-700 rounded text-xs">
+                          <span key={i} className="px-2 py-1 bg-muted text-foreground rounded text-xs">
                             {r}
                           </span>
                         ))}
@@ -481,19 +481,19 @@ export default function OvernightPanel() {
 
                     {/* 各维度评分 */}
                     <div className="mb-3">
-                      <h4 className="text-xs font-semibold text-gray-500 mb-1.5">维度评分</h4>
+                      <h4 className="text-xs font-semibold text-muted-foreground mb-1.5">维度评分</h4>
                       <div className={`grid gap-2 ${c.category === "蓄势突破" ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-5"}`}>
                         {Object.entries(c.scores).map(([key, val]) => {
                           const maxScore = dimMaxScores[key] || 100;
                           const pct = Math.min(100, (val / maxScore) * 100);
                           return (
-                            <div key={key} className="bg-gray-50 rounded p-2">
-                              <div className="text-[10px] text-gray-400">{dimNames[key] || key}</div>
+                            <div key={key} className="bg-muted rounded p-2">
+                              <div className="text-[10px] text-muted-foreground">{dimNames[key] || key}</div>
                               <div className="flex items-center gap-1 mt-0.5">
                                 <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden">
                                   <div className={`h-full rounded-full ${scoreBarColor(pct)}`} style={{ width: `${pct}%` }} />
                                 </div>
-                                <span className="text-xs font-semibold text-gray-700 w-12 text-right">{val.toFixed(0)}/{maxScore}</span>
+                                <span className="text-xs font-semibold text-foreground w-12 text-right">{val.toFixed(0)}/{maxScore}</span>
                               </div>
                             </div>
                           );
@@ -522,7 +522,7 @@ export default function OvernightPanel() {
                           </div>
                           <div>
                             <div className="text-orange-400">持有天数</div>
-                            <div className="font-bold text-gray-700">≤{c.key_metrics.max_hold_days}天</div>
+                            <div className="font-bold text-foreground">≤{c.key_metrics.max_hold_days}天</div>
                           </div>
                         </div>
                         {c.key_metrics.entry_note && (

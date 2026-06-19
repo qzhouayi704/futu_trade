@@ -225,7 +225,7 @@ export default function HighTurnoverPanel() {
       {/* 页面标题 */}
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
             <i className="fas fa-exchange-alt text-orange-600" />
             活跃个股
             {bullishCount > 0 && (
@@ -234,10 +234,10 @@ export default function HighTurnoverPanel() {
               </span>
             )}
           </h1>
-          <p className="text-gray-600 mt-1">
+          <p className="text-muted-foreground mt-1">
             按换手率排序的交易活跃股票排行榜
             {formattedUpdateTime && (
-              <span className="ml-2 text-xs text-gray-400">
+              <span className="ml-2 text-xs text-muted-foreground">
                 更新于 {formattedUpdateTime}
               </span>
             )}

@@ -33,7 +33,7 @@ function SignalBar({ strength }: { strength: number }) {
       <div className="w-16 bg-gray-200 rounded-full h-2">
         <div className={`h-2 rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs text-gray-500">{pct}%</span>
+      <span className="text-xs text-muted-foreground">{pct}%</span>
     </div>
   );
 }
@@ -57,26 +57,26 @@ function formatMarketCap(value: number | undefined | null): string {
 /** 龙头股行 */
 function LeaderRow({ stock }: { stock: LeaderStockItem }) {
   const rankColors = ["text-red-600", "text-orange-500", "text-yellow-600"];
-  const rankColor = stock.leader_rank <= 3 ? rankColors[stock.leader_rank - 1] : "text-gray-500";
+  const rankColor = stock.leader_rank <= 3 ? rankColors[stock.leader_rank - 1] : "text-muted-foreground";
   const pricePositionText = formatPricePosition(stock.price_position);
 
   return (
-    <tr className="border-b border-gray-100 hover:bg-gray-50">
+    <tr className="border-b border-border hover:bg-muted">
       <td className="py-2 px-2">
         <span className={`font-bold ${rankColor}`}>
           {stock.is_leader ? `龙${stock.leader_rank}` : "-"}
         </span>
       </td>
       <td className="py-2 px-2">
-        <div className="text-sm font-medium text-gray-900">{stock.stock_name}</div>
-        <div className="text-xs text-gray-400">{stock.stock_code}</div>
+        <div className="text-sm font-medium text-foreground">{stock.stock_name}</div>
+        <div className="text-xs text-muted-foreground">{stock.stock_code}</div>
       </td>
-      <td className="py-2 px-2 text-xs text-gray-500">{stock.plate_name}</td>
+      <td className="py-2 px-2 text-xs text-muted-foreground">{stock.plate_name}</td>
       <td className="py-2 px-2 text-right text-sm">{stock.last_price.toFixed(3)}</td>
       <td className={`py-2 px-2 text-right text-sm font-medium ${stock.change_pct > 0 ? "text-red-600" : "text-green-600"}`}>
         {stock.change_pct > 0 ? "+" : ""}{stock.change_pct.toFixed(2)}%
       </td>
-      <td className={`py-2 px-2 text-right text-sm ${pricePositionText === "N/A" ? "text-gray-400" : "text-gray-600"}`}>
+      <td className={`py-2 px-2 text-right text-sm ${pricePositionText === "N/A" ? "text-muted-foreground" : "text-muted-foreground"}`}>
         {pricePositionText}
       </td>
       <td className="py-2 px-2 text-right text-sm">
@@ -90,7 +90,7 @@ function LeaderRow({ stock }: { stock: LeaderStockItem }) {
             {stock.consecutive_strong_days}<span className="text-xs">天</span>
           </span>
         ) : (
-          <span className="text-gray-400">-</span>
+          <span className="text-muted-foreground">-</span>
         )}
       </td>
       <td className="py-2 px-2">
@@ -132,7 +132,7 @@ export function ScreeningResult() {
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg shadow p-6 animate-pulse">
+      <div className="bg-card rounded-lg shadow p-6 animate-pulse">
         <div className="h-6 bg-gray-200 rounded w-1/3 mb-4" />
         <div className="h-40 bg-gray-200 rounded" />
       </div>
@@ -140,9 +140,9 @@ export function ScreeningResult() {
   }
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
+    <div className="bg-card rounded-lg shadow p-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+        <h3 className="text-lg font-semibold text-foreground flex items-center gap-2">
           <svg className="w-5 h-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
           </svg>
@@ -182,16 +182,16 @@ export function ScreeningResult() {
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
-              <tr className="border-b-2 border-gray-200">
-                <th className="py-2 px-2 text-xs font-medium text-gray-500">排名</th>
-                <th className="py-2 px-2 text-xs font-medium text-gray-500">股票</th>
-                <th className="py-2 px-2 text-xs font-medium text-gray-500">板块</th>
-                <th className="py-2 px-2 text-xs font-medium text-gray-500 text-right">价格</th>
-                <th className="py-2 px-2 text-xs font-medium text-gray-500 text-right">涨幅</th>
-                <th className="py-2 px-2 text-xs font-medium text-gray-500 text-right">价格位置</th>
-                <th className="py-2 px-2 text-xs font-medium text-gray-500 text-right">龙头评分</th>
-                <th className="py-2 px-2 text-xs font-medium text-gray-500 text-center">连续强势</th>
-                <th className="py-2 px-2 text-xs font-medium text-gray-500">信号强度</th>
+              <tr className="border-b-2 border-border">
+                <th className="py-2 px-2 text-xs font-medium text-muted-foreground">排名</th>
+                <th className="py-2 px-2 text-xs font-medium text-muted-foreground">股票</th>
+                <th className="py-2 px-2 text-xs font-medium text-muted-foreground">板块</th>
+                <th className="py-2 px-2 text-xs font-medium text-muted-foreground text-right">价格</th>
+                <th className="py-2 px-2 text-xs font-medium text-muted-foreground text-right">涨幅</th>
+                <th className="py-2 px-2 text-xs font-medium text-muted-foreground text-right">价格位置</th>
+                <th className="py-2 px-2 text-xs font-medium text-muted-foreground text-right">龙头评分</th>
+                <th className="py-2 px-2 text-xs font-medium text-muted-foreground text-center">连续强势</th>
+                <th className="py-2 px-2 text-xs font-medium text-muted-foreground">信号强度</th>
               </tr>
             </thead>
             <tbody>
@@ -202,7 +202,7 @@ export function ScreeningResult() {
           </table>
         </div>
       ) : (
-        <p className="text-sm text-gray-400 text-center py-4">暂无龙头股数据</p>
+        <p className="text-sm text-muted-foreground text-center py-4">暂无龙头股数据</p>
       )}
     </div>
   );

@@ -25,7 +25,7 @@ const SIGNAL_CONFIG: Record<string, { bg: string; text: string; dot: string; bor
   bullish:  { bg: "bg-red-50",      text: "text-red-700",      dot: "bg-red-500",      border: "border-red-200" },
   warning:  { bg: "bg-amber-50",    text: "text-amber-700",    dot: "bg-amber-500",    border: "border-amber-200" },
   bearish:  { bg: "bg-emerald-50",  text: "text-emerald-700",  dot: "bg-emerald-500",  border: "border-emerald-200" },
-  neutral:  { bg: "bg-gray-50",     text: "text-gray-600",     dot: "bg-gray-400",     border: "border-gray-200" },
+  neutral:  { bg: "bg-muted",     text: "text-muted-foreground",     dot: "bg-gray-400",     border: "border-border" },
 };
 
 const fmtAmt = (v: number) => {
@@ -77,8 +77,8 @@ export default function FlowMomentumScanPanel({ onSelectStock }: FlowMomentumSca
       {/* 标题 + 统计 */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <h2 className="text-lg font-bold text-gray-800">日内资金动能扫描</h2>
-          <span className="text-xs text-gray-400">{message}</span>
+          <h2 className="text-lg font-bold text-foreground">日内资金动能扫描</h2>
+          <span className="text-xs text-muted-foreground">{message}</span>
         </div>
         <button
           onClick={() => { setLoading(true); fetchData(); }}
@@ -91,7 +91,7 @@ export default function FlowMomentumScanPanel({ onSelectStock }: FlowMomentumSca
       {/* 过滤按钮 */}
       <div className="flex gap-2 flex-wrap">
         {[
-          { id: "all" as const, label: `全部 (${items.length})`, color: "bg-gray-100 text-gray-700" },
+          { id: "all" as const, label: `全部 (${items.length})`, color: "bg-muted text-foreground" },
           { id: "bullish" as const, label: `🔴 流入 (${bullishCount})`, color: "bg-red-100 text-red-700" },
           { id: "warning" as const, label: `🟡 注意 (${warningCount})`, color: "bg-amber-100 text-amber-700" },
           { id: "bearish" as const, label: `🟢 流出 (${bearishCount})`, color: "bg-emerald-100 text-emerald-700" },
@@ -102,7 +102,7 @@ export default function FlowMomentumScanPanel({ onSelectStock }: FlowMomentumSca
             className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
               filter === btn.id
                 ? `${btn.color} ring-2 ring-offset-1 ring-current`
-                : "bg-gray-50 text-gray-500 hover:bg-gray-100"
+                : "bg-muted text-muted-foreground hover:bg-muted"
             }`}
           >
             {btn.label}
@@ -114,10 +114,10 @@ export default function FlowMomentumScanPanel({ onSelectStock }: FlowMomentumSca
       {loading ? (
         <div className="flex items-center justify-center py-16">
           <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          <span className="ml-3 text-sm text-gray-400">扫描中...</span>
+          <span className="ml-3 text-sm text-muted-foreground">扫描中...</span>
         </div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-16 text-gray-400 text-sm">暂无匹配的股票</div>
+        <div className="text-center py-16 text-muted-foreground text-sm">暂无匹配的股票</div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {filtered.map((item) => {
@@ -134,12 +134,12 @@ export default function FlowMomentumScanPanel({ onSelectStock }: FlowMomentumSca
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <div className={`w-2 h-2 rounded-full ${cfg.dot}`} />
-                    <span className="text-sm font-bold text-gray-800">
+                    <span className="text-sm font-bold text-foreground">
                       {item.stock_name || item.stock_code}
                     </span>
-                    <span className="text-[10px] text-gray-400">{item.stock_code}</span>
+                    <span className="text-[10px] text-muted-foreground">{item.stock_code}</span>
                     {item.price > 0 && (
-                      <span className="text-xs text-gray-400">{item.price.toFixed(2)}</span>
+                      <span className="text-xs text-muted-foreground">{item.price.toFixed(2)}</span>
                     )}
                   </div>
                   <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.text} border ${cfg.border}`}>
@@ -157,13 +157,13 @@ export default function FlowMomentumScanPanel({ onSelectStock }: FlowMomentumSca
                     买卖比 {item.buy_sell_ratio.toFixed(2)}
                   </span>
                   <span className="text-gray-300">|</span>
-                  <span className="text-gray-500">
+                  <span className="text-muted-foreground">
                     动能 {mcSign}{item.momentum_change}%
                   </span>
                 </div>
 
                 {/* 近5分钟 */}
-                <div className="mt-1.5 flex items-center gap-2 text-[10px] text-gray-400">
+                <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground">
                   <span>近5分</span>
                   <span className={item.recent_net >= 0 ? "text-red-500 font-medium" : "text-emerald-500 font-medium"}>
                     {item.recent_net >= 0 ? "+" : ""}{fmtAmt(item.recent_net)}

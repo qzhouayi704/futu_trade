@@ -15,7 +15,7 @@ interface BuyRatioCellProps {
 export function getRatioColor(ratio: number): string {
   if (ratio > 1.0) return "text-red-600";
   if (ratio < 1.0) return "text-green-600";
-  return "text-gray-500";
+  return "text-muted-foreground";
 }
 
 export default function BuyRatioCell({ summary, loading }: BuyRatioCellProps) {
@@ -28,7 +28,7 @@ export default function BuyRatioCell({ summary, loading }: BuyRatioCellProps) {
 
   // 数据不可用
   if (!summary) {
-    return <span className="text-gray-400">-</span>;
+    return <span className="text-muted-foreground">-</span>;
   }
 
   const color = getRatioColor(summary.buy_sell_ratio);

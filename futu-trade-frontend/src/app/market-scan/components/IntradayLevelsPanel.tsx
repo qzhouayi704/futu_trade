@@ -22,7 +22,7 @@ import dynamic from "next/dynamic";
 const CapitalFlowChartDyn = dynamic(() => import("./CapitalFlowChart").then(mod => mod.CapitalFlowChart), {
   ssr: false,
   loading: () => (
-    <div className="w-full h-full min-h-[300px] flex items-center justify-center bg-gray-50/50">
+    <div className="w-full h-full min-h-[300px] flex items-center justify-center bg-muted/50">
       <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
     </div>
   )
@@ -88,20 +88,20 @@ function LevelRow({
 
       {/* 强度条 */}
       <div className="flex-1 flex items-center gap-2">
-        <div className={`flex-1 h-2.5 bg-gray-100 rounded-full overflow-hidden ${isUnreliable ? 'border border-dashed border-gray-300' : ''}`}>
+        <div className={`flex-1 h-2.5 bg-muted rounded-full overflow-hidden ${isUnreliable ? 'border border-dashed border-border' : ''}`}>
           <div
             className={`h-full rounded-full transition-all duration-500 ${barColor} ${isUnreliable ? 'opacity-40' : ''}`}
             style={{ width: `${level.strength}%`, opacity: isUnreliable ? 0.4 : 0.7 + level.strength * 0.003 }}
           />
         </div>
-        <span className="text-xs text-gray-500 w-7 text-right font-medium">
+        <span className="text-xs text-muted-foreground w-7 text-right font-medium">
           {level.strength}
         </span>
       </div>
 
       {/* 标签 + 量 + 可信度 */}
       <div className="text-right shrink-0">
-        <div className="text-[11px] text-gray-500 flex items-center justify-end gap-1">
+        <div className="text-[11px] text-muted-foreground flex items-center justify-end gap-1">
           {level.label}
           {isUnreliable && (
             <span className="text-[9px] bg-amber-100 text-amber-700 px-1 rounded font-medium" title="挂单可随时撤销，不可作为止损依据">
@@ -110,7 +110,7 @@ function LevelRow({
           )}
         </div>
         {level.volume > 0 && (
-          <div className="text-[10px] text-gray-400 font-mono">
+          <div className="text-[10px] text-muted-foreground font-mono">
             {formatVolume(level.volume)}
           </div>
         )}
@@ -135,7 +135,7 @@ function PriceDivider({
           当前 {formatPrice(currentPrice)}
         </span>
         {vwap && (
-          <span className="text-[11px] text-gray-400">
+          <span className="text-[11px] text-muted-foreground">
             VWAP {formatPrice(vwap.price)}
             <span
               className={`ml-1 ${
@@ -174,9 +174,9 @@ function CCASSection({ stockCode }: { stockCode: string }) {
   }, [stockCode]);
 
   if (loading) return (
-    <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2.5 flex items-center gap-2">
+    <div className="rounded-lg border border-border bg-muted px-3 py-2.5 flex items-center gap-2">
       <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin" />
-      <span className="text-[10px] text-gray-400">CCASS 机构持仓数据爬取中（首次约30秒）...</span>
+      <span className="text-[10px] text-muted-foreground">CCASS 机构持仓数据爬取中（首次约30秒）...</span>
     </div>
   );
   if (!ccasData || (!ccasData.top_increases.length && !ccasData.top_decreases.length)) return null;
@@ -193,15 +193,15 @@ function CCASSection({ stockCode }: { stockCode: string }) {
   const netChange = totalIncrease + totalDecrease;  // decrease is negative
 
   return (
-    <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2.5">
+    <div className="rounded-lg border border-border bg-muted px-3 py-2.5">
       <div
         className="flex items-center justify-between cursor-pointer"
         onClick={() => setExpanded(!expanded)}
       >
         <div className="flex items-center gap-2 text-[11px]">
           <span className="text-sm">🏛️</span>
-          <span className="font-medium text-gray-700">CCASS 机构持仓变化</span>
-          <span className="text-[9px] text-gray-400">
+          <span className="font-medium text-foreground">CCASS 机构持仓变化</span>
+          <span className="text-[9px] text-muted-foreground">
             ({ccasData.latest_date} vs {ccasData.compare_date} · T+1)
           </span>
         </div>
@@ -210,7 +210,7 @@ function CCASSection({ stockCode }: { stockCode: string }) {
           <span className={`text-[10px] font-bold ${netChange >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
             净{netChange >= 0 ? '增' : '减'} {formatShares(Math.abs(netChange))}
           </span>
-          <span className="text-gray-400 text-xs">{expanded ? '▲' : '▼'}</span>
+          <span className="text-muted-foreground text-xs">{expanded ? '▲' : '▼'}</span>
         </div>
       </div>
 
@@ -221,8 +221,8 @@ function CCASSection({ stockCode }: { stockCode: string }) {
             <div>
               <div className="text-red-500 font-medium mb-1">📈 增持 TOP</div>
               {ccasData.top_increases.slice(0, 5).map((item, i) => (
-                <div key={i} className="flex items-center justify-between py-0.5 border-b border-gray-100">
-                  <span className="text-gray-600 truncate flex-1">{item.name.substring(0, 25)}</span>
+                <div key={i} className="flex items-center justify-between py-0.5 border-b border-border">
+                  <span className="text-muted-foreground truncate flex-1">{item.name.substring(0, 25)}</span>
                   <span className="text-red-600 font-mono shrink-0 ml-1">+{formatShares(item.change)}</span>
                 </div>
               ))}
@@ -231,15 +231,15 @@ function CCASSection({ stockCode }: { stockCode: string }) {
             <div>
               <div className="text-emerald-600 font-medium mb-1">📉 减持 TOP</div>
               {ccasData.top_decreases.slice(0, 5).map((item, i) => (
-                <div key={i} className="flex items-center justify-between py-0.5 border-b border-gray-100">
-                  <span className="text-gray-600 truncate flex-1">{item.name.substring(0, 25)}</span>
+                <div key={i} className="flex items-center justify-between py-0.5 border-b border-border">
+                  <span className="text-muted-foreground truncate flex-1">{item.name.substring(0, 25)}</span>
                   <span className="text-emerald-600 font-mono shrink-0 ml-1">{formatShares(item.change)}</span>
                 </div>
               ))}
             </div>
           </div>
           {/* 汇总行 */}
-          <div className="mt-2 pt-2 border-t border-gray-200 flex items-center justify-between text-[10px]">
+          <div className="mt-2 pt-2 border-t border-border flex items-center justify-between text-[10px]">
             <div className="flex gap-4">
               <span>增持合计: <b className="text-red-600">+{formatShares(totalIncrease)}</b></span>
               <span>减持合计: <b className="text-emerald-600">{formatShares(totalDecrease)}</b></span>
@@ -252,7 +252,7 @@ function CCASSection({ stockCode }: { stockCode: string }) {
       )}
 
       {!expanded && (
-        <div className="mt-1 text-[9px] text-gray-400 flex gap-3">
+        <div className="mt-1 text-[9px] text-muted-foreground flex gap-3">
           {ccasData.top_increases.length > 0 && (
             <span>增持最多: <b className="text-red-500">{ccasData.top_increases[0].name.substring(0, 15)}</b> +{formatShares(ccasData.top_increases[0].change)}</span>
           )}
@@ -271,7 +271,7 @@ const SIGNAL_STYLES: Record<string, { bg: string; text: string; icon: string; bo
   bullish:  { bg: 'bg-red-50',    text: 'text-red-700',     icon: '🔴', border: 'border-red-200' },
   warning:  { bg: 'bg-amber-50',  text: 'text-amber-700',   icon: '🟡', border: 'border-amber-200' },
   bearish:  { bg: 'bg-emerald-50', text: 'text-emerald-700', icon: '🟢', border: 'border-emerald-200' },
-  neutral:  { bg: 'bg-gray-50',   text: 'text-gray-600',    icon: '⚪', border: 'border-gray-200' },
+  neutral:  { bg: 'bg-muted',   text: 'text-muted-foreground',    icon: '⚪', border: 'border-border' },
 };
 
 function FlowMomentumBadge({ summary }: { summary: FlowSummary | null }) {
@@ -293,7 +293,7 @@ function FlowMomentumBadge({ summary }: { summary: FlowSummary | null }) {
         <span className={`text-sm font-bold ${s.text}`}>
           {summary.momentum_label}
         </span>
-        <span className="text-[10px] text-gray-400">
+        <span className="text-[10px] text-muted-foreground">
           后半段{mcSign}{summary.momentum_change}%
         </span>
       </div>
@@ -303,11 +303,11 @@ function FlowMomentumBadge({ summary }: { summary: FlowSummary | null }) {
         <span className={summary.cum_net >= 0 ? 'text-red-600' : 'text-emerald-600'}>
           累计 {summary.cum_net >= 0 ? '+' : ''}{fmtAmt(summary.cum_net)}
         </span>
-        <span className="text-gray-400">|</span>
+        <span className="text-muted-foreground">|</span>
         <span className={summary.buy_sell_ratio >= 1 ? 'text-red-500' : 'text-emerald-500'}>
           买卖比 {summary.buy_sell_ratio.toFixed(2)}
         </span>
-        <span className="text-gray-400">|</span>
+        <span className="text-muted-foreground">|</span>
         <span className={summary.recent_net >= 0 ? 'text-red-500' : 'text-emerald-500'}>
           近5分 {summary.recent_net >= 0 ? '+' : ''}{fmtAmt(summary.recent_net)}
         </span>
@@ -341,7 +341,7 @@ function AbsorptionWarningBanner({ absorption }: { absorption: AbsorptionAlert |
             但股价{absorption.price_change_pct < -0.05 ? '微跌' : '持平'}
             {absorption.price_change_pct < -0.05 ? `${absorption.price_change_pct.toFixed(2)}%` : ''}
           </div>
-          <div className="text-[10px] text-gray-500 mt-0.5">
+          <div className="text-[10px] text-muted-foreground mt-0.5">
             💡 持续主买但价格未涨，方向待观察（回测显示此形态不宜单独当作出货/看跌依据）
           </div>
         </div>
@@ -419,22 +419,22 @@ export function IntradayLevelsPanel({
     (data.support_levels.length > 0 || data.resistance_levels.length > 0);
 
   return (
-    <div className="mt-4 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden animate-in slide-in-from-top-2">
+    <div className="mt-4 bg-card border border-border rounded-xl shadow-lg overflow-hidden animate-in slide-in-from-top-2">
       {/* 头部 */}
-      <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-gray-100">
+      <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-border">
         <div className="flex items-center gap-2">
           <span className="text-lg">📊</span>
-          <h3 className="text-sm font-bold text-gray-800">
+          <h3 className="text-sm font-bold text-foreground">
             {stockName}
-            <span className="ml-1.5 text-xs font-normal text-gray-400">
+            <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {stockCode}
             </span>
           </h3>
-          <span className="text-xs text-gray-400">— 日内资金支撑/阻力位</span>
+          <span className="text-xs text-muted-foreground">— 日内资金支撑/阻力位</span>
         </div>
         <div className="flex items-center gap-2">
           {data && (
-            <span className="text-[10px] text-gray-400">
+            <span className="text-[10px] text-muted-foreground">
               更新于{" "}
               {new Date(data.updated_at).toLocaleTimeString("zh-CN", {
                 hour: "2-digit",
@@ -446,7 +446,7 @@ export function IntradayLevelsPanel({
           {showClose && (
             <button
               onClick={onClose}
-              className="w-6 h-6 rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center text-gray-500 hover:text-gray-700 transition-colors text-xs"
+              className="w-6 h-6 rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors text-xs"
             >
               ✕
             </button>
@@ -459,12 +459,12 @@ export function IntradayLevelsPanel({
         {loading ? (
           <div className="flex items-center justify-center py-8">
             <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-            <span className="ml-3 text-sm text-gray-400">分析中...</span>
+            <span className="ml-3 text-sm text-muted-foreground">分析中...</span>
           </div>
         ) : error ? (
-          <div className="text-center py-6 text-sm text-gray-400">{error}</div>
+          <div className="text-center py-6 text-sm text-muted-foreground">{error}</div>
         ) : !hasData ? (
-          <div className="text-center py-6 text-sm text-gray-400">
+          <div className="text-center py-6 text-sm text-muted-foreground">
             暂无足够逐笔成交数据，无法计算支撑/阻力位
           </div>
         ) : (
@@ -476,7 +476,7 @@ export function IntradayLevelsPanel({
             <AbsorptionWarningBanner absorption={flowSummary?.absorption} />
 
             {/* 上部：主力 vs 散户资金流走势图（全宽） */}
-            <div className="bg-gray-50/50 rounded-lg border border-gray-100">
+            <div className="bg-muted/50 rounded-lg border border-border">
               <CapitalFlowChartDyn data={flowData} height={340} />
             </div>
 
@@ -539,7 +539,7 @@ export function IntradayLevelsPanel({
       </div>
 
       {/* 底部提示 */}
-      <div className="px-4 py-2 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-[10px] text-gray-400">
+      <div className="px-4 py-2 bg-muted border-t border-border flex items-center justify-between text-[10px] text-muted-foreground">
         <span>数据来源: 逐笔成交 + 盘口10档 · 30秒自动刷新</span>
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1">

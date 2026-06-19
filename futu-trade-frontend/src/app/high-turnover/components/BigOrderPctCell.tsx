@@ -16,8 +16,8 @@ interface BigOrderPctCellProps {
 function getPctColor(pct: number): string {
   if (pct >= 30) return "text-red-600 font-semibold";
   if (pct >= 15) return "text-orange-600";
-  if (pct > 0) return "text-gray-700";
-  return "text-gray-400";
+  if (pct > 0) return "text-foreground";
+  return "text-muted-foreground";
 }
 
 export default function BigOrderPctCell({ summary, loading }: BigOrderPctCellProps) {
@@ -28,7 +28,7 @@ export default function BigOrderPctCell({ summary, loading }: BigOrderPctCellPro
   }
 
   if (!summary || summary.big_order_pct === undefined) {
-    return <span className="text-gray-400">-</span>;
+    return <span className="text-muted-foreground">-</span>;
   }
 
   const color = getPctColor(summary.big_order_pct);

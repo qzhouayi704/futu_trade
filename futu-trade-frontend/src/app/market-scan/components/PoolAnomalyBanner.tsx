@@ -118,7 +118,7 @@ export default function PoolAnomalyBanner() {
                     )}
                   </div>
                 </div>
-                <span className="text-[10px] px-1.5 py-0.5 rounded border bg-white/50">
+                <span className="text-[10px] px-1.5 py-0.5 rounded border bg-card/50">
                   {label.text}
                 </span>
               </div>

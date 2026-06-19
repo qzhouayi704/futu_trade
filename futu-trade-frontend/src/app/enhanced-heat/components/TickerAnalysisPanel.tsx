@@ -20,7 +20,7 @@ import { AllDimensionsChart } from "./AllDimensionsChart";
 const SIGNAL_STYLES: Record<SignalType, { bg: string; text: string; label: string }> = {
   bullish: { bg: "bg-red-100 border-red-200", text: "text-red-700", label: "看涨" },
   slightly_bullish: { bg: "bg-red-50 border-red-100", text: "text-red-600", label: "偏多" },
-  neutral: { bg: "bg-gray-100 border-gray-200", text: "text-gray-600", label: "中性" },
+  neutral: { bg: "bg-muted border-border", text: "text-muted-foreground", label: "中性" },
   slightly_bearish: { bg: "bg-green-50 border-green-100", text: "text-green-600", label: "偏空" },
   bearish: { bg: "bg-green-100 border-green-200", text: "text-green-700", label: "看跌" },
 };
@@ -59,12 +59,12 @@ function CombinedSummaryBadge({ data }: { data: CombinedAnalysisData }) {
           )}
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <span className="text-gray-500">
+          <span className="text-muted-foreground">
             挂单: <span className={data.order_book_score >= 0 ? "text-red-600" : "text-green-600"}>
               {data.order_book_score > 0 ? "+" : ""}{data.order_book_score.toFixed(1)}
             </span>
           </span>
-          <span className="text-gray-500">
+          <span className="text-muted-foreground">
             成交: <span className={data.ticker_score >= 0 ? "text-red-600" : "text-green-600"}>
               {data.ticker_score > 0 ? "+" : ""}{data.ticker_score.toFixed(1)}
             </span>
@@ -74,7 +74,7 @@ function CombinedSummaryBadge({ data }: { data: CombinedAnalysisData }) {
           </span>
         </div>
       </div>
-      <p className="text-sm text-gray-700">{data.summary}</p>
+      <p className="text-sm text-foreground">{data.summary}</p>
     </div>
   );
 }
@@ -102,16 +102,16 @@ function ActiveBuySellChart({ dimensions }: { dimensions: DimensionSignal[] }) {
 
   return (
     <div className="mb-4">
-      <div className="text-xs text-gray-500 mb-2 font-medium">主动买卖力量</div>
+      <div className="text-xs text-muted-foreground mb-2 font-medium">主动买卖力量</div>
 
       {/* 数据时间范围 */}
       {timeStart ? (
-        <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
+        <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
           <span>{timeStart} ~ {timeEnd}</span>
           <span>共 {totalCount} 笔</span>
         </div>
       ) : (
-        <div className="text-xs text-gray-400 text-center mb-2">暂无成交数据</div>
+        <div className="text-xs text-muted-foreground text-center mb-2">暂无成交数据</div>
       )}
 
       {/* 近期趋势标签 */}
@@ -120,11 +120,11 @@ function ActiveBuySellChart({ dimensions }: { dimensions: DimensionSignal[] }) {
           <span className={`px-1.5 py-0.5 rounded font-medium ${
             trendDirection === "买方增强" ? "bg-red-100 text-red-700" :
             trendDirection === "卖方增强" ? "bg-green-100 text-green-700" :
-            "bg-gray-100 text-gray-600"
+            "bg-muted text-muted-foreground"
           }`}>
             {trendDirection}
           </span>
-          <span className="text-gray-500">
+          <span className="text-muted-foreground">
             前半段 {(firstHalfRatio * 100).toFixed(1)}% → 后半段 {(secondHalfRatio * 100).toFixed(1)}%
           </span>
         </div>
@@ -134,32 +134,32 @@ function ActiveBuySellChart({ dimensions }: { dimensions: DimensionSignal[] }) {
         {/* 买入柱 */}
         <div className="flex items-center gap-2">
           <span className="w-12 text-xs text-red-600 shrink-0 text-right">买入</span>
-          <div className="flex-1 h-5 bg-gray-100 rounded overflow-hidden">
+          <div className="flex-1 h-5 bg-muted rounded overflow-hidden">
             <div
               className="h-full bg-red-400 rounded transition-all duration-300"
               style={{ width: `${(buyTurnover / maxTurnover) * 100}%` }}
             />
           </div>
-          <span className="w-16 text-xs text-gray-600 text-right shrink-0">
+          <span className="w-16 text-xs text-muted-foreground text-right shrink-0">
             {formatAmount(buyTurnover)}
           </span>
         </div>
         {/* 卖出柱 */}
         <div className="flex items-center gap-2">
           <span className="w-12 text-xs text-green-600 shrink-0 text-right">卖出</span>
-          <div className="flex-1 h-5 bg-gray-100 rounded overflow-hidden">
+          <div className="flex-1 h-5 bg-muted rounded overflow-hidden">
             <div
               className="h-full bg-green-400 rounded transition-all duration-300"
               style={{ width: `${(sellTurnover / maxTurnover) * 100}%` }}
             />
           </div>
-          <span className="w-16 text-xs text-gray-600 text-right shrink-0">
+          <span className="w-16 text-xs text-muted-foreground text-right shrink-0">
             {formatAmount(sellTurnover)}
           </span>
         </div>
       </div>
       {/* 汇总 */}
-      <div className="flex justify-between text-xs text-gray-500 mt-2">
+      <div className="flex justify-between text-xs text-muted-foreground mt-2">
         <span>
           净额: <span className={netTurnover >= 0 ? "text-red-600" : "text-green-600"}>
             {netTurnover >= 0 ? "+" : ""}{formatAmount(netTurnover)}
@@ -192,21 +192,21 @@ function VolumeClusterList({ dimensions }: { dimensions: DimensionSignal[] }) {
 
   return (
     <div>
-      <div className="text-xs text-gray-500 mb-2 font-medium">成交密集价位</div>
+      <div className="text-xs text-muted-foreground mb-2 font-medium">成交密集价位</div>
       <div className="space-y-1">
         {clusters.map((c, i) => (
-          <div key={i} className="flex items-center gap-2 py-1 px-2 bg-gray-50 rounded text-xs">
-            <span className="font-mono text-gray-800 w-16 text-right">{c.price.toFixed(2)}</span>
+          <div key={i} className="flex items-center gap-2 py-1 px-2 bg-muted rounded text-xs">
+            <span className="font-mono text-foreground w-16 text-right">{c.price.toFixed(2)}</span>
             <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
               c.type === "support"
                 ? "bg-red-100 text-red-700"
                 : c.type === "resistance"
                   ? "bg-green-100 text-green-700"
-                  : "bg-gray-100 text-gray-600"
+                  : "bg-muted text-muted-foreground"
             }`}>
               {c.type === "support" ? "支撑" : c.type === "resistance" ? "阻力" : "当前"}
             </span>
-            <span className="text-gray-500">量: {formatVolume(c.volume)}</span>
+            <span className="text-muted-foreground">量: {formatVolume(c.volume)}</span>
             <div className="flex-1" />
             <span className="text-red-500">买{(c.buy_pct * 100).toFixed(0)}%</span>
             <span className="text-green-500">卖{(c.sell_pct * 100).toFixed(0)}%</span>
@@ -229,9 +229,9 @@ function TradeRhythmInfo({ dimensions }: { dimensions: DimensionSignal[] }) {
 
   return (
     <div>
-      <div className="text-xs text-gray-500 mb-1 font-medium">成交节奏</div>
-      <div className="flex items-center gap-3 px-2 py-1.5 bg-gray-50 rounded">
-        <span className="text-sm font-medium text-gray-800">{pattern}</span>
+      <div className="text-xs text-muted-foreground mb-1 font-medium">成交节奏</div>
+      <div className="flex items-center gap-3 px-2 py-1.5 bg-muted rounded">
+        <span className="text-sm font-medium text-foreground">{pattern}</span>
         <span className={`text-xs ${changeRate >= 0 ? "text-red-500" : "text-green-500"}`}>
           变化率: {changeRate >= 0 ? "+" : ""}{(changeRate * 100).toFixed(1)}%
         </span>
@@ -299,9 +299,9 @@ export function TickerAnalysisPanel({ stockCode }: { stockCode: string }) {
   const tickerUnavailable = combinedData && !combinedData.ticker_available;
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
+    <div className="bg-card rounded-lg shadow p-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+        <h3 className="text-lg font-semibold text-foreground flex items-center gap-2">
           <svg className="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
               d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
@@ -311,7 +311,7 @@ export function TickerAnalysisPanel({ stockCode }: { stockCode: string }) {
         <button
           onClick={fetchData}
           disabled={loading}
-          className="text-xs text-gray-400 hover:text-gray-600 disabled:opacity-50"
+          className="text-xs text-muted-foreground hover:text-muted-foreground disabled:opacity-50"
         >
           {loading ? "刷新中..." : "刷新"}
         </button>
@@ -335,15 +335,15 @@ export function TickerAnalysisPanel({ stockCode }: { stockCode: string }) {
             <div className="space-y-4">
               <ActiveBuySellChart dimensions={combinedData.ticker_dimensions} />
 
-              <div className="bg-gray-50 rounded-lg p-3">
+              <div className="bg-muted rounded-lg p-3">
                 <PriceLevelDistribution data={priceDistData} />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div className="bg-gray-50 rounded-lg p-3">
+                <div className="bg-muted rounded-lg p-3">
                   <VolumeClusterList dimensions={combinedData.ticker_dimensions} />
                 </div>
-                <div className="bg-gray-50 rounded-lg p-3">
+                <div className="bg-muted rounded-lg p-3">
                   <TradeRhythmInfo dimensions={combinedData.ticker_dimensions} />
                 </div>
               </div>
@@ -355,7 +355,7 @@ export function TickerAnalysisPanel({ stockCode }: { stockCode: string }) {
       )}
 
       {!combinedData && !loading && !error && (
-        <p className="text-sm text-gray-400 text-center py-8">
+        <p className="text-sm text-muted-foreground text-center py-8">
           在资金流向中输入股票代码后，成交分析将自动加载
         </p>
       )}

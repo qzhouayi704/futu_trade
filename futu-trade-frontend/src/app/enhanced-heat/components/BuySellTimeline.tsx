@@ -77,10 +77,10 @@ export function BuySellTimeline({ dimensions }: { dimensions: DimensionSignal[] 
   const labelIndices = timeline.map((_, i) => i);
 
   return (
-    <div className="mt-4 bg-gray-50 rounded-lg p-4">
+    <div className="mt-4 bg-muted rounded-lg p-4">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-xs text-gray-600 font-medium">买卖力量比走势（5分钟）</span>
-        <span className="text-[10px] text-gray-400">
+        <span className="text-xs text-muted-foreground font-medium">买卖力量比走势（5分钟）</span>
+        <span className="text-[10px] text-muted-foreground">
           1.0 = 均衡 · &gt;1 多方强 · &lt;1 空方强
         </span>
       </div>
@@ -166,14 +166,14 @@ export function BuySellTimeline({ dimensions }: { dimensions: DimensionSignal[] 
       {/* 底部窗口详情 */}
       <div className="flex gap-2 mt-2 overflow-x-auto">
         {timeline.map((p, i) => (
-          <div key={i} className="flex-shrink-0 text-[10px] text-gray-500 text-center">
-            <div className="text-gray-400">{p.time}</div>
+          <div key={i} className="flex-shrink-0 text-[10px] text-muted-foreground text-center">
+            <div className="text-muted-foreground">{p.time}</div>
             <div>
               <span className="text-red-500">{formatAmount(p.buy_turnover)}</span>
               {" / "}
               <span className="text-green-500">{formatAmount(p.sell_turnover)}</span>
             </div>
-            <div className="text-gray-400">{p.trade_count}笔</div>
+            <div className="text-muted-foreground">{p.trade_count}笔</div>
           </div>
         ))}
       </div>

@@ -117,7 +117,7 @@ function getTurnoverColor(rate: number): string {
   if (rate >= 10) return "text-red-700 bg-red-100";
   if (rate >= 5) return "text-red-600 bg-red-50";
   if (rate >= 2) return "text-orange-600 bg-orange-50";
-  return "text-gray-600 bg-gray-50";
+  return "text-muted-foreground bg-muted";
 }
 
 // ==================== 页面组件 ====================
@@ -568,7 +568,7 @@ export default function MarketScanPanel() {
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
           <i className="fas fa-spinner fa-spin text-3xl text-blue-600 mb-4" />
-          <p className="text-gray-500">加载市场数据中...</p>
+          <p className="text-muted-foreground">加载市场数据中...</p>
         </div>
       </div>
     );
@@ -579,7 +579,7 @@ export default function MarketScanPanel() {
       {/* 标题栏 */}
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
             <i className="fas fa-radar text-blue-600" />
             目标股票
             {bullishCount > 0 && (
@@ -593,10 +593,10 @@ export default function MarketScanPanel() {
               </span>
             )}
           </h1>
-          <p className="text-gray-600 mt-1 text-sm">
+          <p className="text-muted-foreground mt-1 text-sm">
             监控池活跃股票，快速定位价位状态
             {lastUpdate && (
-              <span className="ml-2 text-xs text-gray-400">
+              <span className="ml-2 text-xs text-muted-foreground">
                 更新于 {formatTime(lastUpdate)}
               </span>
             )}
@@ -704,7 +704,7 @@ export default function MarketScanPanel() {
             value={searchKeyword}
             onChange={(e) => setSearchKeyword(e.target.value)}
             placeholder="搜索代码或名称..."
-            className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 w-60"
+            className="px-3 py-2 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 w-60"
           />
           <div className="flex gap-1">
             {["all", "HK", "US"].map((m) => (
@@ -714,7 +714,7 @@ export default function MarketScanPanel() {
                 className={`px-3 py-2 text-sm rounded-md transition-colors ${
                   marketFilter === m
                     ? "bg-blue-600 text-white"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    : "bg-muted text-muted-foreground hover:bg-gray-200"
                 }`}
               >
                 {m === "all" ? "全部" : m === "HK" ? "港股" : "美股"}
@@ -736,14 +736,14 @@ export default function MarketScanPanel() {
                 className={`px-2.5 py-1.5 text-xs rounded-md transition-colors ${
                   tagFilter === t.key
                     ? `${t.color} text-white`
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    : "bg-muted text-muted-foreground hover:bg-gray-200"
                 }`}
               >
                 {t.label}
               </button>
             ))}
           </div>
-          <div className="ml-auto text-sm text-gray-500">
+          <div className="ml-auto text-sm text-muted-foreground">
             共 {displayStocks.length} 只
           </div>
         </div>
@@ -753,41 +753,41 @@ export default function MarketScanPanel() {
       <Card>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+            <thead className="bg-muted">
               <tr>
-                <th className="px-3 py-3 text-xs font-medium text-gray-500 text-center w-12">#</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-500 text-left">股票</th>
-                <th className="px-3 py-3 text-xs font-medium text-gray-500 text-center" title="综合成交量、换手率、历史稳定性的流动性评分">流动性</th>
-                <th className="px-3 py-3 text-xs font-medium text-gray-500 text-center" title="股票行为标签（控盘检测）">标签</th>
-                <th className="px-3 py-3 text-xs font-medium text-gray-500 text-right">现价</th>
-                <th className="px-3 py-3 text-xs font-medium text-gray-500 text-right cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("change_rate")}>
+                <th className="px-3 py-3 text-xs font-medium text-muted-foreground text-center w-12">#</th>
+                <th className="px-4 py-3 text-xs font-medium text-muted-foreground text-left">股票</th>
+                <th className="px-3 py-3 text-xs font-medium text-muted-foreground text-center" title="综合成交量、换手率、历史稳定性的流动性评分">流动性</th>
+                <th className="px-3 py-3 text-xs font-medium text-muted-foreground text-center" title="股票行为标签（控盘检测）">标签</th>
+                <th className="px-3 py-3 text-xs font-medium text-muted-foreground text-right">现价</th>
+                <th className="px-3 py-3 text-xs font-medium text-muted-foreground text-right cursor-pointer hover:bg-muted select-none" onClick={() => handleSort("change_rate")}>
                   <span className="inline-flex items-center">涨跌幅<SortIcon field="change_rate" /></span>
                 </th>
-                <th className="px-3 py-3 text-xs font-medium text-gray-500 text-right cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("turnover_rate")}>
+                <th className="px-3 py-3 text-xs font-medium text-muted-foreground text-right cursor-pointer hover:bg-muted select-none" onClick={() => handleSort("turnover_rate")}>
                   <span className="inline-flex items-center">换手率<SortIcon field="turnover_rate" /></span>
                 </th>
-                <th className="px-3 py-3 text-xs font-medium text-gray-500 text-right cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("turnover")}>
+                <th className="px-3 py-3 text-xs font-medium text-muted-foreground text-right cursor-pointer hover:bg-muted select-none" onClick={() => handleSort("turnover")}>
                   <span className="inline-flex items-center">成交额<SortIcon field="turnover" /></span>
                 </th>
 
-                <th className="px-2 py-3 text-xs font-medium text-gray-500 text-center cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("capital_inflow")} title="主力资金评分(0-100)及净流入">
+                <th className="px-2 py-3 text-xs font-medium text-muted-foreground text-center cursor-pointer hover:bg-muted select-none" onClick={() => handleSort("capital_inflow")} title="主力资金评分(0-100)及净流入">
                   <span className="inline-flex items-center">主力资金<SortIcon field="capital_inflow" /></span>
                 </th>
-                <th className="px-2 py-3 text-xs font-medium text-gray-500 text-center" title="根据逐笔成交分析，判断主动买卖力量">方向</th>
-                <th className="px-2 py-3 text-xs font-medium text-gray-500 text-right cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("ticker_buy_sell_ratio")} title="主动买入金额 / 主动卖出金额">
+                <th className="px-2 py-3 text-xs font-medium text-muted-foreground text-center" title="根据逐笔成交分析，判断主动买卖力量">方向</th>
+                <th className="px-2 py-3 text-xs font-medium text-muted-foreground text-right cursor-pointer hover:bg-muted select-none" onClick={() => handleSort("ticker_buy_sell_ratio")} title="主动买入金额 / 主动卖出金额">
                   <span className="inline-flex items-center">力量比<SortIcon field="ticker_buy_sell_ratio" /></span>
                 </th>
-                <th className="px-3 py-3 text-xs font-medium text-gray-500 text-center cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort("score")}>
+                <th className="px-3 py-3 text-xs font-medium text-muted-foreground text-center cursor-pointer hover:bg-muted select-none" onClick={() => handleSort("score")}>
                   <span className="inline-flex items-center">评分<SortIcon field="score" /></span>
                 </th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-500 text-left">板块</th>
-                <th className="px-2 py-3 text-xs font-medium text-gray-500 text-center w-16">操作</th>
+                <th className="px-4 py-3 text-xs font-medium text-muted-foreground text-left">板块</th>
+                <th className="px-2 py-3 text-xs font-medium text-muted-foreground text-center w-16">操作</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
+            <tbody className="bg-card divide-y divide-gray-200">
               {displayStocks.length === 0 ? (
                 <tr>
-                  <td colSpan={14} className="text-center py-12 text-gray-500">
+                  <td colSpan={14} className="text-center py-12 text-muted-foreground">
                     <i className="fas fa-inbox text-4xl mb-4 block" />
                     暂无数据
                   </td>
@@ -810,13 +810,13 @@ export default function MarketScanPanel() {
                         onClick={() => handleRowClick(stock)}
                       >
                       {/* 排名 */}
-                      <td className="px-3 py-3 text-sm text-center text-gray-400 font-medium">
+                      <td className="px-3 py-3 text-sm text-center text-muted-foreground font-medium">
                         {idx + 1}
                       </td>
 
                       {/* 股票名称/代码 */}
                       <td className="px-4 py-3 text-sm">
-                        <div className="font-medium text-gray-900 flex items-center gap-1">
+                        <div className="font-medium text-foreground flex items-center gap-1">
                           {stock.name}
                           {stock.is_position && (
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700">
@@ -824,7 +824,7 @@ export default function MarketScanPanel() {
                             </span>
                           )}
                         </div>
-                        <div className="text-xs text-gray-400">{stock.code}</div>
+                        <div className="text-xs text-muted-foreground">{stock.code}</div>
                       </td>
 
                       {/* 流动性评分 */}
@@ -853,7 +853,7 @@ export default function MarketScanPanel() {
                           };
                           return (
                             <span
-                              className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium cursor-help ${styles[tag.label] || "bg-gray-100 text-gray-600"}`}
+                              className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium cursor-help ${styles[tag.label] || "bg-muted text-muted-foreground"}`}
                               title={`${tag.risk_note}${tag.phase ? ` · ${tag.phase}` : ""}`}
                             >
                               {icons[tag.label] || ""}{tag.label.slice(0, 2)}
@@ -885,7 +885,7 @@ export default function MarketScanPanel() {
                       </td>
 
                       {/* 成交额 */}
-                      <td className="px-3 py-3 text-sm text-right text-gray-700">
+                      <td className="px-3 py-3 text-sm text-right text-foreground">
                         {formatTurnoverZh(turnover)}
                       </td>
 
@@ -896,8 +896,8 @@ export default function MarketScanPanel() {
                           if (tc && tc.buy_sell_ratio > 0) {
                             const bsr = tc.buy_sell_ratio;
                             const net = tc.net_amount;
-                            const bsrColor = bsr >= 1.5 ? 'text-red-600' : bsr >= 1.2 ? 'text-red-500' : bsr >= 0.8 ? 'text-gray-700' : bsr >= 0.5 ? 'text-green-500' : 'text-green-600';
-                            const netColor = net > 0 ? 'text-red-500' : net < 0 ? 'text-green-500' : 'text-gray-400';
+                            const bsrColor = bsr >= 1.5 ? 'text-red-600' : bsr >= 1.2 ? 'text-red-500' : bsr >= 0.8 ? 'text-foreground' : bsr >= 0.5 ? 'text-green-500' : 'text-green-600';
+                            const netColor = net > 0 ? 'text-red-500' : net < 0 ? 'text-green-500' : 'text-muted-foreground';
                             const netPrefix = net > 0 ? '+' : '';
                             const netStr = Math.abs(net) >= 1e8 ? (net / 1e8).toFixed(1) + '亿' : Math.abs(net) >= 1e4 ? (net / 1e4).toFixed(0) + '万' : net.toFixed(0);
                             const momIcon = tc.momentum === 'accelerating' ? '⬆' : tc.momentum === 'decelerating' ? '⬇' : tc.momentum === 'reversing' ? '↻' : '';
@@ -913,12 +913,12 @@ export default function MarketScanPanel() {
                           const cf = stock.capital_flow_summary;
                           if (!cf) return <span className="text-gray-300 text-xs">-</span>;
                           const inflow = cf.main_net_inflow ?? 0;
-                          const inflowColor = inflow > 0 ? 'text-red-500' : inflow < 0 ? 'text-green-500' : 'text-gray-400';
+                          const inflowColor = inflow > 0 ? 'text-red-500' : inflow < 0 ? 'text-green-500' : 'text-muted-foreground';
                           const inflowStr = Math.abs(inflow) >= 1e8 ? (inflow / 1e8).toFixed(1) + '亿' : Math.abs(inflow) >= 1e4 ? (inflow / 1e4).toFixed(0) + '万' : inflow.toFixed(0);
                           return (
                             <div className="flex flex-col items-center gap-0.5" title="数据来源: 资金分布API（逐笔数据加载中）">
                               <span className={`font-bold text-sm ${inflowColor}`}>{inflow > 0 ? '+' : ''}{inflowStr}</span>
-                              <span className="text-[9px] text-gray-400">聚合</span>
+                              <span className="text-[9px] text-muted-foreground">聚合</span>
                             </div>
                           );
                         })()}
@@ -968,7 +968,7 @@ export default function MarketScanPanel() {
                             <span className="text-gray-300 text-xs">-</span>
                           )}
                           {stock.plates.length > 2 && (
-                            <span className="text-gray-400 text-[10px]">+{stock.plates.length - 2}</span>
+                            <span className="text-muted-foreground text-[10px]">+{stock.plates.length - 2}</span>
                           )}
                         </div>
                       </td>
@@ -1036,7 +1036,7 @@ export default function MarketScanPanel() {
                       <tr className="bg-violet-50/50 border-b border-violet-100">
                         <td colSpan={14} className="p-3">
                           {screeningLoading === stock.code ? (
-                            <div className="text-center py-4 text-gray-400 text-sm">
+                            <div className="text-center py-4 text-muted-foreground text-sm">
                               <i className="fas fa-spinner fa-spin mr-1" />加载分析数据...
                             </div>
                           ) : screeningData[stock.code] ? (
@@ -1048,11 +1048,11 @@ export default function MarketScanPanel() {
                                   const s = screeningData[stock.code]?.stages?.scorer;
                                   return (
                                     <div className={`rounded-lg border p-2 ${s?.passed ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
-                                      <div className="text-[10px] text-gray-500">① 综合评分</div>
+                                      <div className="text-[10px] text-muted-foreground">① 综合评分</div>
                                       <div className={`text-sm font-bold ${s?.passed ? 'text-emerald-700' : 'text-red-700'}`}>
                                         {s?.score ?? '-'} 分 {s?.passed ? '✓' : '✗'}
                                       </div>
-                                      <div className="text-[10px] text-gray-500">{s?.mode || s?.reason || '-'}</div>
+                                      <div className="text-[10px] text-muted-foreground">{s?.mode || s?.reason || '-'}</div>
                                       {s?.veto && <div className="text-[10px] text-red-500">否决: {s.veto}</div>}
                                     </div>
                                   );
@@ -1061,13 +1061,13 @@ export default function MarketScanPanel() {
                                 {(() => {
                                   const s = screeningData[stock.code]?.stages?.sniper;
                                   return (
-                                    <div className={`rounded-lg border p-2 ${s?.has_signal ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
-                                      <div className="text-[10px] text-gray-500">② 盘中狙击</div>
-                                      <div className={`text-sm font-bold ${s?.has_signal ? 'text-emerald-700' : 'text-gray-400'}`}>
+                                    <div className={`rounded-lg border p-2 ${s?.has_signal ? 'bg-emerald-50 border-emerald-200' : 'bg-muted border-border'}`}>
+                                      <div className="text-[10px] text-muted-foreground">② 盘中狙击</div>
+                                      <div className={`text-sm font-bold ${s?.has_signal ? 'text-emerald-700' : 'text-muted-foreground'}`}>
                                         {s?.has_signal ? `${s.signals?.length || 0} 条信号` : '无信号'}
                                       </div>
                                       {s?.signals?.slice(-2).map((sig: {signal_type?: string; detail?: string}, i: number) => (
-                                        <div key={i} className="text-[10px] text-gray-500 truncate">{sig.signal_type}: {sig.detail?.slice(0, 30)}</div>
+                                        <div key={i} className="text-[10px] text-muted-foreground truncate">{sig.signal_type}: {sig.detail?.slice(0, 30)}</div>
                                       ))}
                                     </div>
                                   );
@@ -1079,11 +1079,11 @@ export default function MarketScanPanel() {
                                   const s = screeningData[stock.code]?.stages?.broker;
                                   return (
                                     <div className={`rounded-lg border p-2 ${s?.is_trap ? 'bg-slate-50 border-slate-200' : 'bg-emerald-50 border-emerald-200'}`}>
-                                      <div className="text-[10px] text-gray-500">③ 席位检测 <span className="text-[8px] text-slate-400">仅参考</span></div>
+                                      <div className="text-[10px] text-muted-foreground">③ 席位检测 <span className="text-[8px] text-slate-400">仅参考</span></div>
                                       <div className={`text-sm font-bold ${s?.is_trap ? 'text-slate-600' : 'text-emerald-700'}`}>
                                         {s?.is_trap ? '席位偏空·参考' : '✓ 正常'}
                                       </div>
-                                      <div className="text-[10px] text-gray-500">置信度: {(s?.confidence ?? 0).toFixed(0)}%</div>
+                                      <div className="text-[10px] text-muted-foreground">置信度: {(s?.confidence ?? 0).toFixed(0)}%</div>
                                     </div>
                                   );
                                 })()}
@@ -1093,11 +1093,11 @@ export default function MarketScanPanel() {
                                   const suppressed = s?.suppressed || s?.status === 'suppressed';
                                   return (
                                     <div className={`rounded-lg border p-2 ${suppressed ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
-                                      <div className="text-[10px] text-gray-500">④ 信号仲裁</div>
+                                      <div className="text-[10px] text-muted-foreground">④ 信号仲裁</div>
                                       <div className={`text-sm font-bold ${suppressed ? 'text-red-700' : 'text-emerald-700'}`}>
                                         {suppressed ? '⚠ 已压制' : '✓ 放行'}
                                       </div>
-                                      {s?.reason && <div className="text-[10px] text-gray-500 truncate">{s.reason}</div>}
+                                      {s?.reason && <div className="text-[10px] text-muted-foreground truncate">{s.reason}</div>}
                                     </div>
                                   );
                                 })()}
@@ -1105,9 +1105,9 @@ export default function MarketScanPanel() {
                                 {(() => {
                                   const s = screeningData[stock.code]?.stages?.resonance;
                                   return (
-                                    <div className={`rounded-lg border p-2 ${s?.matched ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
-                                      <div className="text-[10px] text-gray-500">⑤ 共振判断</div>
-                                      <div className={`text-sm font-bold ${s?.matched ? 'text-emerald-700' : 'text-gray-400'}`}>
+                                    <div className={`rounded-lg border p-2 ${s?.matched ? 'bg-emerald-50 border-emerald-200' : 'bg-muted border-border'}`}>
+                                      <div className="text-[10px] text-muted-foreground">⑤ 共振判断</div>
+                                      <div className={`text-sm font-bold ${s?.matched ? 'text-emerald-700' : 'text-muted-foreground'}`}>
                                         {s?.matched ? `✓ ${s.type || '匹配'}` : '✗ 未匹配'}
                                       </div>
                                     </div>
@@ -1118,7 +1118,7 @@ export default function MarketScanPanel() {
                                   const s = screeningData[stock.code]?.stages?.guard;
                                   return (
                                     <div className={`rounded-lg border p-2 ${s?.passed ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
-                                      <div className="text-[10px] text-gray-500">⑥ 门卫检查</div>
+                                      <div className="text-[10px] text-muted-foreground">⑥ 门卫检查</div>
                                       <div className={`text-sm font-bold ${s?.passed ? 'text-emerald-700' : 'text-red-700'}`}>
                                         {s?.passed ? '✓ 通过' : `✗ ${s?.reason || '拒绝'}`}
                                       </div>
@@ -1129,21 +1129,21 @@ export default function MarketScanPanel() {
                                 {(() => {
                                   const pipes = screeningData[stock.code]?.stages?.pipeline || [];
                                   return (
-                                    <div className="rounded-lg border p-2 bg-gray-50 border-gray-200 col-span-2">
-                                      <div className="text-[10px] text-gray-500">⑦ 今日信号流水</div>
+                                    <div className="rounded-lg border p-2 bg-muted border-border col-span-2">
+                                      <div className="text-[10px] text-muted-foreground">⑦ 今日信号流水</div>
                                       {pipes.length === 0 ? (
-                                        <div className="text-sm text-gray-400">无记录</div>
+                                        <div className="text-sm text-muted-foreground">无记录</div>
                                       ) : (
                                         <div className="space-y-0.5 mt-1">
                                           {pipes.map((p: {timestamp?: string; source?: string; final_action?: string; final_reason?: string}, i: number) => (
                                             <div key={i} className="text-[10px] flex items-center gap-1">
-                                              <span className="text-gray-400 font-mono">{p.timestamp?.slice(11, 16)}</span>
+                                              <span className="text-muted-foreground font-mono">{p.timestamp?.slice(11, 16)}</span>
                                               <span className={`px-1 rounded ${
                                                 p.final_action === 'executed' ? 'bg-emerald-200 text-emerald-700'
                                                 : p.final_action === 'rejected' ? 'bg-red-200 text-red-700'
                                                 : 'bg-amber-200 text-amber-700'
                                               }`}>{p.final_action}</span>
-                                              <span className="text-gray-600 truncate">{p.final_reason}</span>
+                                              <span className="text-muted-foreground truncate">{p.final_reason}</span>
                                             </div>
                                           ))}
                                         </div>
@@ -1154,7 +1154,7 @@ export default function MarketScanPanel() {
                               </div>
                             </div>
                           ) : (
-                            <div className="text-center py-4 text-gray-400 text-sm">无数据</div>
+                            <div className="text-center py-4 text-muted-foreground text-sm">无数据</div>
                           )}
                         </td>
                       </tr>
@@ -1162,33 +1162,33 @@ export default function MarketScanPanel() {
 
                     {/* 折叠行：日内资金支撑/阻力位面板 */}
                     {levelsStock?.code === stock.code && (
-                      <tr className="bg-gray-50 border-b border-gray-100 shadow-inner">
+                      <tr className="bg-muted border-b border-border shadow-inner">
                         <td colSpan={11} className="p-4">
                           {/* 实时成交动能面板 */}
                           {stock.ticker_summary ? (() => {
                             const ts = stock.ticker_summary;
                             const signalColor = ts.score > 20 ? "bg-red-500" : ts.score < -20 ? "bg-green-500" : "bg-gray-400";
-                            const netColor = ts.net_turnover > 0 ? "text-red-600" : ts.net_turnover < 0 ? "text-green-600" : "text-gray-900";
+                            const netColor = ts.net_turnover > 0 ? "text-red-600" : ts.net_turnover < 0 ? "text-green-600" : "text-foreground";
                             return (
-                              <div className="mb-4 bg-white rounded-lg border border-gray-200 p-4 flex items-center justify-between shadow-sm relative overflow-hidden">
+                              <div className="mb-4 bg-card rounded-lg border border-border p-4 flex items-center justify-between shadow-sm relative overflow-hidden">
                                 <div className={`absolute top-0 right-0 w-64 h-64 rounded-full blur-3xl opacity-10 -mr-10 -mt-20 pointer-events-none ${signalColor}`}></div>
                                 <div className="flex items-center gap-8 relative z-10">
                                   <div>
-                                    <div className="text-xs text-gray-500 mb-1">主动买卖净额</div>
+                                    <div className="text-xs text-muted-foreground mb-1">主动买卖净额</div>
                                     <div className={`text-xl font-bold ${netColor}`}>
                                       {ts.net_turnover > 0 ? "+" : ""}{formatInflowZh(ts.net_turnover)}
                                     </div>
                                   </div>
                                   <div className="h-10 w-px bg-gray-200"></div>
                                   <div>
-                                    <div className="text-xs text-gray-500 mb-1">买卖力量比</div>
-                                    <div className={`text-xl font-bold ${ts.buy_sell_ratio > 1.2 ? "text-red-600" : ts.buy_sell_ratio < 0.8 ? "text-green-600" : "text-gray-900"}`}>
+                                    <div className="text-xs text-muted-foreground mb-1">买卖力量比</div>
+                                    <div className={`text-xl font-bold ${ts.buy_sell_ratio > 1.2 ? "text-red-600" : ts.buy_sell_ratio < 0.8 ? "text-green-600" : "text-foreground"}`}>
                                       {ts.buy_sell_ratio.toFixed(2)}
                                     </div>
                                   </div>
                                   <div className="h-10 w-px bg-gray-200"></div>
                                   <div>
-                                    <div className="text-xs text-gray-500 mb-1">大单动能</div>
+                                    <div className="text-xs text-muted-foreground mb-1">大单动能</div>
                                     {(() => {
                                       const tsAny = ts as unknown as Record<string, number>;
                                       const bigBuy = tsAny.big_buy_turnover || 0;
@@ -1196,18 +1196,18 @@ export default function MarketScanPanel() {
                                       const bigNet = bigBuy - bigSell;
                                       const bigTotal = bigBuy + bigSell;
                                       const buyPct = bigTotal > 0 ? (bigBuy / bigTotal * 100) : 50;
-                                      const netColor = bigNet > 0 ? "text-red-600" : bigNet < 0 ? "text-green-600" : "text-gray-600";
+                                      const netColor = bigNet > 0 ? "text-red-600" : bigNet < 0 ? "text-green-600" : "text-muted-foreground";
                                       return (
                                         <div>
                                           <div className={`text-lg font-bold ${netColor}`}>
                                             {bigNet > 0 ? "+" : ""}{formatInflowZh(bigNet)}
                                           </div>
                                           <div className="flex items-center gap-1 mt-1">
-                                            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden flex">
+                                            <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden flex">
                                               <div className="bg-red-400 h-full" style={{width: `${buyPct}%`}}></div>
                                               <div className="bg-green-400 h-full" style={{width: `${100 - buyPct}%`}}></div>
                                             </div>
-                                            <span className="text-[9px] text-gray-400">{ts.big_order_pct.toFixed(0)}%</span>
+                                            <span className="text-[9px] text-muted-foreground">{ts.big_order_pct.toFixed(0)}%</span>
                                           </div>
                                         </div>
                                       );
@@ -1215,7 +1215,7 @@ export default function MarketScanPanel() {
                                   </div>
                                   <div className="h-10 w-px bg-gray-200"></div>
                                   <div>
-                                    <div className="text-xs text-gray-500 mb-1">成交面判定</div>
+                                    <div className="text-xs text-muted-foreground mb-1">成交面判定</div>
                                     <div className="text-lg font-bold">
                                       {ts.bias === "strong_bullish" ? (
                                         <span className="text-red-600 flex items-center gap-2"><i className="fas fa-rocket animate-pulse"></i> {ts.bias_label}</span>
@@ -1224,24 +1224,24 @@ export default function MarketScanPanel() {
                                       ) : ts.bias === "bearish" ? (
                                         <span className="text-green-600 flex items-center gap-2"><i className="fas fa-arrow-down"></i> {ts.bias_label}</span>
                                       ) : (
-                                        <span className="text-gray-500 flex items-center gap-2"><i className="fas fa-minus"></i> {ts.bias_label}</span>
+                                        <span className="text-muted-foreground flex items-center gap-2"><i className="fas fa-minus"></i> {ts.bias_label}</span>
                                       )}
                                     </div>
                                   </div>
                                 </div>
-                                <div className="text-xs text-gray-400 max-w-xs text-right relative z-10 bg-white/80 p-2 rounded">
+                                <div className="text-xs text-muted-foreground max-w-xs text-right relative z-10 bg-card/80 p-2 rounded">
                                   <i className="fas fa-check-circle text-emerald-500 mr-1"></i>
                                   基于<b>逐笔成交</b>实时分析，统计每笔成交的主动买卖方向。
                                 </div>
                               </div>
                             );
                           })() : (
-                            <div className="mb-4 bg-gray-50 rounded-lg border border-dashed border-gray-300 p-4 flex items-center justify-between">
-                              <div className="flex items-center gap-3 text-gray-400">
+                            <div className="mb-4 bg-muted rounded-lg border border-dashed border-border p-4 flex items-center justify-between">
+                              <div className="flex items-center gap-3 text-muted-foreground">
                                 <i className="fas fa-chart-bar text-2xl"></i>
                                 <div>
-                                  <div className="text-sm font-medium text-gray-500">暂无逐笔成交数据</div>
-                                  <div className="text-xs text-gray-400">该股票未订阅逐笔数据，当盘中出现异动时系统将自动订阅</div>
+                                  <div className="text-sm font-medium text-muted-foreground">暂无逐笔成交数据</div>
+                                  <div className="text-xs text-muted-foreground">该股票未订阅逐笔数据，当盘中出现异动时系统将自动订阅</div>
                                 </div>
                               </div>
                               <button
@@ -1259,16 +1259,16 @@ export default function MarketScanPanel() {
 
                           {/* 多策略投票总览 — 3策略独立面板 */}
                           {stock.consensus && (
-                            <div className="mb-4 bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+                            <div className="mb-4 bg-card rounded-lg border border-border p-4 shadow-sm">
                               <div className="flex items-center justify-between mb-3">
                                 <div className="flex items-center gap-2">
-                                  <span className="text-sm font-semibold text-gray-800">📊 交易评分</span>
+                                  <span className="text-sm font-semibold text-foreground">📊 交易评分</span>
                                   {(() => {
                                     const c = stock.consensus!;
                                     const verdictStyles: Record<string, string> = {
                                       strong_buy: 'bg-red-100 text-red-700 border-red-200',
                                       buy: 'bg-blue-100 text-blue-700 border-blue-200',
-                                      watch: 'bg-gray-100 text-gray-600 border-gray-200',
+                                      watch: 'bg-muted text-muted-foreground border-border',
                                       sell: 'bg-yellow-100 text-yellow-700 border-yellow-200',
                                       strong_sell: 'bg-green-100 text-green-700 border-green-200',
                                       conflicting: 'bg-amber-100 text-amber-700 border-amber-200',
@@ -1286,7 +1286,7 @@ export default function MarketScanPanel() {
                                     </span>
                                   )}
                                 </div>
-                                <div className="text-xs text-gray-400 flex items-center gap-2">
+                                <div className="text-xs text-muted-foreground flex items-center gap-2">
                                   {stock.consensus.best_mode && (
                                     <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 text-[10px] font-bold">
                                       最佳: {stock.consensus.best_mode}
@@ -1309,16 +1309,16 @@ export default function MarketScanPanel() {
                                 const triggered = stock.consensus?.breakout_triggered;
                                 if (isBreakout && !triggered) {
                                   return (
-                                    <div key={key} className="mb-2 rounded border border-dashed border-gray-200 p-2 opacity-50">
-                                      <span className="text-xs text-gray-400">{strat.label} — 未触发（未突破阻力位）</span>
+                                    <div key={key} className="mb-2 rounded border border-dashed border-border p-2 opacity-50">
+                                      <span className="text-xs text-muted-foreground">{strat.label} — 未触发（未突破阻力位）</span>
                                     </div>
                                   );
                                 }
                                 return (
-                                  <div key={key} className={`mb-2 rounded border p-3 ${isBest ? 'border-indigo-300 bg-indigo-50/30' : 'border-gray-200'}`}>
+                                  <div key={key} className={`mb-2 rounded border p-3 ${isBest ? 'border-indigo-300 bg-indigo-50/30' : 'border-border'}`}>
                                     <div className="flex items-center justify-between mb-2">
                                       <div className="flex items-center gap-2">
-                                        <span className="text-xs font-bold text-gray-700">{strat.label}</span>
+                                        <span className="text-xs font-bold text-foreground">{strat.label}</span>
                                         {isBest && <span className="text-[9px] px-1 py-0.5 rounded bg-indigo-100 text-indigo-600 font-bold">最佳</span>}
                                       </div>
                                       <span className={`text-sm font-bold ${strat.total_score >= 60 ? 'text-red-600' : strat.total_score >= 40 ? 'text-yellow-600' : 'text-green-600'}`}>
@@ -1330,16 +1330,16 @@ export default function MarketScanPanel() {
                                         const pct = d.max_score > 0 ? Math.round(d.score / d.max_score * 100) : 0;
                                         const barColor = pct >= 60 ? 'bg-red-500' : pct < 40 ? 'bg-green-500' : 'bg-gray-400';
                                         const icon = pct >= 60 ? '✓' : pct < 40 ? '✗' : '—';
-                                        const iconColor = pct >= 60 ? 'text-red-500' : pct < 40 ? 'text-green-500' : 'text-gray-400';
+                                        const iconColor = pct >= 60 ? 'text-red-500' : pct < 40 ? 'text-green-500' : 'text-muted-foreground';
                                         return (
                                           <div key={d.name} className="flex items-center gap-1.5">
                                             <span className={`text-[10px] w-3 text-center font-bold ${iconColor}`}>{icon}</span>
-                                            <span className="text-[11px] text-gray-600 w-20 flex-shrink-0 truncate" title={d.note || undefined}>{d.name}</span>
-                                            <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                            <span className="text-[11px] text-muted-foreground w-20 flex-shrink-0 truncate" title={d.note || undefined}>{d.name}</span>
+                                            <div className="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
                                               <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
                                             </div>
-                                            <span className="text-[10px] font-mono text-gray-500 w-10 text-right">{d.score}/{d.max_score}</span>
-                                            <span className="text-[10px] text-gray-400 w-14 text-right truncate">{d.value ?? (d.note || '')}</span>
+                                            <span className="text-[10px] font-mono text-muted-foreground w-10 text-right">{d.score}/{d.max_score}</span>
+                                            <span className="text-[10px] text-muted-foreground w-14 text-right truncate">{d.value ?? (d.note || '')}</span>
                                           </div>
                                         );
                                       })}
@@ -1352,19 +1352,19 @@ export default function MarketScanPanel() {
                               {stock.consensus.engines && Object.keys(stock.consensus.engines).length > 0 && (
                                 <>
                                   <div className="flex items-center gap-2 mt-2 mb-2">
-                                    <div className="flex-1 border-t border-gray-200" />
-                                    <span className="text-[10px] text-gray-400 font-medium">辅助引擎</span>
-                                    <div className="flex-1 border-t border-gray-200" />
+                                    <div className="flex-1 border-t border-border" />
+                                    <span className="text-[10px] text-muted-foreground font-medium">辅助引擎</span>
+                                    <div className="flex-1 border-t border-border" />
                                   </div>
                                   <div className="space-y-1">
                                     {Object.entries(stock.consensus.engines).map(([ek, eng]) => (
                                       <div key={ek} className="flex items-center gap-2">
-                                        <span className="text-[11px] text-gray-600 w-14 flex-shrink-0">{eng.label}</span>
-                                        <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                        <span className="text-[11px] text-muted-foreground w-14 flex-shrink-0">{eng.label}</span>
+                                        <div className="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
                                           <div className={`h-full rounded-full ${eng.score >= 60 ? 'bg-red-400' : eng.score < 40 ? 'bg-green-400' : 'bg-gray-400'}`} style={{ width: `${eng.score}%` }} />
                                         </div>
-                                        <span className="text-[10px] font-mono text-gray-500 w-8 text-right flex-shrink-0">{eng.score}</span>
-                                        <span className="text-[10px] text-gray-400 flex-1 min-w-0">
+                                        <span className="text-[10px] font-mono text-muted-foreground w-8 text-right flex-shrink-0">{eng.score}</span>
+                                        <span className="text-[10px] text-muted-foreground flex-1 min-w-0">
                                           {eng.details.map(d => `${d.label}:${d.value}`).join(' ')}
                                         </span>
                                       </div>
@@ -1402,21 +1402,21 @@ export default function MarketScanPanel() {
       {smartPickOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setSmartPickOpen(false)}>
           <div
-            className="bg-white rounded-2xl shadow-2xl w-[600px] max-h-[85vh] overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200"
+            className="bg-card rounded-2xl shadow-2xl w-[600px] max-h-[85vh] overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
-            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-violet-50 to-indigo-50">
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between bg-gradient-to-r from-violet-50 to-indigo-50">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shadow-md">
                   <i className="fas fa-robot text-white text-sm" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-gray-900">AI 智选</h3>
-                  <p className="text-xs text-gray-500">Claude · 从 {displayStocks.length} 只股票中筛选</p>
+                  <h3 className="text-base font-bold text-foreground">AI 智选</h3>
+                  <p className="text-xs text-muted-foreground">Claude · 从 {displayStocks.length} 只股票中筛选</p>
                 </div>
               </div>
-              <button onClick={() => setSmartPickOpen(false)} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors">
+              <button onClick={() => setSmartPickOpen(false)} className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-muted-foreground transition-colors">
                 <i className="fas fa-times" />
               </button>
             </div>
@@ -1425,10 +1425,10 @@ export default function MarketScanPanel() {
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
               {/* Loading */}
               {smartPickLoading && (
-                <div className="flex flex-col items-center justify-center py-16 text-gray-500">
+                <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                   <div className="w-12 h-12 border-3 border-violet-200 border-t-violet-600 rounded-full animate-spin mb-4" />
                   <p className="text-sm font-medium">Claude 正在分析 {displayStocks.length} 只股票...</p>
-                  <p className="text-xs text-gray-400 mt-1">首次分析可能需要 15-30 秒</p>
+                  <p className="text-xs text-muted-foreground mt-1">首次分析可能需要 15-30 秒</p>
                 </div>
               )}
 
@@ -1445,7 +1445,7 @@ export default function MarketScanPanel() {
                 <>
                   {/* Market Summary */}
                   {smartPickResult.market_summary && (
-                    <div className="bg-gray-50 rounded-xl p-3 text-sm text-gray-600 flex items-center gap-2">
+                    <div className="bg-muted rounded-xl p-3 text-sm text-muted-foreground flex items-center gap-2">
                       <i className="fas fa-chart-line text-indigo-500" />
                       {smartPickResult.market_summary}
                     </div>
@@ -1478,8 +1478,8 @@ export default function MarketScanPanel() {
                               #{idx + 1}
                             </span>
                             <div>
-                              <span className="font-bold text-gray-900">{pick.name}</span>
-                              <span className="text-xs text-gray-400 ml-1.5">{pick.code}</span>
+                              <span className="font-bold text-foreground">{pick.name}</span>
+                              <span className="text-xs text-muted-foreground ml-1.5">{pick.code}</span>
                             </div>
                             <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${
                               isStrong ? "bg-red-600 text-white" : "bg-indigo-600 text-white"
@@ -1489,15 +1489,15 @@ export default function MarketScanPanel() {
                           </div>
                           {/* Confidence */}
                           <div className="flex items-center gap-1.5">
-                            <span className="text-xs text-gray-400">置信度</span>
-                            <span className={`text-sm font-bold ${pick.confidence >= 70 ? "text-red-600" : pick.confidence >= 50 ? "text-amber-600" : "text-gray-600"}`}>
+                            <span className="text-xs text-muted-foreground">置信度</span>
+                            <span className={`text-sm font-bold ${pick.confidence >= 70 ? "text-red-600" : pick.confidence >= 50 ? "text-amber-600" : "text-muted-foreground"}`}>
                               {pick.confidence}%
                             </span>
                           </div>
                         </div>
 
                         {/* Reasoning */}
-                        <p className="text-sm text-gray-700 mb-2">{pick.reasoning}</p>
+                        <p className="text-sm text-foreground mb-2">{pick.reasoning}</p>
 
                         {/* Key Signal + Risk */}
                         <div className="flex flex-wrap gap-2 text-xs">

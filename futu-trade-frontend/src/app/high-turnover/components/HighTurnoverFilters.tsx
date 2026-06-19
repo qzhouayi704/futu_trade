@@ -58,7 +58,7 @@ export default function HighTurnoverFilters({
     <div className="flex flex-wrap items-center gap-4">
       {/* 市场筛选 */}
       <div className="flex items-center gap-2">
-        <span className="text-sm font-medium text-gray-700">市场：</span>
+        <span className="text-sm font-medium text-foreground">市场：</span>
         <div className="flex gap-2">
           {MARKET_OPTIONS.map((option) => (
             <Button
@@ -75,7 +75,7 @@ export default function HighTurnoverFilters({
 
       {/* 成交方向筛选 */}
       <div className="flex items-center gap-2">
-        <span className="text-sm font-medium text-gray-700">方向：</span>
+        <span className="text-sm font-medium text-foreground">方向：</span>
         <div className="flex gap-2">
           {DIRECTION_OPTIONS.map((option) => (
             <Button
@@ -92,7 +92,7 @@ export default function HighTurnoverFilters({
 
       {/* 流动性筛选（新增） */}
       <div className="flex items-center gap-2">
-        <span className="text-sm font-medium text-gray-700">流动性：</span>
+        <span className="text-sm font-medium text-foreground">流动性：</span>
         <div className="flex gap-2">
           {LIQUIDITY_OPTIONS.map((option) => (
             <Button
@@ -110,18 +110,18 @@ export default function HighTurnoverFilters({
       {/* 搜索输入框 */}
       <div className="flex items-center gap-2 ml-auto">
         <div className="relative">
-          <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm" />
+          <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm" />
           <input
             type="text"
             placeholder="搜索代码或名称..."
             value={searchKeyword}
             onChange={(e) => onSearchChange(e.target.value)}
-            className="pl-9 pr-4 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-56"
+            className="pl-9 pr-4 py-1.5 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-56"
           />
           {searchKeyword && (
             <button
               onClick={() => onSearchChange("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground"
             >
               <i className="fas fa-times text-xs" />
             </button>

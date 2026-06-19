@@ -12,7 +12,7 @@ function getHeatColor(heat: number): string {
   if (heat >= 60) return "text-orange-500";
   if (heat >= 40) return "text-yellow-500";
   if (heat >= 20) return "text-blue-500";
-  return "text-gray-500";
+  return "text-muted-foreground";
 }
 
 function getHeatBgColor(heat: number): string {
@@ -56,9 +56,9 @@ function getSentimentBadge(sentiment: string): string {
     活跃: "bg-orange-100 text-orange-800",
     正常: "bg-green-100 text-green-800",
     冷淡: "bg-blue-100 text-blue-800",
-    极度冷淡: "bg-gray-100 text-gray-800",
+    极度冷淡: "bg-muted text-foreground",
   };
-  return map[sentiment] || "bg-gray-100 text-gray-800";
+  return map[sentiment] || "bg-muted text-foreground";
 }
 
 /** 报价覆盖率展示条 */
@@ -120,7 +120,7 @@ export function MarketHeatPanel() {
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg shadow p-6 animate-pulse">
+      <div className="bg-card rounded-lg shadow p-6 animate-pulse">
         <div className="h-6 bg-gray-200 rounded w-1/3 mb-4" />
         <div className="h-24 bg-gray-200 rounded" />
       </div>
@@ -129,8 +129,8 @@ export function MarketHeatPanel() {
 
   if (error || !data) {
     return (
-      <div className="bg-white rounded-lg shadow p-6">
-        <p className="text-gray-500">{error || "暂无数据"}</p>
+      <div className="bg-card rounded-lg shadow p-6">
+        <p className="text-muted-foreground">{error || "暂无数据"}</p>
       </div>
     );
   }
@@ -139,8 +139,8 @@ export function MarketHeatPanel() {
   const positionPct = Math.round(data.recommended_position_ratio * 100);
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+    <div className="bg-card rounded-lg shadow p-6">
+      <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
         <svg className="w-5 h-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
@@ -166,7 +166,7 @@ export function MarketHeatPanel() {
               style={{ width: `${Math.min(heat, 100)}%` }}
             />
           </div>
-          <div className="flex justify-between text-xs text-gray-400 mt-1">
+          <div className="flex justify-between text-xs text-muted-foreground mt-1">
             <span>0</span>
             <span>50</span>
             <span>100</span>
@@ -196,17 +196,17 @@ export function MarketHeatPanel() {
       {/* 热门板块 */}
       {data.hot_plates.length > 0 && (
         <div>
-          <h4 className="text-sm font-medium text-gray-600 mb-2">热门板块</h4>
+          <h4 className="text-sm font-medium text-muted-foreground mb-2">热门板块</h4>
           <div className="space-y-2">
             {data.hot_plates.map((plate, idx) => (
               <div
                 key={plate.plate_code}
-                className="border border-gray-100 rounded-lg p-3 hover:bg-gray-50 transition-colors"
+                className="border border-border rounded-lg p-3 hover:bg-muted transition-colors"
                 role="listitem"
                 aria-label={`第${idx + 1}名 ${plate.plate_name}`}
               >
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm font-medium text-gray-800">
+                  <span className="text-sm font-medium text-foreground">
                     <span className="text-orange-500 font-bold mr-1">#{idx + 1}</span>
                     {plate.plate_name}
                   </span>
@@ -217,7 +217,7 @@ export function MarketHeatPanel() {
                     {plate.avg_change_pct.toFixed(2)}%
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-xs text-gray-500">
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span>
                     涨跌比 {(plate.up_ratio * 100).toFixed(0)}%
                   </span>

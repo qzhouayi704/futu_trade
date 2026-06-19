@@ -26,7 +26,7 @@ export function IntradayChart({ timelineData, levelsData }: IntradayChartProps) 
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { color: "transparent" },
-        textColor: "#6B7280", // text-gray-500
+        textColor: "#6B7280", // text-muted-foreground
       },
       grid: {
         vertLines: { color: "#F3F4F6", style: LineStyle.Dashed },
@@ -127,14 +127,14 @@ export function IntradayChart({ timelineData, levelsData }: IntradayChartProps) 
         const price = param.seriesData.get(mainSeries) as LineData | undefined;
         const vwap = param.seriesData.get(vwapSeries) as LineData | undefined;
         
-        let html = `<div class="font-medium text-gray-900 mb-1 border-b pb-1">${timeStr}</div>`;
+        let html = `<div class="font-medium text-foreground mb-1 border-b pb-1">${timeStr}</div>`;
         if (price) html += `<div class="text-blue-600 flex justify-between gap-4"><span>价格</span> <span class="font-mono font-medium">${price.value.toFixed(3)}</span></div>`;
         if (vwap) html += `<div class="text-amber-600 flex justify-between gap-4"><span>均价</span> <span class="font-mono font-medium">${vwap.value.toFixed(3)}</span></div>`;
         
         // Find volume
         const dataPoint = timelineData.find(d => Math.abs((new Date(d.time).getTime() / 1000) - (param.time as number)) < 2);
         if (dataPoint) {
-          html += `<div class="text-gray-600 flex justify-between gap-4 mt-1 pt-1 border-t"><span>成交量</span> <span>${(dataPoint.volume / 10000).toFixed(1)}万</span></div>`;
+          html += `<div class="text-muted-foreground flex justify-between gap-4 mt-1 pt-1 border-t"><span>成交量</span> <span>${(dataPoint.volume / 10000).toFixed(1)}万</span></div>`;
         }
 
         tooltipRef.current.innerHTML = html;
@@ -292,7 +292,7 @@ export function IntradayChart({ timelineData, levelsData }: IntradayChartProps) 
       {/* Tooltip */}
       <div
         ref={tooltipRef}
-        className="absolute hidden pointer-events-none bg-white/95 backdrop-blur shadow-lg border border-gray-100 rounded-lg p-3 text-xs z-50 transition-none"
+        className="absolute hidden pointer-events-none bg-card/95 backdrop-blur shadow-lg border border-border rounded-lg p-3 text-xs z-50 transition-none"
         style={{ left: 0, top: 0, minWidth: '120px' }}
       />
     </div>
