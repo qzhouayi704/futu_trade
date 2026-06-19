@@ -422,7 +422,9 @@ async def pre_trade_check(
         max_buy_conf = 0
         validated_sell = []   # 已回测有边际的卖出/警示规则(R10/R3/R2)命中的 reason
 
-        # 已验证有边际(2026-06 回测 +20~24pp)的卖出/警示规则: 逆高减/出货/量价背离
+        # 已验证有边际的卖出/警示规则: 逆高减/出货/量价背离
+        # 口径: EOD命中率 vs 同股同日随机对照, +19~20pp(到收盘下跌概率约2×随机),
+        # retLift +0.4~1.2%; 注意是"偏收盘"边际, 盘中30min内无明显优势(2026-06 复核)
         VALIDATED_SELL_RULES = {"R2", "R3", "R10"}
 
         # 仅参考规则(回测无边际, 默认 R4/R11/R12)：仍展示在 flow_signals，但不计入评分/门控
@@ -463,11 +465,12 @@ async def pre_trade_check(
             checks.append({
                 "name": "逆高减/出货警示",
                 "status": "DANGER",
-                "detail": (f"{validated_sell[0][:48]}（已验证: 下行风险约2×、"
-                           f"平均多跌~0.6%，考虑减/别追，非必跌）"),
+                "detail": (f"{validated_sell[0][:48]}（回测有边际·偏收盘：到收盘下跌概率"
+                           f"≈2×随机、平均多跌~0.5%；盘中30min无即时优势，"
+                           f"作逢高减/别追的过滤器，非必跌）"),
                 "impact": f"{signed:+d}",
             })
-            warnings.append(f"⚠️ 逆高减/出货警示(有边际)：{validated_sell[0][:60]}")
+            warnings.append(f"⚠️ 逆高减/出货警示(回测有边际·偏收盘)：{validated_sell[0][:60]}")
             if is_sell:
                 warnings.append("（卖出方向：该警示支持你的减仓判断）")
         elif has_sell_signal:
