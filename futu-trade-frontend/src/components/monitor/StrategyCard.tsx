@@ -35,8 +35,8 @@ export function StrategyCard({
     <div
       className={`rounded-lg border-2 p-4 transition-all ${
         isEnabled
-          ? "border-blue-400 bg-blue-50/50 shadow-sm"
-          : "border-gray-200 bg-white opacity-75"
+          ? "border-primary bg-primary/5 shadow-sm"
+          : "border-border bg-card opacity-75"
       }`}
     >
       {/* 头部：名称 + 开关 */}
@@ -44,15 +44,15 @@ export function StrategyCard({
         <div className="flex items-center gap-2">
           <span
             className={`w-2.5 h-2.5 rounded-full ${
-              isEnabled ? "bg-green-500" : "bg-gray-300"
+              isEnabled ? "bg-emerald-500" : "bg-muted-foreground/40"
             }`}
           />
-          <h3 className="font-semibold text-gray-900">{strategy.name}</h3>
+          <h3 className="font-semibold text-foreground">{strategy.name}</h3>
         </div>
         <button
           onClick={() => onToggle(strategy.id, !isEnabled, currentPreset)}
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-            isEnabled ? "bg-blue-600" : "bg-gray-300"
+            isEnabled ? "bg-primary" : "bg-muted"
           }`}
           role="switch"
           aria-checked={isEnabled}
@@ -68,17 +68,17 @@ export function StrategyCard({
 
       {/* 描述 */}
       {strategy.description && (
-        <p className="text-xs text-gray-500 mb-3">{strategy.description}</p>
+        <p className="text-xs text-muted-foreground mb-3">{strategy.description}</p>
       )}
 
       {/* 预设选择 */}
       <div className="mb-3">
-        <label className="text-xs text-gray-600 mb-1 block">预设参数</label>
+        <label className="text-xs text-muted-foreground mb-1 block">预设参数</label>
         <select
           value={currentPreset}
           onChange={(e) => onPresetChange(strategy.id, e.target.value)}
           disabled={!isEnabled}
-          className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 bg-white disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full text-sm border border-border rounded-md px-2 py-1.5 bg-background text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {strategy.presets.map((preset) => (
             <option key={preset.name} value={preset.name}>
@@ -92,13 +92,13 @@ export function StrategyCard({
       {/* 信号计数 + 自动交易标记 */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 text-sm">
-          <span className="flex items-center gap-1 text-red-600">
+          <span className="flex items-center gap-1 text-red-500">
             <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M5.293 9.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L11 7.414V15a1 1 0 11-2 0V7.414L6.707 9.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
             </svg>
             {buyCount}
           </span>
-          <span className="flex items-center gap-1 text-green-600">
+          <span className="flex items-center gap-1 text-green-500">
             <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M14.707 10.293a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 12.586V5a1 1 0 012 0v7.586l2.293-2.293a1 1 0 011.414 0z" clipRule="evenodd" />
             </svg>
@@ -111,8 +111,8 @@ export function StrategyCard({
             onClick={() => onSetAutoTrade(strategy.id)}
             className={`text-xs px-2 py-1 rounded-md transition-colors ${
               isAutoTrade
-                ? "bg-amber-100 text-amber-700 font-medium"
-                : "text-gray-500 hover:bg-gray-100"
+                ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium"
+                : "text-muted-foreground hover:bg-muted"
             }`}
             title={isAutoTrade ? "当前自动交易策略" : "设为自动交易策略"}
           >

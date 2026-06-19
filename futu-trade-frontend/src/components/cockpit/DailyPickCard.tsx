@@ -6,6 +6,7 @@
 
 import { useMemo } from "react";
 import { useSniperSignals, useSniperTapeVerdicts } from "@/app/hooks/useSniper";
+import { Chip } from "@/components/ui/chip";
 import type { SniperSignal } from "@/types/trade";
 
 export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string) => void }) {
@@ -37,26 +38,26 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
   const tapeMap: Record<string, any> = (tapeQuery.data as Record<string, any>) ?? {};
 
   return (
-    <div className="rounded-xl border border-emerald-100 bg-white/80 backdrop-blur-sm shadow-sm">
+    <div className="rounded-xl border border-emerald-200/50 dark:border-emerald-500/20 bg-card shadow-sm">
       {/* 标题 */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-emerald-100/70">
-        <h3 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
+        <h3 className="text-sm font-bold text-foreground flex items-center gap-1.5">
           <span className="text-base">🎯</span>
           今日可买精选
-          <span className="text-[10px] font-normal text-emerald-600">持续抢筹·可持有</span>
+          <span className="text-[10px] font-normal text-emerald-600 dark:text-emerald-400">持续抢筹·可持有</span>
         </h3>
-        <span className="text-[10px] text-gray-400">
+        <span className="text-[10px] text-muted-foreground">
           {lastUpdate ? `${lastUpdate.toLocaleTimeString("zh-CN")} 更新` : ""}
         </span>
       </div>
 
       <div className="p-3">
         {loading ? (
-          <div className="text-center text-sm text-gray-400 py-4">扫描中...</div>
+          <div className="text-center text-sm text-muted-foreground py-4">扫描中...</div>
         ) : picks.length === 0 ? (
-          <div className="text-center text-[12px] text-gray-400 py-5 leading-relaxed">
+          <div className="text-center text-[12px] text-muted-foreground py-5 leading-relaxed">
             今日暂无精选<br />
-            <span className="text-[10px] text-gray-300">(等"被反复大买、且还没涨高"的票出现)</span>
+            <span className="text-[10px] text-muted-foreground/60">(等"被反复大买、且还没涨高"的票出现)</span>
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -68,8 +69,8 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
                   onClick={() => onSelectStock?.(s.stock_code)}
                   className={`px-2.5 py-2 rounded-lg border transition-colors cursor-pointer ${
                     idx === 0
-                      ? "bg-gradient-to-r from-emerald-50 to-green-50 border-emerald-200/70"
-                      : "bg-emerald-50/40 border-emerald-100/60 hover:bg-emerald-50/70"
+                      ? "bg-emerald-500/10 border-emerald-500/30"
+                      : "bg-emerald-500/5 border-emerald-500/15 hover:bg-emerald-500/10"
                   }`}
                 >
                   {/* 第一行：名称 + 抢筹徽章 + 已涨 + 现价 */}
@@ -78,7 +79,7 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
                       <span className="text-[9px] font-bold w-4 h-4 flex items-center justify-center rounded-full bg-emerald-500 text-white shrink-0">
                         {idx + 1}
                       </span>
-                      <span className="text-[13px] font-semibold text-gray-800 truncate">
+                      <span className="text-[13px] font-semibold text-foreground truncate">
                         {s.stock_name}
                       </span>
                       <span className="text-[9px] px-1.5 py-px rounded-full bg-emerald-500 text-white font-bold shrink-0">
@@ -86,16 +87,16 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
                       </span>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-[10px] text-gray-500 tabular-nums">
+                      <span className="text-[10px] text-muted-foreground tabular-nums">
                         已涨{gain >= 0 ? "+" : ""}{gain.toFixed(1)}%
                       </span>
-                      <span className="text-[13px] font-bold tabular-nums text-gray-800">
+                      <span className="text-[13px] font-bold tabular-nums text-foreground">
                         {s.price.toFixed(3)}
                       </span>
                     </div>
                   </div>
                   {/* 第二行：怎么卖 */}
-                  <div className="text-[11px] text-emerald-700/90 mt-1 flex items-center gap-1">
+                  <div className="text-[11px] text-emerald-700 dark:text-emerald-400/90 mt-1 flex items-center gap-1">
                     <span>📍</span>
                     <span className="truncate">{s.posture || "可持有到收盘(分批锁利+宽跟踪)"}</span>
                   </div>
@@ -115,14 +116,10 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
                           </span>
                         )}
                         {chase === "caution" && (
-                          <span className="text-[9px] px-1.5 py-px rounded-full bg-amber-100 text-amber-700">
-                            🟡 追高风险
-                          </span>
+                          <Chip variant="watch">🟡 追高风险</Chip>
                         )}
                         {soV === "shakeout" && (
-                          <span className="text-[9px] px-1.5 py-px rounded-full bg-emerald-100 text-emerald-700">
-                            🟢 回踩有承接·可低吸
-                          </span>
+                          <Chip variant="buy">🟢 回踩有承接·可低吸</Chip>
                         )}
                       </div>
                     );
@@ -133,7 +130,7 @@ export function DailyPickCard({ onSelectStock }: { onSelectStock?: (code: string
           </div>
         )}
         {/* 脚注：诚实提醒 */}
-        <div className="text-[10px] text-gray-400 mt-2 pt-2 border-t border-gray-100 leading-relaxed">
+        <div className="text-[10px] text-muted-foreground mt-2 pt-2 border-t border-border leading-relaxed">
           只列"被大资金反复买、且当日还没涨高"的票;急涨/追高的已自动剔除。仅供手动参考,样本有限需自行判断。
         </div>
       </div>
