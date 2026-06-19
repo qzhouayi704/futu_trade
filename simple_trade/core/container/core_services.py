@@ -64,6 +64,9 @@ class CoreServices:
         )
         self._connect_futu_with_retry()
 
+        # 2b. 交易日历：显式注入富途客户端并预热（节假日闸依赖）
+        self._init_trading_calendar()
+
         # 3. 订阅管理器
         self.subscription_manager = SubscriptionManager(
             self.futu_client,
@@ -143,6 +146,28 @@ class CoreServices:
             f"请启动 OpenD 后重新运行程序。"
         )
 
+    def _init_trading_calendar(self):
+        """向交易日历显式注入富途客户端并预热当天交易日缓存。
+
+        历史问题：交易日历此前只靠懒解析 get_container().futu_client，节假日闸
+        首次调用时可能拿不到可用客户端而静默 fail-open，导致港股节假日（如端午）
+        仍被当作交易日、整条行情管道照常产信号。这里在客户端连接成功后主动注入，
+        并触发一次刷新做预热，刷新结果（成功/失败）均落日志，杜绝静默失败。
+        """
+        try:
+            from ...utils.trading_calendar import get_trading_calendar
+            cal = get_trading_calendar()
+            cal.set_futu_client(self.futu_client)
+            # 预热：触发一次刷新（成功会打印「[交易日历] HK 已刷新…」）
+            hk_trading = cal.is_trading_day('HK')
+            cal.is_trading_day('US')
+            logging.info(
+                "交易日历已注入富途客户端并预热（今日 HK 交易日=%s）", hk_trading
+            )
+        except Exception as e:
+            # fail-open 兜底：日历问题绝不阻断启动
+            logging.warning("交易日历初始化失败（fail-open 兜底）: %s", e)
+
     async def async_initialize(self):
         """异步初始化核心服务（不阻塞事件循环）"""
         logging.info("开始异步初始化核心服务...")
@@ -161,6 +186,9 @@ class CoreServices:
             port=self.config.futu_port
         )
         await self._connect_futu_with_retry_async()
+
+        # 2b. 交易日历：显式注入富途客户端并预热（节假日闸依赖）
+        self._init_trading_calendar()
 
         # 3-5. 其余服务初始化（轻量级，直接同步）
         self.subscription_manager = SubscriptionManager(

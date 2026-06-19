@@ -69,6 +69,14 @@ class TradingCalendar:
             client = self._resolve_client()
             if client is None or not getattr(client, 'is_available', lambda: False)():
                 self._last_fail_ts[market] = _time.monotonic()
+                # 显式落日志：历史上此处静默返回，导致节假日闸长期 fail-open 而无人察觉
+                logger.warning(
+                    "[交易日历] %s 刷新跳过：富途客户端%s → fail-open 当作交易日"
+                    "（节假日闸暂不生效，%.0fs 后重试）",
+                    market,
+                    "未注入/未解析" if client is None else "未就绪(is_available=False)",
+                    _FAILURE_COOLDOWN,
+                )
                 return False
 
             try:
