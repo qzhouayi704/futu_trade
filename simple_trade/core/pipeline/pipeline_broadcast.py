@@ -76,6 +76,11 @@ class PipelineBroadcast:
         today = date.today().isoformat()
 
         for action in trade_actions:
+            # advisory(回测无边际,如资金流买入规则 R1/R5/R11/R12/R14 + R4)不再广播到信号流,
+            # 也不写 signal_pipeline；引擎仍写 capital_flow_signals 供日后扩窗回测。
+            # 卖出/预警 R10/R3/R2 非 advisory,不受影响,照常广播。
+            if action.get('advisory'):
+                continue
             signal_data = {
                 'stock_code': action['stock_code'],
                 'stock_name': action['stock_name'],
