@@ -62,7 +62,15 @@ export function DecisionLog({ records: externalRecords }: DecisionLogProps = {})
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const hasExternalRecords = externalRecords !== undefined;
-  const allRecords = externalRecords ?? localRecords;
+  const rawRecords = externalRecords ?? localRecords;
+
+  // 资金流"广播信号"(final_action=broadcast) 是信号、不是决策 —— 从决策日志分离，
+  // 它们已在「信号流」展示。决策日志只保留真正过 DecisionEngine 收口(共振/护栏)的记录。
+  const allRecords = useMemo(
+    () => rawRecords.filter((r) => (r.final_action || "").toLowerCase() !== "broadcast"),
+    [rawRecords]
+  );
+  const broadcastCount = rawRecords.length - allRecords.length;
 
   // 初始加载及轮询
   useEffect(() => {
@@ -194,6 +202,11 @@ export function DecisionLog({ records: externalRecords }: DecisionLogProps = {})
             ✅{counts.executed} ❌{counts.rejected} ⏳{counts.waiting} 🚫
             {counts.cooldown}
           </span>
+          {broadcastCount > 0 && (
+            <span className="text-[10px] font-normal text-blue-500/80">
+              · 另 {broadcastCount} 条资金流广播信号见「信号流」
+            </span>
+          )}
         </span>
         <svg
           className={`w-4 h-4 text-muted-foreground transition-transform duration-200 ${
@@ -318,12 +331,20 @@ export function DecisionLog({ records: externalRecords }: DecisionLogProps = {})
               )}
             </div>
           ) : (
-            <div className="px-4 py-8 text-xs text-muted-foreground text-center">
+            <div className="px-4 py-8 text-xs text-muted-foreground text-center leading-relaxed">
               暂无
               {activeTab === "all"
                 ? ""
                 : TABS.find((t) => t.key === activeTab)?.label}
-              记录
+              决策记录
+              {broadcastCount > 0 && (
+                <>
+                  <br />
+                  <span className="text-[10px] text-muted-foreground/70">
+                    （{broadcastCount} 条资金流广播信号请看「信号流」标签）
+                  </span>
+                </>
+              )}
             </div>
           )}
         </>
