@@ -8,7 +8,7 @@ import { useSocket } from "@/lib/socket";
 import { systemApi } from "@/lib/api";
 import { useToast } from "@/components/common/Toast";
 import { MonitorStartModal, StrategyPanel } from "@/components/monitor";
-import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel, DailyPickCard, MultiSignalDashboard } from "@/components/cockpit";
+import { StatusBar, SignalFeed, PositionPanel, DecisionLog, SignalRankingPanel, DailyPickCard, EntryTimingCard, MultiSignalDashboard } from "@/components/cockpit";
 import { usePositions } from "./hooks/useDashboard";
 import { useSignalPipeline } from "@/lib/hooks/useSignalPipeline";
 import { useSocketQuerySync } from "@/lib/hooks/useSocketQuerySync";
@@ -147,6 +147,11 @@ export default function CockpitPage() {
           loading={positionsLoading}
           realtimePrices={realtimePrices}
         />
+      </div>
+
+      {/* ═══ 入场择时（实验·只读）：强势股低吸择时绿灯，纯展示不下单 ═══ */}
+      <div className="mb-4 md:mb-5">
+        <EntryTimingCard onSelectStock={setSelectedStockCode} />
       </div>
 
       {/* ═══ 策略 / 监控概览（折叠，非即时） ═══ */}

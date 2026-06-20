@@ -5,4 +5,5 @@ export { PositionPanel } from "./PositionPanel";
 export { DecisionLog } from "./DecisionLog";
 export { SignalRankingPanel } from "./SignalRankingPanel";
 export { DailyPickCard } from "./DailyPickCard";
+export { EntryTimingCard } from "./EntryTimingCard";
 export { MultiSignalDashboard } from "./MultiSignalDashboard";
