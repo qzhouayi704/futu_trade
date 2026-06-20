@@ -26,7 +26,7 @@ export interface EntryTimingData {
   items: EntryTimingItem[];
 }
 
-/** 强势股入场择时绿灯（盘中 30s 轮询，抓回调更及时） */
+/** 强势股入场择时绿灯（盘中 15s 轮询，抓回调更及时） */
 export function useEntryTiming() {
   return useQuery<EntryTimingData | null>({
     queryKey: ["entryTiming"],
@@ -35,7 +35,7 @@ export function useEntryTiming() {
       const r: any = await apiClient.get("/entry-timing/watch");
       return r?.success && r.data ? (r.data as EntryTimingData) : null;
     },
-    staleTime: 15000,
-    refetchInterval: 30000,
+    staleTime: 7500,
+    refetchInterval: 15000,
   });
 }
