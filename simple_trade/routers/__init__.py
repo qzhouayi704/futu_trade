@@ -37,6 +37,7 @@ from .trading.position_order import router as position_order_router
 from .trading.advisor import router as advisor_router
 from .trading.trade_optimizer import router as trade_optimizer_router
 from .trading.pre_trade_check import router as pre_trade_check_router
+from .trading.entry_timing import router as entry_timing_router
 from .trading.trade_pattern import router as trade_pattern_router
 from .trading.ai_analysis import router as ai_analysis_router
 from .trading.sniper import router as sniper_router
@@ -92,6 +93,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(advisor_router)
     app.include_router(trade_optimizer_router)
     app.include_router(pre_trade_check_router)
+    app.include_router(entry_timing_router)
     app.include_router(trade_pattern_router)
     app.include_router(ai_analysis_router)
     app.include_router(sniper_router)
