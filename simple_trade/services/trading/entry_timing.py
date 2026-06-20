@@ -3,11 +3,12 @@
 """入场择时（实验·只读）——强势股低吸择时绿灯
 
 数据来源（2026-06 生产逐笔回测，见记忆 buy-timing-meanrev-2026-06）：
-- 在"近几日强势股"子集上，买"刚回调"(近5min为负) 后30min 市场相对收益 +0.30%/命中56%、
-  到60min +0.37%、4/4 天为正；而追"刚冲高"命中仅 46%、半数日为负，靠极少数强趋势日肥尾。
+- 股池 = **当日强势股**（今日已涨，现价/前收-1 靠前）——用户真正盯/交易的票。
+- 在当日强势股上，买"刚回调"(近5min为负) 后30min 市场相对收益 +0.13%/命中52%、低吸打败追高；
+  追"刚冲高"命中仅 47%/半数日为负。（近几日强势池更强 +0.30%/56%，两种池方向一致。）
 - 故最准的买入信号是**择时过滤器**（何时点买），不是选股器：
-  🟢 强势股 + 刚回调 + 回到日内中下位 + 主动买盘未过热 → 较优低吸点
-  🔴 强势股 + 刚冲高 + (单流过热 或 贴近日内高) → 别追（易买在局部顶）
+  🟢 当日强势 + 刚回调 + 回到日内中下位 + 主动买盘未过热 → 较优低吸点
+  🔴 当日强势 + 刚冲高 + (单流过热 或 贴近日内高) → 别追（易买在局部顶）
 
 **纯展示、绝不参与下单/评分/门控**。阈值取自回测分位，可调。
 """
@@ -22,9 +23,8 @@ logger = logging.getLogger("entry_timing")
 
 @dataclass(frozen=True)
 class EntryTimingThresholds:
-    sessions: int = 3            # 近 N 个交易日累计涨幅
-    pool_top_pct: float = 0.20   # 强势股池：当日活跃股按涨幅取前 X%
-    pool_min_gain: float = 0.05  # 且累计涨幅至少 +5%
+    today_min_gain: float = 0.03 # 当日强势：今日涨幅(现价/前收-1) 至少 +3%
+    pool_top_pct: float = 0.20   # 或取当日涨幅前 X%（两者取更高门槛）
     pool_max_n: int = 40         # 池上限
     dip_mom: float = -0.003      # mom5 <= -0.3% 视为"刚回调"
     spike_mom: float = 0.003     # mom5 >= +0.3% 视为"刚冲高"
@@ -87,37 +87,42 @@ class EntryTimingService:
             return False
 
     def strong_pool(self, trade_date: str) -> List[Tuple[str, float]]:
-        """当日有逐笔的活跃股中，近 N 日累计涨幅靠前者。返回 [(code, gain), ...] 按涨幅降序。"""
+        """当日强势股：今日已涨(现价/前收-1)靠前的活跃股。返回 [(code, today_gain), ...] 降序。"""
         th = self.th
-        active = self.db.execute_query(
-            "SELECT DISTINCT stock_code FROM ticker_data WHERE trade_date=?",
-            (trade_date,)) or []
-        codes = [r[0] for r in active]
-        if not codes:
-            return []
-        ph = ",".join("?" for _ in codes)
+        # 今日每只活跃股的最新价（= 当日 MAX(timestamp) 那笔成交价）
         rows = self.db.execute_query(
-            f"SELECT stock_code, substr(time_key,1,10) d, close_price FROM kline_data "
+            "SELECT t.stock_code, t.price FROM ticker_data t "
+            "JOIN (SELECT stock_code, MAX(timestamp) mx FROM ticker_data "
+            "      WHERE trade_date=? AND price>0 GROUP BY stock_code) m "
+            "  ON t.stock_code=m.stock_code AND t.timestamp=m.mx "
+            "WHERE t.trade_date=?",
+            (trade_date, trade_date)) or []
+        last = {r[0]: float(r[1]) for r in rows}
+        if not last:
+            return []
+        codes = list(last.keys())
+        ph = ",".join("?" for _ in codes)
+        # 今日前最近一个收盘价（前收）
+        krows = self.db.execute_query(
+            f"SELECT stock_code, close_price FROM kline_data "
             f"WHERE stock_code IN ({ph}) AND substr(time_key,1,10) < ? AND close_price>0 "
             f"ORDER BY stock_code, time_key",
             (*codes, trade_date)) or []
-        series: dict = {}
-        for code, _d, cl in rows:
-            series.setdefault(code, []).append(float(cl))
+        prevc: dict = {}
+        for code, cl in krows:
+            prevc[code] = float(cl)  # 升序遍历，最后一条即今日前最近收盘
         gains = []
-        for code, cl in series.items():
-            if len(cl) >= th.sessions + 1:
-                base = cl[-1 - th.sessions]
-                if base > 0:
-                    gains.append((code, cl[-1] / base - 1))
+        for code, lp in last.items():
+            pc = prevc.get(code)
+            if pc and pc > 0:
+                gains.append((code, lp / pc - 1))
         if not gains:
             return []
         gains.sort(key=lambda x: -x[1])
-        cut = th.pool_min_gain
+        cut = th.today_min_gain
         if len(gains) > 5:
             cut = max(cut, gains[int(th.pool_top_pct * len(gains))][1])
-        pool = [(c, g) for c, g in gains if g >= cut][:th.pool_max_n]
-        return pool
+        return [(c, g) for c, g in gains if g >= cut][:th.pool_max_n]
 
     def _names(self, codes: List[str]) -> dict:
         if not codes:
@@ -189,7 +194,7 @@ class EntryTimingService:
             items.append({
                 "stock_code": code,
                 "stock_name": names.get(code, code),
-                "gain_3d": round(gain * 100, 2),
+                "gain_today": round(gain * 100, 2),
                 "light": light,
                 "label": label,
                 "reason": reason,
@@ -200,6 +205,6 @@ class EntryTimingService:
                 "stale": feat["stale"],
             })
         order = {"green": 0, "red": 1, "neutral": 2}
-        items.sort(key=lambda x: (order.get(x["light"], 3), -x["gain_3d"]))
+        items.sort(key=lambda x: (order.get(x["light"], 3), -x["gain_today"]))
         return {"as_of": D, "market_open": market_open, "pool_size": len(pool),
                 "items": items, "experimental": True}

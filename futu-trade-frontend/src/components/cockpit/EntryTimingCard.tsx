@@ -28,7 +28,7 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
         <h3 className="text-sm font-bold text-foreground flex items-center gap-1.5">
           <span className="text-base">🎯</span>
           入场择时
-          <span className="text-[10px] font-normal text-sky-600 dark:text-sky-400">强势股·低吸择时</span>
+          <span className="text-[10px] font-normal text-sky-600 dark:text-sky-400">当日强势·低吸择时</span>
           <span className="text-[9px] px-1 py-px rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 font-bold">实验·只读</span>
         </h3>
         <span className="text-[10px] text-muted-foreground">
@@ -41,13 +41,13 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
           <div className="text-center text-sm text-muted-foreground py-4">扫描中...</div>
         ) : !data || data.pool_size === 0 ? (
           <div className="text-center text-[12px] text-muted-foreground py-5 leading-relaxed">
-            暂无强势股池
+            暂无当日强势股
             <br />
-            <span className="text-[10px] text-muted-foreground/60">(休市或当日无近几日涨幅靠前的活跃股)</span>
+            <span className="text-[10px] text-muted-foreground/60">(休市，或今日暂无明显领涨的活跃股)</span>
           </div>
         ) : !data.market_open ? (
           <div className="text-center text-[12px] text-muted-foreground py-5 leading-relaxed">
-            休市中 · 强势股池 {data.pool_size} 只已就绪
+            休市中 · 当日强势股 {data.pool_size} 只已就绪
             <br />
             <span className="text-[10px] text-muted-foreground/60">(开盘后实时点亮 🟢可低吸 / 🔴别追)</span>
           </div>
@@ -76,7 +76,7 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="text-[13px] font-semibold text-foreground truncate">{it.stock_name}</span>
                       <span className="text-[9px] px-1.5 py-px rounded-full bg-orange-500/15 text-orange-600 dark:text-orange-400 font-bold shrink-0">
-                        近3日+{it.gain_3d.toFixed(0)}%
+                        今日+{it.gain_today.toFixed(0)}%
                       </span>
                       <LightTag light={it.light} />
                     </div>
@@ -106,7 +106,7 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
         )}
         {/* 脚注：诚实边界 */}
         <div className="text-[10px] text-muted-foreground mt-2 pt-2 border-t border-border leading-relaxed">
-          实验功能·仅展示不下单。基于近几日强势股 + 逐笔回测："买刚回调、别追刚冲高"在强势股上前向收益/胜率最高。
+          实验功能·仅展示不下单。基于当日强势股(今日领涨) + 逐笔回测："买刚回调、别追刚冲高"在强势股上前向收益/胜率最高。
           边际薄(~0.1%/命中54%)、样本仅5天平静行情——当<b>择时过滤器</b>用(决定何时点买)，不是选股器，请自行判断。
         </div>
       </div>

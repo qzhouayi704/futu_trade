@@ -7,7 +7,7 @@ import apiClient from "@/lib/api/client";
 export interface EntryTimingItem {
   stock_code: string;
   stock_name: string;
-  gain_3d: number; // 近3日涨幅 %
+  gain_today: number; // 今日涨幅(现价/前收-1) %
   light: "green" | "red" | "neutral";
   label: string;
   reason: string;
