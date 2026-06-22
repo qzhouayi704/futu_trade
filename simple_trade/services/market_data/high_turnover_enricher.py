@@ -265,6 +265,27 @@ class HighTurnoverEnricher:
         except Exception as e:
             logger.debug(f"【HighTurnoverEnricher】strength 采集异常: {e}")
 
+    async def _held_codes(self) -> set:
+        """当前持仓股集合(120s 缓存)。供"卖出/风险类信号只推持仓股"过滤；失败保留上次，绝不抛。"""
+        import time as _t
+        now = _t.time()
+        if now - getattr(self, '_held_ts', 0) < 120:
+            return getattr(self, '_held_set', set())
+        codes = getattr(self, '_held_set', set())
+        try:
+            fts = getattr(self._container, 'futu_trade_service', None)
+            if fts:
+                loop = asyncio.get_running_loop()
+                res = await loop.run_in_executor(None, fts.get_positions)
+                if res and res.get('success'):
+                    codes = {p.get('stock_code', '') for p in res.get('positions', [])
+                             if p.get('stock_code') and (p.get('qty', 0) or 0) > 0}
+        except Exception as e:
+            logger.debug(f"获取持仓集合失败: {e}")
+        self._held_set = codes
+        self._held_ts = now
+        return codes
+
     async def _push_strength_signals(self, big_order_result: dict):
         """检测 strength 信号变化并通过企业微信推送
 
@@ -278,6 +299,7 @@ class HighTurnoverEnricher:
         wechat = getattr(self._container, 'wechat_alert_service', None)
         if not wechat or not wechat.enabled:
             return
+        held = await self._held_codes()
 
         for code, data in big_order_result.items():
             strength = data.get('order_strength', 0)
@@ -315,6 +337,9 @@ class HighTurnoverEnricher:
             self._prev_strength[code] = strength
 
             if signal:
+                # 卖出/风险类(主力转卖·卖出加速 = warning)只推持仓股；买入类(转买·买入加速)对全部推
+                if signal['level'] == 'warning' and code not in held:
+                    continue
                 content = (
                     f"- 股票：**{stock_name}** ({code})\n"
                     f"- 信号：**{signal['type']}**\n"
@@ -1176,10 +1201,16 @@ class HighTurnoverEnricher:
             }
         signal_state.high_turnover_cache.update_batch(cache_update)
 
+        # 拉高出货=卖出类警示：只推持仓股(缓存已对全部写入供前端，非持仓不微信打扰)
+        held = await self._held_codes()
+        signals = [s for s in signals if s['code'] in held]
+        if not signals:
+            return
+
         # 推送企业微信
         wechat = getattr(self._container, 'wechat_alert_service', None)
         if not wechat or not wechat.enabled:
-            logger.info(f"【出货检测】检测到 {len(signals)} 只信号但未配置企业微信")
+            logger.info(f"【出货检测】持仓命中 {len(signals)} 只但未配置企业微信")
             return
 
         lines = ["**💀 拉高出货预警：**\n"]
@@ -1337,10 +1368,16 @@ class HighTurnoverEnricher:
             }
         signal_state.high_turnover_cache.update_batch(cache_update)
 
+        # 接盘失败=风险警示：只推持仓股(缓存已对全部写入供前端，非持仓不微信打扰)
+        held = await self._held_codes()
+        signals = [s for s in signals if s['code'] in held]
+        if not signals:
+            return
+
         # 推送企业微信
         wechat = getattr(self._container, 'wechat_alert_service', None)
         if not wechat or not wechat.enabled:
-            logger.info(f"【接盘检测】检测到 {len(signals)} 只信号但未配置企业微信")
+            logger.info(f"【接盘检测】持仓命中 {len(signals)} 只但未配置企业微信")
             return
 
         lines = ["**🪤 接盘失败预警：**\n"]
