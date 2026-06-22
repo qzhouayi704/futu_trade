@@ -39,3 +39,47 @@ export function useEntryTiming() {
     refetchInterval: 15000,
   });
 }
+
+// 历史：某日全部 🟢/🔴 触发 + 每条事后走势（复盘 / 真实命中率）
+export interface EntryTimingHistoryItem {
+  time: string; // HH:MM 触发时刻
+  stock_code: string;
+  stock_name: string;
+  light: "green" | "red";
+  label: string;
+  reason: string;
+  trigger_price: number | null;
+  gain_today: number | null;
+  mom5: number | null;
+  ofi15: number | null;
+  pos_range: number | null;
+  ret_30m: number | null; // 触发后+30min 相对触发价 %
+  ret_last: number | null; // 至今/收盘 相对触发价 %
+  max_up: number | null; // 触发后最高 相对触发价 %
+  max_dn: number | null; // 触发后最低 相对触发价 %
+  last_price: number | null;
+}
+
+export interface EntryTimingHistoryData {
+  trade_date: string;
+  count: number;
+  green_count: number;
+  red_count: number;
+  experimental: boolean;
+  items: EntryTimingHistoryItem[];
+}
+
+/** 入场择时历史（某日全部信号 + 事后走势）；date 为空=今日 */
+export function useEntryTimingHistory(date?: string) {
+  return useQuery<EntryTimingHistoryData | null>({
+    queryKey: ["entryTimingHistory", date ?? "today"],
+    queryFn: async () => {
+      const qs = date ? `?date=${encodeURIComponent(date)}` : "";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r: any = await apiClient.get(`/entry-timing/history${qs}`);
+      return r?.success && r.data ? (r.data as EntryTimingHistoryData) : null;
+    },
+    staleTime: 30000,
+    refetchInterval: 60000,
+  });
+}

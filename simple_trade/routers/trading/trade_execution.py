@@ -482,7 +482,7 @@ async def get_positions_coach(container=Depends(get_container)):
     """
     try:
         from ...services.trading.discipline import (
-            analyze_discipline, build_coach, DisciplineThresholds,
+            analyze_discipline, build_coach, DisciplineThresholds, reconcile_stance,
         )
         trade_service = ensure_trade_service(container)
 
@@ -537,6 +537,11 @@ async def get_positions_coach(container=Depends(get_container)):
                         c["flow_warning"] = fw.get(c["stock_code"])
             except Exception:
                 pass
+
+            # 持仓主张：只用实时盘口承接判定(tape)。资金流 R2/R3/R10 的"逆高减/出货"前瞻
+            # 断语经 2026-06 回测证伪(次日无边际)，不再参与主张，仅作前端"参考·非预测"脚注。
+            for c in out:
+                c["stance"] = reconcile_stance(c.get("selloff"))
             return out, None
 
         data, err = await asyncio.to_thread(_compute)

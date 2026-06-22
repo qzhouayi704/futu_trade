@@ -260,6 +260,28 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning(f"IntradaySniper 启动失败: {e}")
 
+            # 启动入场择时信号录制（实验·只读）：周期性把 🟢/🔴 触发落库，供"全部信号"历史页复盘
+            try:
+                async def _entry_timing_recorder():
+                    await asyncio.sleep(100)  # 等逐笔/日线积累
+                    from datetime import datetime as _dt
+                    from .services.trading.entry_timing import EntryTimingService
+                    from .utils.market_helper import MarketTimeHelper
+                    svc = EntryTimingService(container.db_manager)
+                    while True:
+                        try:
+                            now = _dt.now()
+                            hhmm = now.strftime("%H:%M")
+                            if "09:25" <= hhmm <= "16:05" and MarketTimeHelper.is_trading_day('HK', now):
+                                svc.record()
+                        except Exception as e:
+                            logging.debug(f"入场择时录制异常: {e}")
+                        await asyncio.sleep(30)
+                _track(_entry_timing_recorder(), name="entry_timing_recorder")
+                logging.info("入场择时信号录制已注册（30s/轮，仅交易时段）")
+            except Exception as e:
+                logging.warning(f"入场择时录制启动失败: {e}")
+
             # 注入容器到 Ticker 推送处理器（使推送数据能驱动动量引擎）
             try:
                 container.futu_client.set_container_for_push(container)

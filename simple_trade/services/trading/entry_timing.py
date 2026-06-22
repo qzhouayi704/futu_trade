@@ -16,6 +16,7 @@
 import logging
 import time as _time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger("entry_timing")
@@ -207,4 +208,145 @@ class EntryTimingService:
         order = {"green": 0, "red": 1, "neutral": 2}
         items.sort(key=lambda x: (order.get(x["light"], 3), -x["gain_today"]))
         return {"as_of": D, "market_open": market_open, "pool_size": len(pool),
+                "items": items, "experimental": True}
+
+    # ==================== 持久化 + 历史（供"全部信号"回查 / 复盘真实命中率）====================
+
+    RECORD_COOLDOWN_MIN = 15   # 同股同灯 15min 内不重复落库
+
+    def _ensure_table(self):
+        """建表（幂等）。trade_date+time 为 HK 口径；落 🟢/🔴 的触发快照。"""
+        self.db.execute_update("""
+            CREATE TABLE IF NOT EXISTS entry_timing_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date TEXT NOT NULL,
+                time TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT,
+                light TEXT NOT NULL,
+                label TEXT,
+                reason TEXT,
+                last_price REAL,
+                gain_today REAL,
+                mom5 REAL,
+                ofi15 REAL,
+                pos_range REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.db.execute_update(
+            "CREATE INDEX IF NOT EXISTS idx_ets_date_code_light "
+            "ON entry_timing_signals(trade_date, stock_code, light)"
+        )
+
+    @staticmethod
+    def _min_gap(t1: str, t2: str) -> int:
+        """两个 HH:MM 的分钟差（t2-t1）。"""
+        try:
+            return (int(t2[:2]) * 60 + int(t2[3:5])) - (int(t1[:2]) * 60 + int(t1[3:5]))
+        except Exception:
+            return 999
+
+    @staticmethod
+    def _add_min(hhmm: str, mins: int) -> str:
+        total = int(hhmm[:2]) * 60 + int(hhmm[3:5]) + mins
+        total = max(0, min(total, 23 * 60 + 59))
+        return f"{total // 60:02d}:{total % 60:02d}"
+
+    def record(self, result: Optional[dict] = None) -> int:
+        """把 watch() 里的 🟢/🔴 触发落库（同股同灯 15min 内去重）。返回新写入条数。
+
+        失败绝不抛出（实验功能不能影响主流程）。result 为空时自行 watch()。
+        """
+        try:
+            result = result or self.watch()
+            items = [it for it in result.get("items", [])
+                     if it.get("light") in ("green", "red") and not it.get("stale")]
+            if not items:
+                return 0
+            self._ensure_table()
+            D = result.get("as_of") or self._hk_today()
+            now_hm = datetime.now().strftime("%H:%M")  # 服务器=CST=HK
+            written = 0
+            for it in items:
+                code, light = it.get("stock_code"), it.get("light")
+                if not code:
+                    continue
+                last = self.db.execute_query(
+                    "SELECT time FROM entry_timing_signals "
+                    "WHERE trade_date=? AND stock_code=? AND light=? ORDER BY id DESC LIMIT 1",
+                    (D, code, light))
+                if last and last[0][0] and self._min_gap(last[0][0], now_hm) < self.RECORD_COOLDOWN_MIN:
+                    continue
+                self.db.execute_insert(
+                    "INSERT INTO entry_timing_signals "
+                    "(trade_date, time, stock_code, stock_name, light, label, reason, "
+                    " last_price, gain_today, mom5, ofi15, pos_range) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (D, now_hm, code, it.get("stock_name"), light, it.get("label"),
+                     it.get("reason"), it.get("last_price"), it.get("gain_today"),
+                     it.get("mom5"), it.get("ofi15"), it.get("pos_range")))
+                written += 1
+            if written:
+                logger.info("入场择时已落库 %d 条 (%s)", written, D)
+            return written
+        except Exception as e:  # noqa: BLE001
+            logger.debug("入场择时落库失败: %s", e)
+            return 0
+
+    def _minute_prices(self, code: str, D: str) -> dict:
+        """该股当日分钟均价 {HH:MM: price}（算触发后的事后涨跌）。"""
+        rows = self.db.execute_query(
+            "SELECT substr(datetime(timestamp/1000,'unixepoch','+8 hours'),12,5) m, AVG(price) ap "
+            "FROM ticker_data WHERE stock_code=? AND trade_date=? AND price>0 GROUP BY m",
+            (code, D)) or []
+        return {m: float(p) for m, p in rows if p and float(p) > 0}
+
+    def _outcome(self, code: str, D: str, t0: str, trig: Optional[float]) -> dict:
+        """触发后的事后走势：+30min / 收盘(或至今) / 触发后最高最低 相对触发价的%。"""
+        if not trig or trig <= 0:
+            return {}
+        mp = self._minute_prices(code, D)
+        if not mp:
+            return {}
+        after = {m: p for m, p in mp.items() if m > t0}
+        pct = lambda p: round((p / trig - 1) * 100, 2) if p else None
+
+        def at_after(mins: int):
+            base = self._add_min(t0, mins)
+            cand = sorted(m for m in mp if m >= base)
+            return mp[cand[0]] if cand else None
+
+        last_p = mp[max(mp)]
+        return {
+            "ret_30m": pct(at_after(30)),
+            "ret_last": pct(last_p),       # 至今/收盘
+            "max_up": pct(max(after.values())) if after else 0.0,
+            "max_dn": pct(min(after.values())) if after else 0.0,
+            "last_price": round(last_p, 3),
+        }
+
+    def history(self, trade_date: Optional[str] = None) -> dict:
+        """某日全部入场择时 🟢/🔴 信号 + 每条的事后走势（供复盘/真实命中率）。"""
+        D = trade_date or self._hk_today()
+        self._ensure_table()
+        rows = self.db.execute_query(
+            "SELECT time, stock_code, stock_name, light, label, reason, last_price, "
+            "       gain_today, mom5, ofi15, pos_range "
+            "FROM entry_timing_signals WHERE trade_date=? ORDER BY id DESC",
+            (D,)) or []
+        items = []
+        for r in rows:
+            t, code, name, light, label, reason, lp = r[0], r[1], r[2], r[3], r[4], r[5], r[6]
+            oc = self._outcome(code, D, t, float(lp) if lp else None)
+            items.append({
+                "time": t, "stock_code": code, "stock_name": name, "light": light,
+                "label": label, "reason": reason, "trigger_price": lp,
+                "gain_today": r[7], "mom5": r[8], "ofi15": r[9], "pos_range": r[10],
+                **oc,
+            })
+        greens = sum(1 for it in items if it["light"] == "green")
+        reds = sum(1 for it in items if it["light"] == "red")
+        return {"trade_date": D, "count": len(items),
+                "green_count": greens, "red_count": reds,
                 "items": items, "experimental": True}

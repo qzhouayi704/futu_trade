@@ -4,6 +4,7 @@
 
 "use client";
 
+import Link from "next/link";
 import { useEntryTiming, type EntryTimingItem } from "@/app/hooks/useEntryTiming";
 
 function LightTag({ light }: { light: EntryTimingItem["light"] }) {
@@ -31,9 +32,14 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
           <span className="text-[10px] font-normal text-sky-600 dark:text-sky-400">当日强势·低吸择时</span>
           <span className="text-[9px] px-1 py-px rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 font-bold">实验·只读</span>
         </h3>
-        <span className="text-[10px] text-muted-foreground">
-          {data ? `强势股${data.pool_size}只 · ${greens.length}🟢/${reds.length}🔴` : ""}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-muted-foreground">
+            {data ? `强势股${data.pool_size}只 · ${greens.length}🟢/${reds.length}🔴` : ""}
+          </span>
+          <Link href="/entry-timing" className="text-[10px] text-sky-600 dark:text-sky-400 hover:underline shrink-0">
+            历史 →
+          </Link>
+        </div>
       </div>
 
       <div className="p-3">

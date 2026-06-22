@@ -87,11 +87,17 @@ class SniperSignal:
 
     def to_wechat_text(self) -> str:
         strength_line = f"\n- 强度：**{self.strength_label}** ({self.strength}/100)" if self.strength > 0 else ""
+        # 分层提示(脉冲/急涨别碰)：mega_buy 的 tier/posture 是 6 天验证最稳健的单因子，必须
+        # 推给用户——避免"贴顶的弱抢筹"被当成单纯买点去接盘(中芯国际 06-22 即此坑)。
+        posture_line = ""
+        if self.posture:
+            tier_icon = {"reference": "🔴", "pulse": "🟡", "opportunity": "🟢"}.get(self.tier, "")
+            posture_line = f"\n- 分层：{tier_icon}{self.posture}"
         return (
             f"**{self.emoji} {self.stock_name}({self.stock_code})**\n"
             f"- 价格：**{self.price:.3f}**{strength_line}\n"
             f"- 信号：{self.detail}\n"
-            f"- 建议：{self.action}"
+            f"- 建议：{self.action}{posture_line}"
         )
 
 

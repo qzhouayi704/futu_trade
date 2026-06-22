@@ -7,6 +7,7 @@
 """
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 
@@ -36,3 +37,24 @@ async def get_entry_timing_watch(container=Depends(get_container)):
     except Exception as e:  # noqa: BLE001
         logger.exception("entry-timing watch failed")
         return APIResponse(success=False, data=None, message=f"计算失败: {e}")
+
+
+@router.get("/history", response_model=APIResponse)
+async def get_entry_timing_history(date: Optional[str] = None, container=Depends(get_container)):
+    """某日全部入场择时 🟢/🔴 信号 + 每条事后走势（+30min / 至今收盘 / 最高最低）。
+
+    供复盘与统计真实命中率。date=YYYY-MM-DD，默认今日（HK 口径）。只读。
+    """
+    db = getattr(container, "db_manager", None)
+    if not db:
+        return APIResponse(success=False, data=None, message="数据库不可用")
+    try:
+        from ...services.trading.entry_timing import EntryTimingService
+        data = EntryTimingService(db).history(date)
+        return APIResponse(
+            success=True, data=data,
+            message=f"{data['trade_date']} 共 {data['count']} 条"
+                    f"（{data['green_count']}🟢/{data['red_count']}🔴）")
+    except Exception as e:  # noqa: BLE001
+        logger.exception("entry-timing history failed")
+        return APIResponse(success=False, data=None, message=f"查询失败: {e}")

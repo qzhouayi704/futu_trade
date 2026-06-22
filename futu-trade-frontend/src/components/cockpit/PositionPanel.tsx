@@ -19,6 +19,8 @@ interface CoachInfo {
   blunt: string;
   selloff: { verdict: string; reason: string } | null;
   flow_warning?: string | null;   // 已验证有边际的逆高减/出货警示(R10/R3/R2)
+  // 收口：把"洗盘别割"(微观承接)与"逆高减/出货"(有边际·偏收盘)仲裁成单一主张
+  stance?: { primary: string; note: string; level: string; tone: string } | null;
   hold_recommendation: { label: string; detail: string; activate_pct: number; pullback_pct: number };
 }
 
@@ -64,6 +66,26 @@ function getAdvice(mode: ExitMode, plPct: number, curPrice: number, peakPrice: n
   if (plPct >= 0) return { icon: "🟢", text: "持有等冲高;临近收盘没冲高就了结" };
   return { icon: "⚪", text: "持有;跌破 −5% 止损" };
 }
+
+// 收口主张的配色（按 tone）。chip=胶囊标签，box=说明框。
+const STANCE_TONE: Record<string, { chip: string; box: string; icon: string }> = {
+  danger: {
+    chip: "bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400",
+    box: "text-red-600 dark:text-red-400 bg-red-50/70 dark:bg-red-950/30",
+    icon: "🔴",
+  },
+  caution: {
+    chip: "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400",
+    box: "text-amber-700 dark:text-amber-400 bg-amber-50/70 dark:bg-amber-950/30",
+    icon: "⚠️",
+  },
+  ok: {
+    chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400",
+    box: "text-emerald-700 dark:text-emerald-400 bg-emerald-50/70 dark:bg-emerald-950/30",
+    icon: "🟢",
+  },
+};
+const stanceTone = (t?: string) => STANCE_TONE[t || ""] || STANCE_TONE.caution;
 
 const MODE_KEY = "positionExitModes";
 
@@ -236,7 +258,7 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                     if (!coach) return null;
                     const so = coach.selloff;
                     const drift = coach.cost_drift_pct ?? 0;
-                    const showStrip = coach.churn || drift > 0 || !!so;
+                    const showStrip = coach.churn || drift > 0 || !!so || !!coach.stance;
                     return (
                       <>
                         {showStrip && (
@@ -251,15 +273,24 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                                 成本买高+{drift.toFixed(1)}%
                               </span>
                             )}
-                            {so?.verdict === "shakeout" && (
-                              <span className="text-[9px] px-1.5 py-px rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400">
-                                🟢 洗盘·别割
+                            {/* 收口主张优先：有 stance 时只显示单一胶囊，不再并列绿/红对立标签 */}
+                            {coach.stance ? (
+                              <span className={`text-[9px] px-1.5 py-px rounded-full font-medium ${stanceTone(coach.stance.tone).chip}`}>
+                                {stanceTone(coach.stance.tone).icon} {coach.stance.primary}
                               </span>
-                            )}
-                            {so?.verdict === "distribution" && (
-                              <span className="text-[9px] px-1.5 py-px rounded-full bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400">
-                                🔴 出货·该走
-                              </span>
+                            ) : (
+                              <>
+                                {so?.verdict === "shakeout" && (
+                                  <span className="text-[9px] px-1.5 py-px rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400">
+                                    🟢 洗盘·别割
+                                  </span>
+                                )}
+                                {so?.verdict === "distribution" && (
+                                  <span className="text-[9px] px-1.5 py-px rounded-full bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400">
+                                    🔴 出货·该走
+                                  </span>
+                                )}
+                              </>
                             )}
                             <span className="text-[9px] px-1.5 py-px rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
                               🏦 {coach.hold_recommendation.activate_pct}%/{coach.hold_recommendation.pullback_pct}%
@@ -271,9 +302,16 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                             {coach.blunt}
                           </div>
                         )}
+                        {/* 主张说明框：只用实时盘口承接判定(tape)，不含被回测证伪的资金流前瞻断语 */}
+                        {coach.stance && (
+                          <div className={`mt-1 text-[10px] rounded px-1.5 py-1 leading-snug ${stanceTone(coach.stance.tone).box}`}>
+                            {coach.stance.note}
+                          </div>
+                        )}
+                        {/* 资金流 R2/R3/R10：次日预测经 2026-06 回测证伪，降级为灰色"参考·非预测"脚注，不再当卖出警示 */}
                         {coach.flow_warning && (
-                          <div className="mt-1 text-[10px] text-rose-600 dark:text-rose-400 bg-rose-50/70 dark:bg-rose-950/30 rounded px-1.5 py-1 leading-snug">
-                            ⚠️ 逆高减/出货警示(有边际)：{coach.flow_warning}
+                          <div className="mt-1 text-[10px] text-gray-400 dark:text-gray-500 leading-snug">
+                            资金流参考(非预测)：{coach.flow_warning}
                           </div>
                         )}
                       </>

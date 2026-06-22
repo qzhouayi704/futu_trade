@@ -82,3 +82,31 @@ def build_coach(position: dict, disc: dict,
         "blunt": blunt,
         "advice": advice,
     }
+
+
+def reconcile_stance(selloff: Optional[dict]) -> Optional[dict]:
+    """由盘口洗盘/出货判定(tape 微观承接)给出单一持仓主张，供前端只显示一句。
+
+    历史背景：原本还并入资金流规则 R2/R3/R10 的"逆高减/出货警示"作为前瞻断语，但
+    2026-06 回测证伪了它们的"次日预测"边际——逐日符号检验≈掷硬币(19 个尾盘信号日仅
+    8 天次日跑输市场)，唯一的正向均值是 N=72 里几个 +30% 肥尾撑出来的。故**不再让这些
+    前瞻断语参与主张**，避免把噪音当 edge；资金流口径仅作前端的"参考·非预测"脚注另显。
+    主张只用实时口径站得住的 tape 承接判定。
+
+    返回 {primary, note, level, tone} 或 None(无判定)。
+    level ∈ {reduce(减/止损), hold(别恐慌)}。
+    """
+    verdict = (selloff or {}).get("verdict")
+    if verdict == "shakeout":
+        return {
+            "primary": "别恐慌割(回踩有承接)",
+            "note": "微观低点有买盘承接、未触发巨量砸盘，别被甩下车",
+            "level": "hold", "tone": "ok",
+        }
+    if verdict == "distribution":
+        return {
+            "primary": "回踩缺承接，减仓",
+            "note": "放量下跌且缺承接，更像真出货，减/止损合理",
+            "level": "reduce", "tone": "danger",
+        }
+    return None
