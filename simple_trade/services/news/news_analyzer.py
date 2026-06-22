@@ -107,9 +107,14 @@ class NewsAnalyzer:
         self.normalizer = PlateNormalizer()
         self.gemini_analyzer: Optional[GeminiNewsAnalyzer] = None
 
-        # 初始化 Gemini 分析器
-        if config and config.get('gemini', {}).get('enabled', False):
-            gemini_config = config['gemini']
+        # 官方 Claude 客户端（优先引擎）；新闻分类轻量，effort=low、关思考省成本/延迟。
+        from ..llm import build_claude_client_from_env
+        claude_client = build_claude_client_from_env(effort="low", thinking=False)
+
+        # 初始化新闻分析器：Claude 或 Gemini 任一可用即启用
+        gemini_config = (config or {}).get('gemini', {})
+        gemini_enabled = gemini_config.get('enabled', False)
+        if claude_client is not None or gemini_enabled:
             try:
                 self.gemini_analyzer = GeminiNewsAnalyzer(
                     api_key=gemini_config.get('api_key', ''),
@@ -118,14 +123,16 @@ class NewsAnalyzer:
                     vertexai=gemini_config.get('vertexai', False),
                     project=gemini_config.get('project', ''),
                     location=gemini_config.get('location', ''),
+                    claude_client=claude_client,
                 )
                 if self.gemini_analyzer.is_available():
-                    self.logger.info("Gemini 分析器已启用")
+                    _engine = "Claude" if (claude_client and claude_client.is_available()) else "Gemini"
+                    self.logger.info(f"新闻分析器已启用 (引擎: {_engine})")
                 else:
-                    self.logger.warning("Gemini 分析器初始化失败，将使用关键词分析")
+                    self.logger.warning("新闻分析器初始化失败，将使用关键词分析")
                     self.gemini_analyzer = None
             except Exception as e:
-                self.logger.error(f"初始化 Gemini 分析器失败: {e}")
+                self.logger.error(f"初始化新闻分析器失败: {e}")
                 self.gemini_analyzer = None
 
     async def analyze(self, title: str, content: str = "") -> AnalysisResult:

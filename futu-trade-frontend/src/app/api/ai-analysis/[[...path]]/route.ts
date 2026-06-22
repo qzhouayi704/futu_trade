@@ -23,7 +23,7 @@ async function handleRequest(
       body = await request.text();
     }
 
-    // AI 分析需要较长超时（Gemini 响应可能较慢）
+    // AI 分析需要较长超时（大模型响应可能较慢）
     const flaskResponse = await proxyToFlask(apiPath, {
       method: request.method,
       body,

@@ -376,7 +376,13 @@ class BusinessServices:
         gemini_analyst = None
         gemini_cfg = self.core.config.gemini
         analyst_cfg = self.core.config.gemini_analyst
-        if analyst_cfg.get('enabled') and gemini_cfg.get('api_key'):
+
+        # 官方 Claude 客户端（优先引擎）；持仓顾问后台运行，effort=medium。
+        from ...services.llm import build_claude_client_from_env
+        claude_client = build_claude_client_from_env(effort="medium", thinking=True)
+
+        # Claude 或 Gemini 任一可用即初始化分析师（需 analyst 开关打开以构建技术服务）。
+        if analyst_cfg.get('enabled') and (gemini_cfg.get('api_key') or claude_client is not None):
             from ...services.market_data.vwap_service import VWAPService
             from ...services.market_data.order_book.order_book_service import OrderBookService
             from ...services.market_data.technical_service import TechnicalService
@@ -396,14 +402,16 @@ class BusinessServices:
                 big_order_tracker=self.big_order_tracker,
             )
             gemini_analyst = GeminiAnalyst(
-                api_key=gemini_cfg['api_key'],
+                api_key=gemini_cfg.get('api_key', ''),
                 model=gemini_cfg.get('model', 'gemini-3-flash-preview'),
                 technical_service=tech_svc,
                 config=analyst_cfg,
                 proxy=gemini_cfg.get('proxy'),
                 claude_config=self.core.config.claude,
+                claude_client=claude_client,
             )
-            logging.info("AI 量化分析师初始化完成")
+            _engine = claude_client.model if claude_client else gemini_cfg.get('model')
+            logging.info(f"AI 量化分析师初始化完成 (引擎: {_engine})")
 
         return DecisionAdvisor(
             health_evaluator=health_evaluator,
@@ -509,6 +517,12 @@ class BusinessServices:
             try:
                 import os
                 from ...services.advisor.analyst.stock_ai_analyzer import StockAIAnalyzer
+                from ...services.llm import build_claude_client_from_env
+
+                # Claude 客户端（官方 SDK，读 ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL）。
+                # 配置则优先用 Claude；未配置返回 None，自动回退 Gemini。
+                # 交互式个股分析对延迟敏感 → effort=medium。
+                claude_client = build_claude_client_from_env(effort="medium", thinking=True)
 
                 # 优先读取 Vertex AI 环境变量
                 project = os.environ.get('VERTEX_AI_PROJECT', '')
@@ -520,6 +534,7 @@ class BusinessServices:
                 api_key = gemini_cfg.get('api_key', '')
                 proxy = gemini_cfg.get('proxy', '')
 
+                _engine = (claude_client.model if claude_client else None)
                 if project:
                     self._stock_ai_analyzer = StockAIAnalyzer(
                         model=model,
@@ -527,17 +542,26 @@ class BusinessServices:
                         location=location,
                         credentials_path=credentials,
                         proxy=proxy,
+                        claude_client=claude_client,
                     )
-                    logging.info(f"AI 股票分析器懒加载完成 (Vertex AI, 模型: {model})")
+                    logging.info(
+                        f"AI 股票分析器懒加载完成 (引擎: {_engine or model}, "
+                        f"Gemini 回退: Vertex AI {model})"
+                    )
                 elif api_key:
                     self._stock_ai_analyzer = StockAIAnalyzer(
                         model=gemini_cfg.get('model', model),
                         api_key=api_key,
                         proxy=proxy,
+                        claude_client=claude_client,
                     )
-                    logging.info("AI 股票分析器懒加载完成 (API Key)")
+                    logging.info(f"AI 股票分析器懒加载完成 (引擎: {_engine or 'Gemini API Key'})")
+                elif claude_client:
+                    # 仅 Claude（无 Gemini 凭证）
+                    self._stock_ai_analyzer = StockAIAnalyzer(claude_client=claude_client)
+                    logging.info(f"AI 股票分析器懒加载完成 (引擎: {_engine}, 无 Gemini 回退)")
                 else:
-                    logging.warning("AI 股票分析器跳过：未配置 Vertex AI 或 API Key")
+                    logging.warning("AI 股票分析器跳过：未配置 Claude / Vertex AI / API Key")
             except Exception as e:
                 logging.warning(f"AI 股票分析器初始化失败: {e}")
         return self._stock_ai_analyzer

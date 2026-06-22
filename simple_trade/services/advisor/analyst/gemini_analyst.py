@@ -39,6 +39,36 @@ HK_LUNCH_END_HOUR = 13
 HK_MARKET_CLOSE_HOUR = 16
 
 
+# 持仓顾问 Claude 结构化输出 schema（对应 analyst_prompt 的 Output Format）。
+# 可空字段用 anyOf+null；结构化输出不支持数值范围约束。
+ADVISOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "catalyst_impact": {"type": "string", "enum": ["Bullish", "Bearish", "Neutral"]},
+        "smart_money_alignment": {
+            "type": "string", "enum": ["Confirming", "Diverging", "Unclear"]},
+        "is_priced_in": {"type": "boolean"},
+        "alpha_signal_score": {"type": "number"},
+        "suggested_action": {
+            "type": "string",
+            "enum": ["STRONG_BUY", "BUY", "HOLD", "REDUCE", "SELL", "STRONG_SELL", "WAIT"]},
+        "confidence": {"type": "number"},
+        "target_price": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "stop_loss_price": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "risk_warning": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "rationale": {"type": "string"},
+        "position_action_rationale": {"type": "string"},
+        "key_factors": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "catalyst_impact", "smart_money_alignment", "is_priced_in", "alpha_signal_score",
+        "suggested_action", "confidence", "target_price", "stop_loss_price",
+        "risk_warning", "rationale", "position_action_rationale", "key_factors",
+    ],
+    "additionalProperties": False,
+}
+
+
 class GeminiAnalyst:
     """Gemini 量化分析师"""
 
@@ -50,12 +80,16 @@ class GeminiAnalyst:
         config: Optional[dict] = None,
         proxy: Optional[str] = None,
         claude_config: Optional[dict] = None,
+        claude_client=None,
     ):
         self.api_key = api_key
         self.model_name = model
         self.client = None
         self._technical = technical_service
         self._config = config or {}
+
+        # 官方 anthropic SDK 客户端（优先）：结构化输出+缓存+思考，替代下方 urllib shim。
+        self._claude = claude_client
 
         # Claude 配置（优先使用）
         self._claude_config = claude_config
@@ -89,6 +123,8 @@ class GeminiAnalyst:
 
     def is_available(self) -> bool:
         """检查服务是否可用"""
+        if self._claude is not None and self._claude.is_available():
+            return True
         if self._use_claude:
             return True
         return GEMINI_AVAILABLE and self.client is not None
@@ -155,18 +191,29 @@ class GeminiAnalyst:
             # 6. 构建 Prompt
             prompt = AnalystPromptBuilder.build_prompt(input_data)
 
-            # 7. 调用 AI API（优先 Claude）
-            if self._use_claude:
-                response = await self._call_claude(prompt)
+            # 7. 调用 AI（优先官方 Claude 客户端 > 旧 Claude shim > Gemini）
+            if self._claude is not None and self._claude.is_available():
+                data = await self._claude.analyze(
+                    system_prompt=SYSTEM_PROMPT,
+                    user_content=prompt,
+                    schema=ADVISOR_SCHEMA,
+                    label=trigger.stock_code,
+                    max_tokens=2048,
+                )
+                output = self._build_output(
+                    data, trigger.stock_code, trigger.stock_name
+                ) if data else None
             else:
-                response = await self._call_gemini(prompt)
-            if not response:
-                return None
-
-            # 8. 解析响应
-            output = self._parse_response(
-                response, trigger.stock_code, trigger.stock_name
-            )
+                if self._use_claude:
+                    response = await self._call_claude(prompt)
+                else:
+                    response = await self._call_gemini(prompt)
+                if not response:
+                    return None
+                # 8. 解析响应
+                output = self._parse_response(
+                    response, trigger.stock_code, trigger.stock_name
+                )
 
             # 9. 缓存结果 + 标记冷却
             if output:
@@ -298,47 +345,64 @@ class GeminiAnalyst:
                 logger.error(f"调用 Claude API 异常: {e}")
                 return None
 
-    def _parse_response(
-        self, response: str, stock_code: str, stock_name: str
+    def _build_output(
+        self, data: Optional[Dict], stock_code: str, stock_name: str
     ) -> Optional[AnalystOutput]:
-        """解析 Gemini 响应"""
+        """从结构化 dict 构建 AnalystOutput（Claude/Gemini 通用）。"""
+        if not data:
+            return None
         try:
-            # 提取 JSON
-            json_str = response
-            if "```json" in response:
-                json_str = response.split("```json")[1].split("```")[0].strip()
-            elif "```" in response:
-                json_str = response.split("```")[1].split("```")[0].strip()
-
-            data = json.loads(json_str)
-
-            # 映射 action
             action_str = data.get('suggested_action', 'WAIT')
             try:
                 action = AnalystAction(action_str)
             except ValueError:
                 action = AnalystAction.WAIT
 
+            def _f(v, default=0.0):
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return default
+
+            key_factors = data.get('key_factors') or []
+            if not isinstance(key_factors, list):
+                key_factors = []
+
             return AnalystOutput(
                 stock_code=stock_code,
                 stock_name=stock_name,
                 catalyst_impact=data.get('catalyst_impact', 'Neutral'),
                 smart_money_alignment=data.get('smart_money_alignment', 'Unclear'),
-                is_priced_in=data.get('is_priced_in', False),
-                alpha_signal_score=float(data.get('alpha_signal_score', 0)),
+                is_priced_in=bool(data.get('is_priced_in', False)),
+                alpha_signal_score=_f(data.get('alpha_signal_score', 0)),
                 action=action,
-                confidence=float(data.get('confidence', 0)),
+                confidence=_f(data.get('confidence', 0)),
                 reasoning=data.get('rationale', ''),
-                key_factors=data.get('key_factors', []),
+                key_factors=key_factors,
                 risk_warning=data.get('risk_warning'),
                 target_price=data.get('target_price'),
                 stop_loss_price=data.get('stop_loss_price'),
                 time_horizon="INTRADAY",
             )
+        except Exception as e:
+            logger.error(f"构建 AnalystOutput 失败: {e}, data={str(data)[:200]}")
+            return None
 
+    def _parse_response(
+        self, response: str, stock_code: str, stock_name: str
+    ) -> Optional[AnalystOutput]:
+        """解析 Gemini 文本响应（剥 markdown 取 JSON）后构建输出。"""
+        try:
+            json_str = response
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].split("```")[0].strip()
+            data = json.loads(json_str)
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(f"解析 Gemini 响应失败: {e}, response={response[:200]}")
             return None
+        return self._build_output(data, stock_code, stock_name)
 
     def _build_market_context(self, market_data: Optional[Dict] = None) -> MarketContext:
         """构建市场上下文"""

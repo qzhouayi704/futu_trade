@@ -8,6 +8,7 @@ python-dotenv
 requests
 aiohttp
 google-genai
+anthropic>=0.49
 futu-api
 psutil
 aiosqlite

@@ -82,6 +82,31 @@ STOCK_AI_SYSTEM_PROMPT = """# 角色定义
 """
 
 
+# Claude 结构化输出 schema（output_config.format）：强约束返回结构，消除手工 JSON 解析。
+# 注：结构化输出不支持数值/字符串约束(min/max/maxLength)；可空字段用 anyOf+null。
+STOCK_ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["STRONG_BUY", "BUY", "HOLD", "REDUCE", "SELL", "STRONG_SELL"],
+        },
+        "confidence": {"type": "integer"},
+        "reasoning": {"type": "string"},
+        "key_factors": {"type": "array", "items": {"type": "string"}},
+        "risk_warning": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "target_price": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "stop_loss_price": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "score_assessment": {"type": "string"},
+        "time_horizon": {"type": "string"},
+    },
+    "required": [
+        "action", "confidence", "reasoning", "key_factors", "risk_warning",
+        "target_price", "stop_loss_price", "score_assessment", "time_horizon",
+    ],
+    "additionalProperties": False,
+}
+
 
 class StockAIAnalyzer:
     """独立的 AI 股票分析器
@@ -94,9 +119,12 @@ class StockAIAnalyzer:
     def __init__(self, model: str = "gemini-3.1-pro-preview",
                  project: str = "", location: str = "global",
                  credentials_path: str = "",
-                 api_key: str = "", proxy: Optional[str] = None):
+                 api_key: str = "", proxy: Optional[str] = None,
+                 claude_client=None):
         self.model_name = model
         self.client = None
+        # Claude 优先（官方 SDK：结构化输出+prompt缓存+自适应思考）；未配置时回退 Gemini。
+        self._claude = claude_client
 
         if not GEMINI_AVAILABLE:
             logger.warning("google-genai SDK 未安装，AI 分析不可用")
@@ -132,6 +160,8 @@ class StockAIAnalyzer:
         self._cache_ttl = 300
 
     def is_available(self) -> bool:
+        if self._claude is not None and self._claude.is_available():
+            return True
         return GEMINI_AVAILABLE and self.client is not None
 
     async def analyze_stock(
@@ -176,7 +206,9 @@ class StockAIAnalyzer:
 
         import time
         start_time = time.time()
-        logger.info(f"[AI分析] 开始分析 {stock_code} ({stock_name})，模型: {self.model_name}")
+        _use_claude = self._claude is not None and self._claude.is_available()
+        engine = self._claude.model if _use_claude else self.model_name
+        logger.info(f"[AI分析] 开始分析 {stock_code} ({stock_name})，引擎: {engine}")
 
         try:
             # 构建分析 Prompt
@@ -188,16 +220,25 @@ class StockAIAnalyzer:
             )
             logger.info(f"[AI分析] {stock_code} Prompt 构建完成，长度: {len(prompt)} 字符，K线: {len(klines) if klines else 0} 条")
 
-            # 调用 Gemini
-            response = await self._call_gemini(prompt)
-            if not response:
-                logger.error(f"[AI分析] {stock_code} Gemini 返回空响应")
-                return {'success': False, 'error': 'AI 分析请求失败'}
-
-            logger.info(f"[AI分析] {stock_code} Gemini 响应长度: {len(response)} 字符")
-
-            # 解析结果
-            result = self._parse_response(response, stock_code, stock_name)
+            # 优先 Claude（官方 SDK：结构化输出免手工解析；静态 system+规则库走 prompt 缓存）
+            if _use_claude:
+                data = await self._claude.analyze(
+                    system_prompt=STOCK_AI_SYSTEM_PROMPT,
+                    cached_context=TRADING_RULES_KNOWLEDGE,
+                    user_content=prompt,
+                    schema=STOCK_ANALYSIS_SCHEMA,
+                    label=stock_code,
+                    max_tokens=4096,
+                )
+                result = self._normalize_result(data, stock_code, stock_name) if data else None
+            else:
+                # 回退 Gemini（文本响应 + 手工剥 JSON）
+                response = await self._call_gemini(prompt)
+                if not response:
+                    logger.error(f"[AI分析] {stock_code} Gemini 返回空响应")
+                    return {'success': False, 'error': 'AI 分析请求失败'}
+                logger.info(f"[AI分析] {stock_code} Gemini 响应长度: {len(response)} 字符")
+                result = self._parse_response(response, stock_code, stock_name)
             elapsed = time.time() - start_time
             if result:
                 self._cache[stock_code] = {
@@ -698,20 +739,13 @@ class StockAIAnalyzer:
                 logger.error(f"调用 Gemini API 失败: {e}")
                 return None
 
-    def _parse_response(
-        self, response: str, stock_code: str, stock_name: str
+    def _normalize_result(
+        self, data: Optional[Dict[str, Any]], stock_code: str, stock_name: str
     ) -> Optional[Dict[str, Any]]:
-        """解析 Gemini 响应"""
+        """标准化结构化结果（Claude 结构化输出 / Gemini 解析后通用）。"""
+        if not data:
+            return None
         try:
-            json_str = response
-            if "```json" in response:
-                json_str = response.split("```json")[1].split("```")[0].strip()
-            elif "```" in response:
-                json_str = response.split("```")[1].split("```")[0].strip()
-
-            data = json.loads(json_str)
-
-            # 标准化 action
             action = data.get('action', 'HOLD')
             valid_actions = {
                 'STRONG_BUY', 'BUY', 'HOLD', 'REDUCE', 'SELL', 'STRONG_SELL',
@@ -719,13 +753,22 @@ class StockAIAnalyzer:
             if action not in valid_actions:
                 action = 'HOLD'
 
+            try:
+                confidence = min(100, max(0, int(data.get('confidence', 50))))
+            except (TypeError, ValueError):
+                confidence = 50
+
+            key_factors = data.get('key_factors') or []
+            if not isinstance(key_factors, list):
+                key_factors = []
+
             return {
                 'stock_code': stock_code,
                 'stock_name': stock_name,
                 'action': action,
-                'confidence': min(100, max(0, int(data.get('confidence', 50)))),
+                'confidence': confidence,
                 'reasoning': data.get('reasoning', ''),
-                'key_factors': data.get('key_factors', [])[:5],
+                'key_factors': key_factors[:5],
                 'risk_warning': data.get('risk_warning'),
                 'target_price': data.get('target_price'),
                 'stop_loss_price': data.get('stop_loss_price'),
@@ -733,10 +776,25 @@ class StockAIAnalyzer:
                 'time_horizon': data.get('time_horizon', 'SHORT_TERM'),
                 'analyzed_at': datetime.now().isoformat(),
             }
+        except Exception as e:
+            logger.error(f"标准化 AI 结果失败: {e}, data={str(data)[:300]}")
+            return None
 
+    def _parse_response(
+        self, response: str, stock_code: str, stock_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """解析 Gemini 文本响应（剥 markdown 取 JSON）后标准化。"""
+        try:
+            json_str = response
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].split("```")[0].strip()
+            data = json.loads(json_str)
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(f"解析 AI 响应失败: {e}, response={response[:300]}")
             return None
+        return self._normalize_result(data, stock_code, stock_name)
 
     def _get_cached(self, stock_code: str) -> Optional[Dict]:
         """获取缓存的分析结果"""

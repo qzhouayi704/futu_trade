@@ -29,11 +29,71 @@ class GeminiAnalysisResult:
     confidence: float = 0.0
 
 
+NEWS_SYSTEM = (
+    "你是一个专业的金融新闻分析师。判断新闻对市场的情绪影响，"
+    "提取关键词、相关股票与行业板块。所有文本字段使用简体中文。"
+)
+
+_IMPACT = {"type": "string", "enum": ["positive", "negative", "neutral"]}
+_STOCK_ITEM = {
+    "type": "object",
+    "properties": {
+        "stock_code": {"type": "string"},
+        "stock_name": {"type": "string"},
+        "impact_type": _IMPACT,
+        "reason": {"type": "string"},
+    },
+    "required": ["stock_code", "stock_name", "impact_type", "reason"],
+    "additionalProperties": False,
+}
+_PLATE_ITEM = {
+    "type": "object",
+    "properties": {
+        "plate_code": {"type": "string"},
+        "plate_name": {"type": "string"},
+        "impact_type": _IMPACT,
+        "reason": {"type": "string"},
+    },
+    "required": ["plate_code", "plate_name", "impact_type", "reason"],
+    "additionalProperties": False,
+}
+_NEWS_CORE = {
+    "sentiment": _IMPACT,
+    "sentiment_score": {"type": "number"},
+    "confidence": {"type": "number"},
+    "summary": {"type": "string"},
+    "keywords": {"type": "array", "items": {"type": "string"}},
+    "related_stocks": {"type": "array", "items": _STOCK_ITEM},
+    "related_plates": {"type": "array", "items": _PLATE_ITEM},
+}
+# 单条
+NEWS_SCHEMA = {
+    "type": "object",
+    "properties": dict(_NEWS_CORE),
+    "required": list(_NEWS_CORE.keys()),
+    "additionalProperties": False,
+}
+# 批量：对象包裹 results 数组（客户端 _extract_json 取最外层对象，不支持顶层数组）
+_NEWS_ITEM = {
+    "type": "object",
+    "properties": {"news_id": {"type": "integer"}, **_NEWS_CORE},
+    "required": ["news_id"] + list(_NEWS_CORE.keys()),
+    "additionalProperties": False,
+}
+NEWS_BATCH_SCHEMA = {
+    "type": "object",
+    "properties": {"results": {"type": "array", "items": _NEWS_ITEM}},
+    "required": ["results"],
+    "additionalProperties": False,
+}
+
+
 class GeminiNewsAnalyzer:
     """Gemini 新闻分析器"""
 
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash", timeout: int = 30,
-                 vertexai: bool = False, project: str = "", location: str = ""):
+                 vertexai: bool = False, project: str = "", location: str = "",
+                 claude_client=None):
         """
         初始化 Gemini 分析器
 
@@ -50,6 +110,8 @@ class GeminiNewsAnalyzer:
         self.model_name = model
         self.timeout = timeout
         self.client = None
+        # 官方 Claude 客户端（优先引擎）
+        self._claude = claude_client
 
         if not GEMINI_AVAILABLE:
             self.logger.error("google.genai 未安装，无法使用 Gemini 分析")
@@ -77,7 +139,9 @@ class GeminiNewsAnalyzer:
                 self.logger.error(f"Gemini 新闻分析器初始化失败: {e}")
 
     def is_available(self) -> bool:
-        """检查 Gemini 是否可用"""
+        """检查服务是否可用（Claude 或 Gemini 任一）"""
+        if self._claude is not None and self._claude.is_available():
+            return True
         return GEMINI_AVAILABLE and self.client is not None
 
     async def analyze(self, title: str, content: str = "") -> Optional[GeminiAnalysisResult]:
@@ -96,7 +160,22 @@ class GeminiNewsAnalyzer:
             return None
 
         try:
-            # 构建提示词
+            # 优先官方 Claude 客户端（结构化输出）
+            if self._claude is not None and self._claude.is_available():
+                data = await self._claude.analyze(
+                    system_prompt=NEWS_SYSTEM,
+                    user_content=self._build_prompt(title, content),
+                    schema=NEWS_SCHEMA,
+                    label=(title or "")[:20],
+                    max_tokens=1024,
+                )
+                if data is None:
+                    return None
+                result = self._build_result(data)
+                self.logger.info(f"Claude 新闻分析完成: {title[:50]}... -> {result.sentiment}")
+                return result
+
+            # 构建提示词（Gemini 备路）
             prompt = self._build_prompt(title, content)
 
             # 调用 Gemini API
@@ -233,6 +312,23 @@ class GeminiNewsAnalyzer:
             return []
 
         try:
+            # 优先官方 Claude 客户端（结构化输出，对象包裹 results）
+            if self._claude is not None and self._claude.is_available():
+                user_content = (
+                    self._build_batch_prompt(news_list)
+                    + '\n\n注意：以 {"results": [ ... ]} 对象返回，results 为数组，'
+                    '每条新闻对应一个对象（含 news_id）。'
+                )
+                data = await self._claude.analyze(
+                    system_prompt=NEWS_SYSTEM,
+                    user_content=user_content,
+                    schema=NEWS_BATCH_SCHEMA,
+                    label=f"batch{len(news_list)}",
+                    max_tokens=4096,
+                )
+                items = data.get("results", []) if isinstance(data, dict) else []
+                return self._map_batch_items(items, news_list)
+
             prompt = self._build_batch_prompt(news_list)
             self.logger.info(f"批量分析 {len(news_list)} 条新闻...")
             response = await self._call_gemini_api(prompt)
@@ -339,6 +435,35 @@ class GeminiNewsAnalyzer:
             self.logger.error(f"处理批量响应失败: {e}")
             return []
 
+    def _build_result(self, data: Dict[str, Any]) -> GeminiAnalysisResult:
+        """从结构化 dict 构建 GeminiAnalysisResult（Claude/Gemini 通用）。"""
+        def _f(v, default=0.0):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+        return GeminiAnalysisResult(
+            sentiment=data.get("sentiment", "neutral"),
+            sentiment_score=_f(data.get("sentiment_score", 0.0)),
+            confidence=_f(data.get("confidence", 0.0)),
+            summary=data.get("summary", ""),
+            keywords=data.get("keywords") or [],
+            related_stocks=data.get("related_stocks") or [],
+            related_plates=data.get("related_plates") or [],
+        )
+
+    def _map_batch_items(self, items: list, news_list: list) -> list:
+        """将批量结果项按 news_id 映射回 news_list。"""
+        id_map = {n['id']: n for n in news_list}
+        results = []
+        for item in items:
+            news_id = item.get('news_id')
+            if news_id not in id_map:
+                continue
+            results.append({'id': news_id, 'result': self._build_result(item)})
+        self.logger.info(f"批量解析成功: {len(results)}/{len(news_list)} 条")
+        return results
+
     def _parse_response(self, response: str) -> GeminiAnalysisResult:
         """解析 Gemini 响应"""
         try:
@@ -350,19 +475,7 @@ class GeminiNewsAnalyzer:
                 json_str = response.split("```")[1].split("```")[0].strip()
 
             data = json.loads(json_str)
-
-            # 构建结果
-            result = GeminiAnalysisResult(
-                sentiment=data.get("sentiment", "neutral"),
-                sentiment_score=float(data.get("sentiment_score", 0.0)),
-                confidence=float(data.get("confidence", 0.0)),
-                summary=data.get("summary", ""),
-                keywords=data.get("keywords", []),
-                related_stocks=data.get("related_stocks", []),
-                related_plates=data.get("related_plates", [])
-            )
-
-            return result
+            return self._build_result(data)
 
         except json.JSONDecodeError as e:
             self.logger.error(f"解析 Gemini 响应失败: {e}\n响应内容: {response}")

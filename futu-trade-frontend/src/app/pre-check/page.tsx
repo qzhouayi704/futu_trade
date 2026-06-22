@@ -733,7 +733,7 @@ export default function PreTradeCheckPage() {
               {/* AI 深度分析按钮 */}
               <div className="mt-3 flex justify-center">
                 <AIAnalysisButton stockCode={result.stock_code} stockName={result.stock_name} />
-                <span className="text-xs text-gray-400 ml-2 self-center">点击 AI 分析获取 Gemini 买卖建议</span>
+                <span className="text-xs text-gray-400 ml-2 self-center">点击 AI 分析获取 AI 买卖建议</span>
               </div>
 
               {/* Holding Strategy */}

@@ -420,7 +420,7 @@ function NewsSection({ news, loading }: { news: StockNewsResult | null; loading:
 
       {loading && !news && (
         <div className="text-xs text-muted-foreground text-center py-4">
-          Gemini 正在搜索最新消息...（约7秒）
+          AI 正在搜索最新消息...（约7秒）
         </div>
       )}
 

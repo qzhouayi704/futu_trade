@@ -46,7 +46,7 @@ export interface DecisionAdvice {
   ai_analysis?: AIAnalysis;
 }
 
-// Gemini 量化分析师输出
+// AI 量化分析师输出
 export type AnalystAction =
   | "STRONG_BUY"
   | "BUY"
