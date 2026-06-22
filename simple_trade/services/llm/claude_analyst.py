@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -31,30 +32,74 @@ DEFAULT_MODEL = "claude-opus-4-8"
 DEFAULT_BASE_URL = "https://api.ctok.ai"
 
 
-def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-    """从模型输出稳健提取 JSON。
-
-    第三方代理对 output_config.format 仅作软提示（prompt 含围栏指令时模型仍会输出
-    ```json 围栏），故需像 Gemini 那条路一样剥围栏；再不行则截取最外层 {...}。
-    """
-    if not text:
+def _loads_lenient(s: str) -> Optional[Dict[str, Any]]:
+    """json.loads；失败则去掉尾随逗号（LLM 最常见的 JSON 错误）再试一次。"""
+    if not s:
         return None
-    s = text.strip()
-    if "```json" in s:
-        s = s.split("```json", 1)[1].split("```", 1)[0].strip()
-    elif "```" in s:
-        s = s.split("```", 1)[1].split("```", 1)[0].strip()
     try:
         return json.loads(s)
     except (json.JSONDecodeError, TypeError):
         pass
-    # 兜底：截取最外层大括号
-    start, end = s.find("{"), s.rfind("}")
-    if 0 <= start < end:
-        try:
-            return json.loads(s[start:end + 1])
-        except (json.JSONDecodeError, TypeError):
-            return None
+    cleaned = re.sub(r",(\s*[}\]])", r"\1", s)  # {..,} / [..,] 尾逗号
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _outermost_object(s: str) -> Optional[str]:
+    """截取从第一个 { 到与之平衡的 } 的子串，正确跳过字符串字面量与转义。
+
+    比 find('{')+rfind('}') 稳健：能处理围栏外杂文、未闭合围栏、字符串内的花括号。
+    """
+    start = s.find("{")
+    if start < 0:
+        return None
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start:i + 1]
+    return None
+
+
+def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+    """从模型输出稳健提取 JSON 对象。
+
+    第三方代理对 output_config.format 仅作软提示，模型常把 JSON 包在 ```json 围栏里，
+    且偶有尾随逗号或围栏外杂文。逐级兜底：围栏内容 -> 直解 -> 最外层平衡大括号 -> 去尾逗号。
+    """
+    if not text:
+        return None
+    s = text.strip()
+
+    # 1) 优先取第一个 ``` 围栏块内容（```json 或裸 ```）
+    fence = re.search(r"```(?:json)?\s*(.*?)```", s, re.DOTALL)
+    if fence:
+        s = fence.group(1).strip()
+
+    # 2) 直接解析（含去尾逗号兜底）
+    obj = _loads_lenient(s)
+    if obj is not None:
+        return obj
+
+    # 3) 截取最外层平衡大括号对象后再解析（处理未闭合围栏/前后杂文）
+    candidate = _outermost_object(s)
+    if candidate:
+        return _loads_lenient(candidate)
     return None
 
 
@@ -191,7 +236,7 @@ class ClaudeAnalystClient:
 
         data = _extract_json(text)
         if data is None:
-            logger.error(f"[Claude]{label} JSON 解析失败, text={text[:200]}")
+            logger.error(f"[Claude]{label} JSON 解析失败, text={text[:2000]}")
         return data
 
 
