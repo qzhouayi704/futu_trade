@@ -287,6 +287,48 @@ class MarketTimeHelper:
         return False
 
     @staticmethod
+    def is_market_trading(market: str, current_time: Optional[datetime] = None) -> bool:
+        """判断【指定】市场此刻是否真正处于交易时段。
+
+        与 should_subscribe_market 的关键区别：后者在无任何市场交易时会按时间
+        "智能回退"选一个市场（永不为空），用于订阅决策；本方法严格判断该市场
+        当下是否真的在交易，绝不回退——用于"是否该用该市场实时数据跑信号"。
+
+        - 港股：交易时段 + 工作日 + 交易日历（节假日不算）。
+        - 美股：按北京时间跨午夜。晚段(>=开盘)属美东当日(周一~周五)，
+          凌晨段(<=收盘)属美东前一交易日延续(对应北京周二~周六)。
+          这同时修正了 is_any_market_trading 在"周一凌晨/周六白天"会把美股
+          误判为交易中的边界问题。
+        """
+        if MarketTimeHelper._force_market:
+            return market == MarketTimeHelper._force_market
+
+        if current_time is None:
+            current_time = datetime.now()
+        t = current_time.time()
+        weekday = current_time.weekday()  # 0=周一 .. 6=周日
+
+        if market == 'HK':
+            if weekday >= 5:  # 周末无港股
+                return False
+            return (MarketTimeHelper._is_hk_trading_time(t)
+                    and MarketTimeHelper.is_trading_day('HK', current_time))
+
+        if market == 'US':
+            is_summer = 3 <= current_time.month <= 10
+            evening_start = (MarketTimeHelper.US_SUMMER_START if is_summer
+                             else MarketTimeHelper.US_WINTER_START)
+            morning_end = (MarketTimeHelper.US_SUMMER_END if is_summer
+                           else MarketTimeHelper.US_WINTER_END)
+            if t >= evening_start:        # 晚段：美东当日开盘
+                return weekday <= 4       # 周一~周五
+            if t <= morning_end:          # 凌晨段：美东前一交易日延续
+                return 1 <= weekday <= 5  # 北京周二~周六（= 美东周一~周五）
+            return False
+
+        return False
+
+    @staticmethod
     def is_trading_day(market: str, current_time: Optional[datetime] = None) -> bool:
         """判断指定市场在当天是否为交易日（含节假日）
 

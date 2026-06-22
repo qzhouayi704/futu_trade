@@ -156,12 +156,18 @@ class QuotePipeline:
         # 日内自动化防砸盘风控与真空区止盈（新增）
         risk_actions = await self._check_intraday_risks(quotes, positions)
 
-        # 资金流向信号检查（与策略检测同频，每60s）
+        # 信号检测/策略检测仅对"所属市场此刻真正在交易"的报价进行（每60s，每轮算一次共用）：
+        # _should_run_strategy 用 is_any_market_trading（任意市场），美股时段(北京 21:30~04:00)
+        # 也会放行，但监控池是港股、夜间只有昨收快照——不过滤就会拿陈旧数据反复触发
+        # R2/R3/R10 等 SELL 规则、并让策略用昨收重跑，凌晨广播出"防守触发"等假信号。
+        trading_quotes = self._filter_trading_quotes(quotes) if self._should_run_strategy() else []
+
+        # 资金流向信号检查（与策略检测同频）
         flow_signals = []
         absorption_alerts = []
-        if self._should_run_strategy():
-            flow_signals = await self._check_capital_flow_signals(quotes, positions)
-            absorption_alerts = await self._check_absorption(quotes)
+        if trading_quotes:
+            flow_signals = await self._check_capital_flow_signals(trading_quotes, positions)
+            absorption_alerts = await self._check_absorption(trading_quotes)
 
         trade_actions: List[Dict] = []
         trade_actions.extend(intraday_signals)
@@ -177,8 +183,8 @@ class QuotePipeline:
         self._feed_sell_signals_to_swing_tracker(flow_signals + intraday_signals)
         conditions: List[Dict] = []
         conditions_updated = False
-        if self._should_run_strategy():
-            trade_actions_strategy, conditions = await self._run_strategy_detection(quotes)
+        if trading_quotes:
+            trade_actions_strategy, conditions = await self._run_strategy_detection(trading_quotes)
             trade_actions.extend(trade_actions_strategy)
             conditions_updated = True
             self._start_signal_tracking(trade_actions_strategy)
@@ -440,6 +446,32 @@ class QuotePipeline:
         except Exception as e:
             logging.debug(f"量价异常检查异常: {e}")
             return []
+
+    def _filter_trading_quotes(self, quotes: List[Dict]) -> List[Dict]:
+        """过滤出"所属市场此刻确实在交易"的报价。
+
+        杜绝在非本市场交易时段用陈旧昨收快照反复跑信号（例如美股时段拿港股昨收
+        触发资金流 SELL 规则）。按 stock_code 前缀判定市场，逐市场缓存当轮判断结果。
+        """
+        from ...utils.market_helper import MarketTimeHelper
+        trading_by_market: Dict[str, bool] = {}
+        result: List[Dict] = []
+        for q in quotes:
+            code = q.get('code', '')
+            if not code:
+                continue
+            market = MarketTimeHelper.get_market_from_code(code)
+            is_trading = trading_by_market.get(market)
+            if is_trading is None:
+                is_trading = MarketTimeHelper.is_market_trading(market)
+                trading_by_market[market] = is_trading
+            if is_trading:
+                result.append(q)
+        if not result and quotes:
+            logging.debug(
+                f"【行情管道】本轮 {len(quotes)} 只报价所属市场均未在交易，跳过信号检测"
+            )
+        return result
 
     async def _check_capital_flow_signals(self, quotes: List[Dict], positions: dict = None) -> List[Dict]:
         """检查资金流向信号（基于操盘规则）"""
