@@ -328,6 +328,27 @@ def main():
     dshow("  MA20下方", [s for s in down if s.get('distma') is not None and s['distma'] < 0])
     print(f"   (跌市仅 {ndd} 天 → 任何转正都是 directional·待累积，绝不直接上生产;相对强度=信号时涨幅−当时市场中位)")
 
+    # ===== 涨/平盘 按日内位置: 低位入场能否放大收益 =====
+    upf = [s for s in sig if s['regime'] in ('up', 'flat') and s['eod'] is not None]
+    nuf = len({s['date'] for s in upf})
+    print(f"\n=== 涨/平盘 按日内位置 ({nuf}天) —— 低位入场能否放大收益 ===")
+    print(f"   {'日内位置':24} {'N':>4} {'天':>3} {'胜率%':>6} {'均净%(收盘)':>11} {'移动止盈净%':>11}")
+
+    def ufshow(name, sel):
+        m1 = metrics([(s['date'], s['eod']) for s in sel if s['eod'] is not None])
+        if not m1:
+            print(f"   {name:24} N=0"); return
+        m2 = metrics([(s['date'], s['trail']) for s in sel if s['trail'] is not None])
+        print(f"   {name:24} {m1['N']:>4} {m1['days']:>3} {m1['win']:>6.0f} {m1['avg']:>+11.2f} {(m2['avg'] if m2 else 0.0):>+11.2f}")
+
+    ufshow("低位 pos<0.34", [s for s in upf if s['pos'] < 0.34])
+    ufshow("中下 0.34-0.5", [s for s in upf if 0.34 <= s['pos'] < 0.5])
+    ufshow("中上 0.5-0.7", [s for s in upf if 0.5 <= s['pos'] < 0.7])
+    ufshow("高位 pos>=0.7", [s for s in upf if s['pos'] >= 0.7])
+    ufshow("低位+日线健康", [s for s in upf if s['pos'] < 0.34 and healthy(s)])
+    ufshow("低吸(本就低位)", [s for s in upf if s['type'] == '低吸'])
+    print(f"   (涨市仅 {nuf} 天 → 噪音级, 只看方向;低吸天生发在低位 pos<=0.5)")
+
     print(f"\n口径：强势股(涨≥3%)买入信号；低吸=judge逐分钟重放；净收益扣{args.friction_bps:.0f}bps；移动止盈=激活2%回撤1.5%。")
     print(f"诚实：涨市仅1天(06-15)→'分行情'里 up 是单日,别当结论;L1/L2 主要靠剔除跌市/脉冲减少亏损,需累积涨/平盘日确认。")
 
