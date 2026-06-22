@@ -142,6 +142,8 @@ class IntradaySniper:
         self._last_scan: Optional[datetime] = None
         # TOP 排行榜（每次扫描更新）
         self._top_ranking: dict = {'opportunity': [], 'risk': [], 'updated_at': None}
+        # 持仓股集合（每次扫描刷新，供"持仓硬风险"绕过TOP5门槛优先推送）
+        self._held_codes: set = set()
 
     # ==================== 公共接口 ====================
 
@@ -176,6 +178,28 @@ class IntradaySniper:
     def get_top_ranking(self) -> dict:
         """获取当前 TOP 排行榜"""
         return self._top_ranking
+
+    async def _refresh_held_codes(self) -> set:
+        """刷新持仓股集合（供"持仓硬风险"优先推送）。
+
+        同步的 Futu 交易接口放线程池执行，避免阻塞扫描循环；任何失败都保留
+        上一次的结果并静默返回（绝不抛出，宁可漏一次刷新也不能打断扫描）。
+        """
+        try:
+            fts = getattr(self.container, 'futu_trade_service', None)
+            if not fts:
+                return self._held_codes
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, fts.get_positions)
+            if res and res.get('success'):
+                # 注意：get_positions 返回 {'positions': [...]}，每条用 'stock_code' 键
+                self._held_codes = {
+                    p.get('stock_code', '') for p in res.get('positions', [])
+                    if p.get('stock_code') and (p.get('qty', 0) or 0) > 0
+                }
+        except Exception as e:
+            logger.debug(f"刷新持仓集合失败: {e}")
+        return self._held_codes
 
     def analyze_intraday_tape(self, stock_code: str) -> dict:
         """实时盘口判定，供「交易前检查」使用。
@@ -403,6 +427,9 @@ class IntradaySniper:
             if not watch_codes:
                 return
 
+            # 刷新持仓集合（供持仓硬风险优先推送）
+            held_codes = await self._refresh_held_codes()
+
             with db.get_connection() as conn:
                 new_signals = []
 
@@ -504,9 +531,16 @@ class IntradaySniper:
                     is_inst_signal = (
                         sig.signal_type == 'mega_buy' and sig.severity == 'high'
                     )
-                    
-                    if sig.stock_code in top_codes or is_inst_signal:
-                        await self._push_signal(sig)
+
+                    # 持仓硬风险：持仓股的红灯风险信号必推（绕过TOP5门槛）——
+                    # 砸盘/持续流出/资金转负是持仓最该被立刻告知的事件。
+                    is_holding_risk = (
+                        sig.stock_code in held_codes and sig.is_red
+                        and sig.signal_type in ('mega_sell', 'sustained_out', 'reversal_bear')
+                    )
+
+                    if sig.stock_code in top_codes or is_inst_signal or is_holding_risk:
+                        await self._push_signal(sig, holding=is_holding_risk)
                         pushed += 1
 
                     # 转发持仓股的mega信号给RiskCoordinator（驱动盘中止盈）
@@ -1065,8 +1099,12 @@ class IntradaySniper:
 
     # ==================== 推送 ====================
 
-    async def _push_signal(self, signal: SniperSignal):
-        """推送信号到 WebSocket + 企业微信"""
+    async def _push_signal(self, signal: SniperSignal, holding: bool = False):
+        """推送信号到 WebSocket + 企业微信。
+
+        holding=True 表示该信号命中持仓股的硬风险（砸盘/持续流出/资金转负），
+        用更醒目的标题、固定 CRITICAL 级别和独立去重键，确保不被普通狙击推送淹没。
+        """
         # 1. WebSocket 推送
         try:
             socket_manager = getattr(self.container, '_socket_manager', None)
@@ -1084,13 +1122,21 @@ class IntradaySniper:
             wechat = getattr(self.container, 'wechat_alert_service', None)
             if wechat and wechat.enabled:
                 from ..alert.wechat_alert import AlertLevel
-                level = AlertLevel.CRITICAL if signal.is_red else AlertLevel.INFO
-                await wechat.send(
-                    level=level,
-                    title=f"盘中狙击 — {signal.stock_name}",
-                    content=signal.to_wechat_text(),
-                    dedup_key=f"sniper:{signal.stock_code}:{signal.signal_type}",
-                )
+                if holding:
+                    await wechat.send(
+                        level=AlertLevel.CRITICAL,
+                        title=f"⚠️持仓风险 — {signal.stock_name}",
+                        content="**【你的持仓】**\n" + signal.to_wechat_text(),
+                        dedup_key=f"hold_risk:{signal.stock_code}:{signal.signal_type}",
+                    )
+                else:
+                    level = AlertLevel.CRITICAL if signal.is_red else AlertLevel.INFO
+                    await wechat.send(
+                        level=level,
+                        title=f"盘中狙击 — {signal.stock_name}",
+                        content=signal.to_wechat_text(),
+                        dedup_key=f"sniper:{signal.stock_code}:{signal.signal_type}",
+                    )
         except Exception as e:
             logger.debug(f"企业微信推送失败: {e}")
 

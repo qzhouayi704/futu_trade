@@ -363,8 +363,9 @@ class HighTurnoverEnricher:
                 loop = asyncio.get_running_loop()
                 pos_result = await loop.run_in_executor(None, trade_svc.get_positions)
                 if pos_result and pos_result.get('success'):
-                    for p in pos_result.get('data', []):
-                        code = p.get('code', '')
+                    # get_positions 返回 {'positions': [...]}，每条用 'stock_code' 键
+                    for p in pos_result.get('positions', []):
+                        code = p.get('stock_code', '')
                         qty = p.get('qty', 0)
                         if code and qty > 0:
                             position_codes.add(code)

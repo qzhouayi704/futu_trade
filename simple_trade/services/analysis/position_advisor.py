@@ -528,7 +528,7 @@ class PositionAdvisor:
             if not alerts:
                 return
 
-            from ..trading.alert.wechat_alert import AlertLevel
+            from ..alert.wechat_alert import AlertLevel
 
             for a in alerts:
                 emoji = '🔴' if a.action == 'EXIT' else '🟡'
