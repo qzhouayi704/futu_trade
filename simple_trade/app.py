@@ -234,6 +234,20 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning(f"每日板块成分股自动更新任务启动失败: {e}")
 
+            # 启动逐笔分钟归档器（把 ticker_data 聚合成长期保留的 ticker_minute，供盘中回测；
+            # 原始逐笔只留7天，分钟级小5~7倍可长留）
+            try:
+                from .services.market_data.ticker_minute_archiver import TickerMinuteArchiver
+                ticker_minute_archiver = TickerMinuteArchiver(container)
+                container.ticker_minute_archiver = ticker_minute_archiver
+                async def _start_ticker_archiver():
+                    await asyncio.sleep(120)  # 等系统稳定再追赶归档
+                    await ticker_minute_archiver.start()
+                _track(_start_ticker_archiver(), name="ticker_minute_archiver")
+                logging.info("逐笔分钟归档器已注册（启动追赶现存7天 + 每小时巡检）")
+            except Exception as e:
+                logging.warning(f"逐笔分钟归档器启动失败: {e}")
+
             # 启动动量引擎（BSR + Delta 实时信号）
             try:
                 from .services.momentum import MomentumEngine

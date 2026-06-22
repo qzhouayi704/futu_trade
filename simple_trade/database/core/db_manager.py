@@ -119,7 +119,8 @@ class DatabaseManager:
         """启动时自动清理过期数据（防止 DB 无限膨胀）
 
         保留策略:
-        - ticker_data: 7 天（占 DB 90%+ 空间）
+        - ticker_data: 7 天（原始逐笔，占 DB 90%+ 空间）
+        - ticker_minute: 180 天（分钟级聚合，小 5~7 倍，供长周期盘中回测）
         - big_order_tracking: 30 天
         - signal_performance: 30 天
         - capital_flow_cache: 30 天
@@ -127,6 +128,7 @@ class DatabaseManager:
         import time
         cleanup_rules = [
             ('ticker_data', 'trade_date', 7),
+            ('ticker_minute', 'trade_date', 180),
             ('big_order_tracking', 'timestamp', 30),
             ('signal_performance', 'created_at', 30),
             ('capital_flow_cache', 'timestamp', 30),
