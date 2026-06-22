@@ -96,17 +96,6 @@ class AsyncQuotePusher:
                 if not current_markets:
                     current_markets = [MarketTimeHelper.get_primary_market()]
 
-                # 盘前预订阅：钉住昨日强势 top20，让今天开盘就有逐笔（TICKER），
-                # 避免妖股涨起来才被 refilter 订上、entry-timing 信号慢半拍。fail-safe。
-                try:
-                    from ..market_data.high_turnover_enricher import load_prev_day_strong_codes
-                    prev_strong = load_prev_day_strong_codes(n=20)
-                    if prev_strong:
-                        self.container.subscription_helper.pin_priority_stocks(prev_strong)
-                        flow.step("盘前预订阅昨日强势股", count=len(prev_strong))
-                except Exception as e:
-                    logging.warning(f"盘前预订阅昨日强势股失败（不影响主订阅）: {e}")
-
                 loop = asyncio.get_running_loop()
                 subscription_result = await loop.run_in_executor(
                     None,
