@@ -31,6 +31,8 @@ class SubscriptionHelper:
         self.config = config
         self.container = container
         self.priority_stocks = set()
+        # pinned：盘前预订阅的昨日强势股（与持仓 priority 解耦，避免互相覆盖；同样跳过活跃度筛选+免清理）
+        self.pinned_stocks = set()
 
         # P5-2: GlobalSubscriptionCoordinator 已精简，不再侜为订阅入口
         # 统一使用 subscription_manager 订阅
@@ -93,6 +95,13 @@ class SubscriptionHelper:
     def get_priority_stocks(self) -> List[str]:
         return list(self.priority_stocks)
 
+    def pin_priority_stocks(self, stock_codes: List[str]):
+        """钉住一批盘前预订阅股票（昨日强势股）。并入式、与持仓 priority 独立，
+        同样进目标池跳过活跃度筛选、且免于盘中清理。空入参清空。"""
+        self.pinned_stocks = set(stock_codes) if stock_codes else set()
+        if self.pinned_stocks:
+            logging.info(f"【盘前预订阅】钉住 {len(self.pinned_stocks)} 只昨日强势股: {list(self.pinned_stocks)[:5]}...")
+
     def subscribe_target_stocks(self, markets: Optional[List[str]] = None) -> Dict[str, Any]:
         """订阅目标板块的所有股票行情 - 支持实时活跃度筛选和按市场数量限制"""
         result = {'success': False, 'message': '', 'subscribed_count': 0, 'market_info': {}, 'errors': []}
@@ -112,7 +121,7 @@ class SubscriptionHelper:
 
             target_stocks = self.stock_query_service.get_target_stocks(
                 limit=None, markets=markets, kline_priority=kline_priority,
-                position_codes=self.priority_stocks
+                position_codes=(self.priority_stocks | self.pinned_stocks)
             )
             if not target_stocks:
                 result['message'] = f'未找到需要订阅的股票（市场: {", ".join(markets)}）'
@@ -187,7 +196,7 @@ class SubscriptionHelper:
             MIN_SUBSCRIPTION_SECONDS = 65  # 富途要求至少 1 分钟，留 5 秒余量
 
             currently_subscribed = self.subscription_manager.subscribed_stocks
-            inactive_codes = currently_subscribed - active_codes - self.priority_stocks
+            inactive_codes = currently_subscribed - active_codes - self.priority_stocks - self.pinned_stocks
 
             if not inactive_codes:
                 return 0

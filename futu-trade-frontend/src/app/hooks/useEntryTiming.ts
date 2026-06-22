@@ -16,6 +16,7 @@ export interface EntryTimingItem {
   pos_range: number | null; // 日内价位 [0,1]
   last_price: number | null;
   stale: boolean;
+  from_prev?: boolean; // True=昨日强势兜底(开盘空窗观察池)，非当日强势
 }
 
 export interface EntryTimingRegime {

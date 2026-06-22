@@ -47,8 +47,10 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
   const items = data?.items ?? [];
   const greens = items.filter((i) => i.light === "green");
   const reds = items.filter((i) => i.light === "red");
-  // 优先展示 🟢，其次 🔴，最后少量 ⚪；总量克制
-  const shown = [...greens, ...reds].slice(0, 10);
+  // 昨日强势兜底(开盘空窗)：既非🟢也非🔴的昨日领涨，作"今日重点盯"观察名单
+  const prevWatch = items.filter((i) => i.from_prev && i.light === "neutral");
+  // 优先展示 🟢，其次 🔴，最后昨日强势观察名单；总量克制
+  const shown = [...greens, ...reds, ...prevWatch].slice(0, 12);
 
   return (
     <div className="rounded-xl border border-sky-200/50 dark:border-sky-500/20 bg-card shadow-sm">
@@ -61,7 +63,9 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
         </h3>
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-muted-foreground">
-            {data ? `强势股${data.pool_size}只 · ${greens.length}🟢/${reds.length}🔴` : ""}
+            {data
+              ? `强势股${data.pool_size}只 · ${greens.length}🟢/${reds.length}🔴${prevWatch.length ? ` · ${prevWatch.length}盯` : ""}`
+              : ""}
           </span>
           <Link href="/entry-timing" className="text-[10px] text-sky-600 dark:text-sky-400 hover:underline shrink-0">
             历史 →
@@ -96,6 +100,8 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
           <div className="space-y-1.5">
             {shown.map((it) => {
               const isGreen = it.light === "green";
+              const isRed = it.light === "red";
+              const isPrevWatch = it.from_prev && !isGreen && !isRed; // 昨日领涨观察(开盘空窗)
               return (
                 <div
                   key={it.stock_code}
@@ -103,16 +109,24 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
                   className={`px-2.5 py-2 rounded-lg border transition-colors cursor-pointer ${
                     isGreen
                       ? "bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/15"
-                      : "bg-rose-500/5 border-rose-500/20 hover:bg-rose-500/10"
+                      : isRed
+                      ? "bg-rose-500/5 border-rose-500/20 hover:bg-rose-500/10"
+                      : "bg-muted/30 border-border hover:bg-muted/50"
                   }`}
                 >
-                  {/* 第一行：名称 + 近3日涨幅 + 灯 + 现价 */}
+                  {/* 第一行：名称 + 涨幅/昨日领涨 + 灯 + 现价 */}
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="text-[13px] font-semibold text-foreground truncate">{it.stock_name}</span>
-                      <span className="text-[9px] px-1.5 py-px rounded-full bg-orange-500/15 text-orange-600 dark:text-orange-400 font-bold shrink-0">
-                        今日+{it.gain_today.toFixed(0)}%
-                      </span>
+                      {it.from_prev ? (
+                        <span className="text-[9px] px-1.5 py-px rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400 font-bold shrink-0">
+                          昨日领涨{it.gain_today > 0.5 ? ` ·今+${it.gain_today.toFixed(0)}%` : ""}
+                        </span>
+                      ) : (
+                        <span className="text-[9px] px-1.5 py-px rounded-full bg-orange-500/15 text-orange-600 dark:text-orange-400 font-bold shrink-0">
+                          今日+{it.gain_today.toFixed(0)}%
+                        </span>
+                      )}
                       <LightTag light={it.light} />
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -128,8 +142,8 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
                     </div>
                   </div>
                   {/* 第二行：理由 + 日内价位 */}
-                  <div className={`text-[11px] mt-1 flex items-center gap-1 ${isGreen ? "text-emerald-700 dark:text-emerald-400/90" : "text-rose-700 dark:text-rose-400/90"}`}>
-                    <span className="truncate">{it.reason}</span>
+                  <div className={`text-[11px] mt-1 flex items-center gap-1 ${isGreen ? "text-emerald-700 dark:text-emerald-400/90" : isRed ? "text-rose-700 dark:text-rose-400/90" : "text-muted-foreground"}`}>
+                    <span className="truncate">{isPrevWatch && it.stale ? "待开盘成交 · 昨日领涨今日重点盯" : it.reason}</span>
                     {it.pos_range != null && (
                       <span className="text-[9px] text-muted-foreground shrink-0">· 日内位{Math.round(it.pos_range * 100)}%</span>
                     )}

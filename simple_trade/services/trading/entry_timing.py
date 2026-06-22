@@ -36,6 +36,7 @@ class EntryTimingThresholds:
     pos_high: float = 0.70       # 日内价位 >= 0.7 视为贴近日内高
     pos_strong_low: float = 0.34 # 回到日内低位（更优低吸）
     stale_seconds: int = 300     # 最近一笔逐笔超过 5 分钟视为陈旧/休市
+    min_live_pool: int = 8       # 当日强势股不足此数（开盘空窗）时，用昨日强势 top20 兜底观察池
 
 
 def judge_entry_timing(mom5: Optional[float], ofi15: Optional[float],
@@ -133,6 +134,44 @@ class EntryTimingService:
             cut = max(cut, gains[int(th.pool_top_pct * len(gains))][1])
         return [(c, g) for c, g in gains if g >= cut][:th.pool_max_n]
 
+    def _prev_strong_codes(self, n: int = 20) -> List[str]:
+        """昨日(最近一个交易日)涨幅强势 top-n（close/前收-1 ≥ today_min_gain）。
+
+        用 kline_data 现算（长期保留、**不受 enricher 盘中覆盖 strong_codes 影响**），
+        供开盘空窗兜底观察池——昨日妖股今日重点盯。fail-safe 返回 []。
+        """
+        try:
+            D = self._hk_today()
+            # 昨日强势全天恒定 → 按当日缓存，避免每 15s 轮询重查 kline
+            if getattr(self, "_prevstrong_td", None) == D and hasattr(self, "_prevstrong"):
+                return self._prevstrong[:n]
+            ds = self.db.execute_query(
+                "SELECT DISTINCT substr(time_key,1,10) d FROM kline_data "
+                "WHERE substr(time_key,1,10) < ? ORDER BY d DESC LIMIT 2", (D,)) or []
+            codes: List[str] = []
+            if len(ds) >= 2:
+                prev_d, prev_d2 = ds[0][0], ds[1][0]
+                r1 = self.db.execute_query(
+                    "SELECT stock_code, close_price FROM kline_data "
+                    "WHERE substr(time_key,1,10)=? AND close_price>0", (prev_d,)) or []
+                r0 = self.db.execute_query(
+                    "SELECT stock_code, close_price FROM kline_data "
+                    "WHERE substr(time_key,1,10)=? AND close_price>0", (prev_d2,)) or []
+                c0 = {code: float(cl) for code, cl in r0}
+                gains = []
+                for code, cl in r1:
+                    p = c0.get(code)
+                    if p and p > 0:
+                        gains.append((code, float(cl) / p - 1))
+                gains.sort(key=lambda x: -x[1])
+                codes = [c for c, g in gains if g >= self.th.today_min_gain][:40]
+            self._prevstrong_td = D
+            self._prevstrong = codes
+            return codes[:n]
+        except Exception as e:
+            logger.debug("prev_strong_codes 失败: %s", e)
+            return []
+
     def market_regime(self, trade_date: str) -> dict:
         """当日市场行情(全活跃股涨幅中位) → up/flat/down + 今日打法(纯展示·只读·不下单)。
 
@@ -195,6 +234,16 @@ class EntryTimingService:
         market_open = self._market_open()
         regime = self.market_regime(D)
         pool = self.strong_pool(D)
+        # 开盘空窗兜底：当日强势股还没形成(开盘早期)时，补昨日强势 top20 作观察池
+        from_prev: set = set()
+        if market_open and len(pool) < self.th.min_live_pool:
+            have = {c for c, _ in pool}
+            gmap = dict(self._all_gains(D))
+            for c in self._prev_strong_codes():
+                if c not in have:
+                    pool.append((c, gmap.get(c, 0.0)))  # gain=今日实时涨幅(可能<3%甚至负)
+                    from_prev.add(c)
+                    have.add(c)
         if not pool:
             return {"as_of": D, "market_open": market_open, "pool_size": 0,
                     "items": [], "regime": regime, "experimental": True}
@@ -236,9 +285,10 @@ class EntryTimingService:
                 "pos_range": round(feat["pos_range"], 2) if feat["pos_range"] is not None else None,
                 "last_price": feat["last"],
                 "stale": feat["stale"],
+                "from_prev": code in from_prev,  # True=昨日强势兜底(开盘空窗观察池)，非当日强势
             })
         order = {"green": 0, "red": 1, "neutral": 2}
-        items.sort(key=lambda x: (order.get(x["light"], 3), -x["gain_today"]))
+        items.sort(key=lambda x: (order.get(x["light"], 3), x["from_prev"], -x["gain_today"]))
         return {"as_of": D, "market_open": market_open, "pool_size": len(pool),
                 "items": items, "regime": regime, "experimental": True}
 

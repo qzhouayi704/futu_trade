@@ -33,6 +33,30 @@ _PERSIST_FILE = os.path.join(
     'data', 'prev_day_stocks.json'
 )
 
+
+def load_prev_day_strong_codes(n: int = 20, max_age_days: int = 3) -> list:
+    """读 prev_day_stocks.json 的昨日涨幅强势 top-n（带新鲜度检查，过期返回空）。
+
+    供盘前预订阅（async_quote_pusher）+ entry-timing 开盘兜底展示共用的单一数据源。
+    任何异常/缺文件/过期 → 返回 []（fail-safe，绝不影响主流程）。
+    """
+    try:
+        if not os.path.exists(_PERSIST_FILE):
+            return []
+        with open(_PERSIST_FILE) as f:
+            data = json.load(f)
+        d = data.get('date', '')
+        if d:
+            try:
+                if (datetime.now().date() - datetime.strptime(d, '%Y-%m-%d').date()).days > max_age_days:
+                    return []
+            except ValueError:
+                pass
+        return list(data.get('strong_codes') or [])[:n]
+    except Exception:
+        return []
+
+
 # 背离检测阈值
 DIVERGENCE_PRICE_THRESHOLD = 3.0   # 涨跌幅阈值（%）
 DIVERGENCE_RATIO_LOW = 0.8         # 买卖比低于此值视为净卖出
@@ -176,8 +200,17 @@ class HighTurnoverEnricher:
                 f"【HighTurnoverEnricher】预计算完成，更新 {len(enrichment)} 只股票"
             )
 
-        # 9. 持久化活跃股票列表（供次日启动预热）
-        self._persist_active_stocks(top_codes)
+        # 9. 持久化活跃股票列表（供次日启动预热）+ 当日涨幅强势 top20（供次日开盘预订阅/兜底展示）
+        strong_sorted = sorted(
+            (q for q in cached_quotes if isinstance(q, dict) and q.get('code')),
+            key=lambda q: (q.get('change_percent', 0) or q.get('change_rate', 0) or 0),
+            reverse=True,
+        )
+        strong_codes = [
+            q['code'] for q in strong_sorted[:20]
+            if (q.get('change_percent', 0) or q.get('change_rate', 0) or 0) >= 3.0
+        ]
+        self._persist_active_stocks(top_codes, strong_codes)
 
         # 10. 定时买卖推荐扫描（每 5 分钟）
         self._recommendation_scan_counter += 1
@@ -811,11 +844,16 @@ class HighTurnoverEnricher:
 
     # ==================== 持久化活跃股票池 ====================
 
-    def _persist_active_stocks(self, codes: list[str]):
-        """保存当前活跃股票列表到 JSON，供次日启动预热"""
+    def _persist_active_stocks(self, codes: list[str], strong_codes=None):
+        """保存当前活跃股票列表到 JSON，供次日启动预热。
+
+        strong_codes = 当日涨幅强势 top20（≥3%）——供次日开盘**预订阅 TICKER**
+        （让昨日妖股今天一开盘就有逐笔）+ entry-timing 开盘空窗**兜底展示**。
+        """
         try:
             data = {
                 'codes': codes,
+                'strong_codes': strong_codes or [],
                 'date': datetime.now().strftime('%Y-%m-%d'),
                 'count': len(codes),
             }
