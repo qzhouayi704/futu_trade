@@ -147,6 +147,11 @@ def metrics(rs):
                 pf=('∞' if pf == float('inf') else f"{pf:.2f}"))
 
 
+def healthy(s):
+    """日线健康: 在MA20上方 且 20日位置>=0.34(排除'弱势股死猫跳': MA下方/近底)。"""
+    return s.get('distma') is not None and s['distma'] >= 0 and (s.get('pos20') or 0) >= 0.34
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="file:/opt/futu_trade_sys/simple_trade/data/trade.db?mode=ro")
@@ -182,6 +187,33 @@ def main():
         _mkt[key] = v
         return v
 
+    # 日线 OHLC(算 20日位置/近5日涨幅/距MA20)
+    kohlc = defaultdict(list)
+    for code, tk, hh, ll, cl in conn.execute(
+        "SELECT stock_code, substr(time_key,1,10) d, high_price, low_price, close_price FROM kline_data WHERE substr(time_key,1,10)<=? AND close_price>0", (today,)).fetchall():
+        kohlc[code].append((tk, float(hh or 0), float(ll or 0), float(cl)))
+    for code in kohlc:
+        kohlc[code].sort()
+    _di = {}
+    def daily_ind(code, D):
+        key = (code, D)
+        if key in _di:
+            return _di[key]
+        ser = kohlc.get(code); out = None
+        if ser:
+            idx = bisect.bisect_left([x[0] for x in ser], D)
+            hist = ser[max(0, idx - 20):idx]
+            if len(hist) >= 10:
+                pcl = hist[-1][3]; hi20 = max(x[1] for x in hist); lo20 = min(x[2] for x in hist)
+                ma20 = st.mean(x[3] for x in hist)
+                pos20 = (pcl - lo20) / (hi20 - lo20) if hi20 > lo20 else 0.5
+                ret5 = (pcl / hist[-6][3] - 1) if len(hist) >= 6 else 0.0
+                distma = pcl / ma20 - 1 if ma20 > 0 else 0.0
+                out = dict(pos20=pos20, ret5=ret5, distma=distma)
+        out = out or dict(pos20=None, ret5=None, distma=None)
+        _di[key] = out
+        return out
+
     sig = []
     for (d, code), P in prep.items():
         pc = prev_close(kc, code, d)
@@ -202,7 +234,8 @@ def main():
                 continue
             sig.append(dict(date=d, code=code, type='低吸', regime=reg[d], pre3=pre_jump3(P, i), gain=gain,
                             pos=f[3], ofi=f[2], rs=gain - mkt_gain_at(d, am[i]),
-                            eod=net_ret(P, e, 'eod', friction), trail=net_ret(P, e, 'trail', friction)))
+                            eod=net_ret(P, e, 'eod', friction), trail=net_ret(P, e, 'trail', friction),
+                            **daily_ind(code, d)))
     cur = conn.cursor(); ph = ",".join("?" * len(days))
     snraw = defaultdict(list)
     for d, t, code, stp in cur.execute(
@@ -224,7 +257,8 @@ def main():
             fk = feats(P, k); gaink = pr[k] / pc - 1
             sig.append(dict(date=d, code=code, type=stp, regime=reg[d], pre3=pre_jump3(P, k), gain=gaink,
                             pos=(fk[3] if fk else 0.5), ofi=(fk[2] if fk else None), rs=gaink - mkt_gain_at(d, a),
-                            eod=net_ret(P, e, 'eod', friction), trail=net_ret(P, e, 'trail', friction)))
+                            eod=net_ret(P, e, 'eod', friction), trail=net_ret(P, e, 'trail', friction),
+                            **daily_ind(code, d)))
 
     sig = [s for s in sig if s['eod'] is not None]
     print(f"\n强势股买入信号(去重后) 共 {len(sig)} 条")
@@ -252,7 +286,9 @@ def main():
     L2 = [s for s in L1 if not (s['pre3'] >= PULSE_PRE3 or s['gain'] >= PULSE_GAIN)]
     show("L2 +避脉冲顶·收盘", L2, 'eod')
     show("L3 +移动止盈出场", L2, 'trail')
-    print(f"   (避脉冲顶剔除 {len(L1)-len(L2)} 条; 脉冲口径: 前3min急涨≥{PULSE_PRE3*100:.0f}% 或 当日已涨≥{PULSE_GAIN*100:.0f}%)")
+    L4 = [s for s in L2 if healthy(s)]
+    show("L4 +日线健康·移动止盈", L4, 'trail')
+    print(f"   (避脉冲顶剔除 {len(L1)-len(L2)} 条; 日线健康=MA20上方且20日位置>=0.34, L3→L4 再剔 {len(L2)-len(L4)} 条)")
 
     print("\n=== L3(行情门+避脉冲顶+移动止盈) 分信号类型 ===")
     for tp in ('低吸', 'mega_buy', 'accel_in', 'reversal_bull'):
@@ -283,6 +319,13 @@ def main():
     dshow("组合 RS≥+8%&pos≤0.34", [s for s in down if s['rs'] >= 0.08 and s['pos'] <= 0.34])
     best = [s for s in down if s['gain'] >= 0.07 and s['rs'] >= 0.05]
     dshow("↑组合 + 移动止盈出场", best, 'trail')
+    print("   -- 日线指标(跌市): 区分'真趋势'vs'死猫跳' --")
+    dshow("+日线健康(MA20上&pos>=.34)", [s for s in down if healthy(s)])
+    dshow("  └配移动止盈", [s for s in down if healthy(s)], 'trail')
+    dshow("-日线弱势(死猫跳)", [s for s in down if not healthy(s)])
+    dshow("  20日低位<0.34", [s for s in down if s.get('pos20') is not None and s['pos20'] < 0.34])
+    dshow("  20日中位.34-.66", [s for s in down if s.get('pos20') is not None and 0.34 <= s['pos20'] < 0.66])
+    dshow("  MA20下方", [s for s in down if s.get('distma') is not None and s['distma'] < 0])
     print(f"   (跌市仅 {ndd} 天 → 任何转正都是 directional·待累积，绝不直接上生产;相对强度=信号时涨幅−当时市场中位)")
 
     print(f"\n口径：强势股(涨≥3%)买入信号；低吸=judge逐分钟重放；净收益扣{args.friction_bps:.0f}bps；移动止盈=激活2%回撤1.5%。")
