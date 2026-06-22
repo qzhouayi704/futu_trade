@@ -17,6 +17,7 @@ import logging
 import time as _time
 from dataclasses import dataclass
 from datetime import datetime
+from statistics import median
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger("entry_timing")
@@ -87,10 +88,10 @@ class EntryTimingService:
         except Exception:
             return False
 
-    def strong_pool(self, trade_date: str) -> List[Tuple[str, float]]:
-        """当日强势股：今日已涨(现价/前收-1)靠前的活跃股。返回 [(code, today_gain), ...] 降序。"""
-        th = self.th
-        # 今日每只活跃股的最新价（= 当日 MAX(timestamp) 那笔成交价）
+    def _all_gains(self, trade_date: str) -> List[Tuple[str, float]]:
+        """当日全市场活跃股涨幅 [(code, gain)] 降序，gain=现价/前收-1。带本实例缓存(一次请求内复用)。"""
+        if getattr(self, "_gains_td", None) == trade_date and hasattr(self, "_gains"):
+            return self._gains
         rows = self.db.execute_query(
             "SELECT t.stock_code, t.price FROM ticker_data t "
             "JOIN (SELECT stock_code, MAX(timestamp) mx FROM ticker_data "
@@ -99,31 +100,60 @@ class EntryTimingService:
             "WHERE t.trade_date=?",
             (trade_date, trade_date)) or []
         last = {r[0]: float(r[1]) for r in rows}
-        if not last:
-            return []
-        codes = list(last.keys())
-        ph = ",".join("?" for _ in codes)
-        # 今日前最近一个收盘价（前收）
-        krows = self.db.execute_query(
-            f"SELECT stock_code, close_price FROM kline_data "
-            f"WHERE stock_code IN ({ph}) AND substr(time_key,1,10) < ? AND close_price>0 "
-            f"ORDER BY stock_code, time_key",
-            (*codes, trade_date)) or []
-        prevc: dict = {}
-        for code, cl in krows:
-            prevc[code] = float(cl)  # 升序遍历，最后一条即今日前最近收盘
-        gains = []
-        for code, lp in last.items():
-            pc = prevc.get(code)
-            if pc and pc > 0:
-                gains.append((code, lp / pc - 1))
+        gains: List[Tuple[str, float]] = []
+        if last:
+            codes = list(last.keys())
+            ph = ",".join("?" for _ in codes)
+            krows = self.db.execute_query(
+                f"SELECT stock_code, close_price FROM kline_data "
+                f"WHERE stock_code IN ({ph}) AND substr(time_key,1,10) < ? AND close_price>0 "
+                f"ORDER BY stock_code, time_key",
+                (*codes, trade_date)) or []
+            prevc: dict = {}
+            for code, cl in krows:
+                prevc[code] = float(cl)  # 升序遍历，最后一条即今日前最近收盘
+            for code, lp in last.items():
+                pc = prevc.get(code)
+                if pc and pc > 0:
+                    gains.append((code, lp / pc - 1))
+            gains.sort(key=lambda x: -x[1])
+        self._gains_td = trade_date
+        self._gains = gains
+        return gains
+
+    def strong_pool(self, trade_date: str) -> List[Tuple[str, float]]:
+        """当日强势股：今日已涨(现价/前收-1)靠前的活跃股。返回 [(code, today_gain), ...] 降序。"""
+        th = self.th
+        gains = self._all_gains(trade_date)
         if not gains:
             return []
-        gains.sort(key=lambda x: -x[1])
         cut = th.today_min_gain
         if len(gains) > 5:
             cut = max(cut, gains[int(th.pool_top_pct * len(gains))][1])
         return [(c, g) for c, g in gains if g >= cut][:th.pool_max_n]
+
+    def market_regime(self, trade_date: str) -> dict:
+        """当日市场行情(全活跃股涨幅中位) → up/flat/down + 今日打法(纯展示·只读·不下单)。
+
+        依据 2026-06 多日回测: 涨/平盘买'日内低位'放大收益(让利润奔跑);跌市只碰'日线健康'
+        (MA20上方/真趋势)避弱势死猫跳。阈值 ±0.5% 与回测一致。
+        """
+        vals = [g for _, g in self._all_gains(trade_date)]
+        if len(vals) < 10:
+            return {"regime": "unknown", "median_pct": None,
+                    "playbook": "", "hint": "活跃股数据不足"}
+        med = median(vals)
+        if med >= 0.005:
+            regime = "up"; hint = "进攻日"
+            pb = "买日内低位(低吸)、让利润奔跑、别急移动止盈"
+        elif med <= -0.005:
+            regime = "down"; hint = "防守日"
+            pb = "只碰日线健康(MA20上方/真趋势)的强势股、避开弱势'死猫跳'"
+        else:
+            regime = "flat"; hint = "中性日"
+            pb = "可低吸但克制、跟紧大盘"
+        return {"regime": regime, "median_pct": round(med * 100, 2),
+                "hint": hint, "playbook": pb}
 
     def _names(self, codes: List[str]) -> dict:
         if not codes:
@@ -162,10 +192,11 @@ class EntryTimingService:
         """主入口：返回强势股池 + 每只的入场择时绿灯。"""
         D = self._hk_today()
         market_open = self._market_open()
+        regime = self.market_regime(D)
         pool = self.strong_pool(D)
         if not pool:
             return {"as_of": D, "market_open": market_open, "pool_size": 0,
-                    "items": [], "experimental": True}
+                    "items": [], "regime": regime, "experimental": True}
         codes = [c for c, _ in pool]
         names = self._names(codes)
         ph = ",".join("?" for _ in codes)
@@ -208,7 +239,7 @@ class EntryTimingService:
         order = {"green": 0, "red": 1, "neutral": 2}
         items.sort(key=lambda x: (order.get(x["light"], 3), -x["gain_today"]))
         return {"as_of": D, "market_open": market_open, "pool_size": len(pool),
-                "items": items, "experimental": True}
+                "items": items, "regime": regime, "experimental": True}
 
     # ==================== 持久化 + 历史（供"全部信号"回查 / 复盘真实命中率）====================
 

@@ -5,7 +5,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEntryTiming, type EntryTimingItem } from "@/app/hooks/useEntryTiming";
+import { useEntryTiming, type EntryTimingItem, type EntryTimingRegime } from "@/app/hooks/useEntryTiming";
 
 function LightTag({ light }: { light: EntryTimingItem["light"] }) {
   if (light === "green")
@@ -13,6 +13,33 @@ function LightTag({ light }: { light: EntryTimingItem["light"] }) {
   if (light === "red")
     return <span className="text-[9px] px-1.5 py-px rounded-full bg-rose-500 text-white font-bold shrink-0">🔴 别追</span>;
   return <span className="text-[9px] px-1.5 py-px rounded-full bg-muted text-muted-foreground font-bold shrink-0">⚪ 观望</span>;
+}
+
+// 今日打法（纯展示·只读）：按当日 regime 给攻防口径，不下单/不门控
+function RegimeBanner({ regime }: { regime?: EntryTimingRegime }) {
+  if (!regime || regime.regime === "unknown" || !regime.playbook) return null;
+  const tone =
+    regime.regime === "up"
+      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
+      : regime.regime === "down"
+      ? "bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-400"
+      : "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400";
+  const icon = regime.regime === "up" ? "🔺" : regime.regime === "down" ? "🔻" : "➖";
+  return (
+    <div className={`mx-3 mt-3 px-3 py-2 rounded-lg border ${tone}`}>
+      <div className="flex items-center gap-1.5 text-[11px] font-bold">
+        <span>{icon}</span>
+        <span>今日打法 · {regime.hint}</span>
+        {regime.median_pct != null && (
+          <span className="text-[9px] font-normal opacity-70 tabular-nums">
+            (全市场中位 {regime.median_pct >= 0 ? "+" : ""}
+            {regime.median_pct.toFixed(2)}%)
+          </span>
+        )}
+      </div>
+      <div className="text-[11px] mt-0.5 leading-snug opacity-90">{regime.playbook}</div>
+    </div>
+  );
 }
 
 export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: string) => void }) {
@@ -41,6 +68,8 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
           </Link>
         </div>
       </div>
+
+      <RegimeBanner regime={data?.regime} />
 
       <div className="p-3">
         {isLoading ? (

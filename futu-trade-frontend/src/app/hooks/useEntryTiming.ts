@@ -18,11 +18,19 @@ export interface EntryTimingItem {
   stale: boolean;
 }
 
+export interface EntryTimingRegime {
+  regime: "up" | "flat" | "down" | "unknown";
+  median_pct: number | null; // 全活跃股涨幅中位 %
+  hint: string; // 进攻日/防守日/中性日
+  playbook: string; // 今日打法(纯展示)
+}
+
 export interface EntryTimingData {
   as_of: string;
   market_open: boolean;
   pool_size: number;
   experimental: boolean;
+  regime?: EntryTimingRegime;
   items: EntryTimingItem[];
 }
 
