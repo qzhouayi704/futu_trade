@@ -438,6 +438,7 @@ class QuotePipeline:
                     'price': alert.get('end_price', 0),
                     'reason': reason,
                     'message': alert['message'],
+                    'severity': alert.get('severity', ''),  # high(🚀强拉升)/其它(📈) — 供推送质量门
                     'timestamp': datetime.now().isoformat(),
                     'strategy_id': 'absorption_scanner',
                 })
@@ -637,7 +638,13 @@ class QuotePipeline:
                 # 非持仓买入(机会)/持仓买入 仍照常推。
                 if signal_type == 'SELL' and not is_position:
                     continue
-                # 非持仓股买入 / 其它 → 普通推送
+                # 非持仓股的"弱"量价齐升(📈 中等)也降噪：只推高强度(🚀)机会；真正精选的买点仍走
+                # sniper TOP5(盘中狙击)/入场择时。持仓股不受此限。
+                if (signal_type == 'BUY' and not is_position
+                        and action.get('strategy_id') == 'absorption_scanner'
+                        and action.get('severity') != 'high'):
+                    continue
+                # 非持仓股(强)买入 / 其它 → 普通推送
                 task = asyncio.create_task(
                     wechat.alert_trade_signal(
                         stock_code=stock_code,
