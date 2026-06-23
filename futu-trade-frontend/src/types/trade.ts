@@ -132,6 +132,7 @@ export interface SniperSignal {
   strength?: number;      // 0-100
   strength_label?: string;
   pre_jump3?: number;     // 信号前3分钟急涨%
+  edge?: string;          // 边际诚实标注: "unverified"=参考·无验证边际(~50%) / "holding_risk"=持仓硬风险
 }
 
 export interface PositionCapitalFlow {

@@ -62,6 +62,10 @@ class SignalPublisher:
         self.container = container
         self._recent_signals: dict[str, float] = {}  # stock_code:type → 上次发送时间
         self._cooldown = 300  # 同类信号冷却5分钟
+        # 持仓集合缓存（供"持仓风险"告警判定；momentum 作为 sniper 之外的第二传感器为持仓兜底）
+        self._held_codes: set = set()
+        self._held_ts: float = 0.0
+        self._held_ttl = 60  # 持仓集合缓存秒数
 
     async def publish(self, signal: Union[MomentumSignal, DeltaSignal]):
         """发布信号"""
@@ -88,11 +92,21 @@ class SignalPublisher:
         # 2. WebSocket推送
         await self._push_websocket(signal, priority)
 
-        # 3. 高优先级 → 微信
-        if priority == "HIGH":
+        # 3. 持仓股的卖出风险 → "持仓风险" CRITICAL 告警（绕过仅 HIGH 才推的门）。
+        #    momentum 是 sniper 之外的第二传感器：2026-06-23 HK.06871 的 EXTREME_DELTA/VWAP_BREAK
+        #    @09:49 早于 sniper 抓到风险，却因非持仓路由从未变成"持仓风险"——此处补上。
+        held_risk = False
+        if signal.signal_type in self.SELL_TYPES:
+            held_codes = await self._get_held_codes()
+            if signal.stock_code in held_codes:
+                held_risk = True
+                await self._send_held_risk_wechat(signal)
+
+        # 4. 高优先级 → 微信（持仓风险已单独推过，避免重复）
+        if priority == "HIGH" and not held_risk:
             await self._send_wechat(signal)
 
-        # 4. 接入决策引擎 (STRONG_BUY / MODERATE_BUY)
+        # 5. 接入决策引擎 (STRONG_BUY / MODERATE_BUY)
         if signal.signal_type in ("STRONG_BUY", "MODERATE_BUY"):
             try:
                 engine = getattr(self.container, "trade_decision_engine", None)
@@ -185,3 +199,46 @@ class SignalPublisher:
             await wechat.send_text(msg)
         except Exception as e:
             logger.debug(f"微信通知失败: {e}")
+
+    async def _get_held_codes(self) -> set:
+        """带缓存(60s)的持仓集合。失败保留上次结果、绝不抛出（不能打断信号发布）。"""
+        import time as _time
+        import asyncio
+        now = _time.time()
+        if now - self._held_ts < self._held_ttl:
+            return self._held_codes
+        try:
+            fts = getattr(self.container, 'futu_trade_service', None)
+            if fts:
+                loop = asyncio.get_running_loop()
+                res = await loop.run_in_executor(None, fts.get_positions)
+                if res and res.get('success'):
+                    self._held_codes = {
+                        p.get('stock_code', '') for p in res.get('positions', [])
+                        if p.get('stock_code') and (p.get('qty', 0) or 0) > 0
+                    }
+            self._held_ts = now
+        except Exception as e:
+            logger.debug(f"动量发布器刷新持仓集合失败: {e}")
+        return self._held_codes
+
+    async def _send_held_risk_wechat(self, signal):
+        """持仓股卖出风险 → "⚠️持仓风险" CRITICAL 告警（与 sniper 同款，独立去重键）。"""
+        try:
+            wechat = getattr(self.container, 'wechat_alert_service', None)
+            if not (wechat and getattr(wechat, 'enabled', False)):
+                return
+            from ..alert.wechat_alert import AlertLevel
+            await wechat.send(
+                level=AlertLevel.CRITICAL,
+                title=f"⚠️持仓风险 — {signal.stock_code}",
+                content=(
+                    "**【你的持仓·动量预警】**\n"
+                    f"- 类型：{signal.signal_type}\n"
+                    f"- 价格：{signal.price}\n"
+                    f"- {signal.description}"
+                ),
+                dedup_key=f"hold_risk:{signal.stock_code}:{signal.signal_type}",
+            )
+        except Exception as e:
+            logger.debug(f"持仓风险微信通知失败: {e}")

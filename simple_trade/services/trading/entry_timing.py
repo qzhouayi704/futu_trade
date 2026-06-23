@@ -18,7 +18,7 @@ import logging
 import time as _time
 from dataclasses import dataclass
 from datetime import datetime
-from statistics import median
+from statistics import mean, median
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger("entry_timing")
@@ -37,6 +37,13 @@ class EntryTimingThresholds:
     pos_strong_low: float = 0.34 # 回到日内低位（更优低吸）
     stale_seconds: int = 300     # 最近一笔逐笔超过 5 分钟视为陈旧/休市
     min_live_pool: int = 8       # 当日强势股不足此数（开盘空窗）时，用昨日强势 top20 兜底观察池
+    # —— regime 判定（除中位外再看均值/宽度，避免"给回日"被误判为可买）+ 防守日 🟢 门控 ——
+    # 2026-06-23 实测：median −0.36%(旧规则判 flat=可低吸) 但 mean −0.76%、宽度 71↑93↓ 的给回日，
+    # 🟢低吸 +30min 命中仅 10%/均值 −3.0%（接死猫跳）。改进 regime 后该日正确判 down 并门掉 🟢。
+    regime_mean_down: float = -0.005   # 全活跃股涨幅均值 <= -0.5% 视为防守
+    regime_breadth_down: float = 0.45  # 上涨股占比 <= 0.45 视为防守
+    gate_green_on_down: bool = True    # 防守日(down)把 🟢可低吸降级为 ⚪观察；置 False 即还原旧行为(可逆)
+    require_ma20_on_green: bool = False # 预留：是否额外要求日线 MA20 上方才放行 🟢（默认关，待回测验证再开）
 
 
 def judge_entry_timing(mom5: Optional[float], ofi15: Optional[float],
@@ -68,7 +75,7 @@ def judge_entry_timing(mom5: Optional[float], ofi15: Optional[float],
         if ofi15 is not None:
             why.append("单流未过热")
         label = "可低吸(较优)" if strong else "可低吸"
-        return ("green", label, "、".join(why) + "：回测此处胜率/前向收益最高")
+        return ("green", label, "、".join(why) + "：进攻日此处低吸边际较好(防守日自动降级为观察)")
     return ("neutral", "观望", "非明确低吸/追高区间")
 
 
@@ -173,26 +180,38 @@ class EntryTimingService:
             return []
 
     def market_regime(self, trade_date: str) -> dict:
-        """当日市场行情(全活跃股涨幅中位) → up/flat/down + 今日打法(纯展示·只读·不下单)。
+        """当日市场行情(全活跃股涨幅 中位+均值+宽度) → up/flat/down + 今日打法(纯展示·只读·不下单)。
 
         依据 2026-06 多日回测: 涨/平盘买'日内低位'放大收益(让利润奔跑);跌市只碰'日线健康'
-        (MA20上方/真趋势)避弱势死猫跳。阈值 ±0.5% 与回测一致。
+        (MA20上方/真趋势)避弱势死猫跳。
+        2026-06-23 修正: 旧版只看中位 ±0.5%，把"给回日"(median −0.36% 但 mean −0.76%、71↑93↓)
+        误判为 flat·可低吸——那天 🟢低吸命中仅 10%。现叠加均值/宽度，凡中位偏空 *或* 均值偏空
+        *或* 上涨股不过半，都判 down，让防守日的 🟢 被 watch() 门掉。
         """
         vals = [g for _, g in self._all_gains(trade_date)]
         if len(vals) < 10:
-            return {"regime": "unknown", "median_pct": None,
-                    "playbook": "", "hint": "活跃股数据不足"}
+            return {"regime": "unknown", "median_pct": None, "mean_pct": None,
+                    "up_ratio": None, "breadth": None, "playbook": "", "hint": "活跃股数据不足"}
+        th = self.th
         med = median(vals)
-        if med >= 0.005:
+        mean_v = mean(vals)
+        n_up = sum(1 for g in vals if g > 0)
+        up_ratio = n_up / len(vals)
+        is_up = (med >= 0.005 and up_ratio >= 0.5)
+        is_down = (not is_up and (med <= -0.005 or mean_v <= th.regime_mean_down
+                                  or up_ratio <= th.regime_breadth_down))
+        if is_up:
             regime = "up"; hint = "进攻日"
             pb = "买日内低位(低吸)、让利润奔跑、别急移动止盈"
-        elif med <= -0.005:
+        elif is_down:
             regime = "down"; hint = "防守日"
-            pb = "只碰日线健康(MA20上方/真趋势)的强势股、避开弱势'死猫跳'"
+            pb = "只碰日线健康(MA20上方/真趋势)的强势股、避开弱势'死猫跳'；🟢低吸自动降级为观察"
         else:
             regime = "flat"; hint = "中性日"
             pb = "可低吸但克制、跟紧大盘"
         return {"regime": regime, "median_pct": round(med * 100, 2),
+                "mean_pct": round(mean_v * 100, 2), "up_ratio": round(up_ratio, 2),
+                "breadth": f"{n_up}↑{len(vals) - n_up}↓",
                 "hint": hint, "playbook": pb}
 
     def _names(self, codes: List[str]) -> dict:
@@ -273,6 +292,13 @@ class EntryTimingService:
             else:
                 light, label, reason = judge_entry_timing(
                     feat["mom5"], feat["ofi15"], feat["pos_range"], self.th)
+                # 防守日门控：down regime 下 🟢可低吸 经实测反向(接死猫跳，2026-06-23 命中仅10%)，
+                # 降级为 ⚪观察。可逆：gate_green_on_down=False 即还原。🔴别追(已验证~89%)不动。
+                if (self.th.gate_green_on_down and light == "green"
+                        and regime.get("regime") == "down"):
+                    light, label, reason = (
+                        "neutral", "观察(防守日)",
+                        "防守日(均值/宽度偏空)低吸易接'死猫跳'——已降级；等转攻或日线健康再低吸")
             items.append({
                 "stock_code": code,
                 "stock_name": names.get(code, code),

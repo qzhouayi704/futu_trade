@@ -55,6 +55,7 @@ class SniperSignal:
     intraday_gain: float = 0.0  # 信号时当日已涨幅%(从开盘)
     pre_jump3: float = 0.0  # 信号前3分钟急涨%(脉冲接盘判定: ≥6%别碰)
     posture: str = ""       # 配套出场动作提示
+    edge: str = ""          # 边际诚实标注: ""=默认 / "unverified"=参考无验证边际(~50%掷硬币) / "holding_risk"=持仓硬风险
 
     @property
     def emoji(self) -> str:
@@ -83,6 +84,8 @@ class SniperSignal:
             d["intraday_gain"] = self.intraday_gain
             d["pre_jump3"] = self.pre_jump3
             d["posture"] = self.posture
+        if self.edge:
+            d["edge"] = self.edge
         return d
 
     def to_wechat_text(self) -> str:
@@ -127,6 +130,7 @@ SCORE_SIGNAL_WEIGHT = 3        # 信号分权重
 MEGA_FLOOR_PCT = 0.02      # 动态mega阈值地板 = 日成交额 × 2%
 MEGA_FLOOR_MIN = 50        # 最低地板50万(防微盘股误触发)
 MIN_DAILY_TURNOVER = 100   # 日成交额 <100万 不监控(放宽)
+PUSH_MIN_STRENGTH = 61     # 机构信号(非 opportunity 档 mega_buy)需强度≥此值才进企微INFO推送(收敛~50%掷硬币洪流;可调)
 
 
 # ============================================================
@@ -430,11 +434,14 @@ class IntradaySniper:
                 ).fetchall()
                 watch_codes = [r[0] for r in rows]
 
+            # 刷新持仓集合（供持仓硬风险优先推送）+ 持仓股必入监控池（无论是否在 QUOTE 订阅集）：
+            # 否则持仓股没被订阅时 sniper 根本不扫它、持仓硬风险安全网静默(HK.06871 2026-06-23 即此坑)。
+            held_codes = await self._refresh_held_codes()
+            if held_codes:
+                watch_codes = list(set(watch_codes) | held_codes)
+
             if not watch_codes:
                 return
-
-            # 刷新持仓集合（供持仓硬风险优先推送）
-            held_codes = await self._refresh_held_codes()
 
             with db.get_connection() as conn:
                 new_signals = []
@@ -448,8 +455,8 @@ class IntradaySniper:
                     if len(timeline) < 2 or avg_turnover <= 0:
                         continue
 
-                    # 跳过微盘股
-                    if day_total < MIN_DAILY_TURNOVER:
+                    # 跳过微盘股（持仓股除外：持仓无论多小都要被监控/告警，永不静默）
+                    if day_total < MIN_DAILY_TURNOVER and stock_code not in held_codes:
                         continue
 
                     # 获取股票名称
@@ -534,8 +541,11 @@ class IntradaySniper:
                     
                     # 识别机构资金信号
                     # [MODIFIED 2026-06-12] 移除 accumulation_signal 推送优先(已禁用)
+                    # [2026-06-23] opportunity 档(持续抢筹)=6天验证最稳健，永远保留推送；其余 mega_buy
+                    # 需强度≥PUSH_MIN_STRENGTH 才进企微 INFO，收敛 ~50% 掷硬币噪声洪流。
                     is_inst_signal = (
                         sig.signal_type == 'mega_buy' and sig.severity == 'high'
+                        and (sig.tier == 'opportunity' or (sig.strength or 0) >= PUSH_MIN_STRENGTH)
                     )
 
                     # 持仓硬风险：持仓股的红灯风险信号必推（绕过TOP5门槛）——
@@ -544,6 +554,13 @@ class IntradaySniper:
                         sig.stock_code in held_codes and sig.is_red
                         and sig.signal_type in ('mega_sell', 'sustained_out', 'reversal_bear')
                     )
+
+                    # 边际诚实标注（供前端降权显示，不影响推送门）：持仓风险最高优先；机会档不标；
+                    # 其余非红信号标 "参考·无验证边际"(~50% 掷硬币)。
+                    if is_holding_risk:
+                        sig.edge = "holding_risk"
+                    elif not sig.is_red and sig.tier != 'opportunity':
+                        sig.edge = "unverified"
 
                     if sig.stock_code in top_codes or is_inst_signal or is_holding_risk:
                         await self._push_signal(sig, holding=is_holding_risk)

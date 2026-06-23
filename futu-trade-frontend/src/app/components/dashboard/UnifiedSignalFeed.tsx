@@ -251,6 +251,8 @@ export function UnifiedSignalFeed({
       if (!PRIMARY_SNIPER_TYPES.has(sig.signal_type)) continue;
 
       const isBuy = sig.signal_type === "mega_buy";
+      // 无验证边际(~50%掷硬币)的 mega_buy：降权为灰色"参考"，不计入机会统计(urgency<60)
+      const isUnverified = sig.edge === "unverified";
 
       items.push({
         id: `v1-${sig.stock_code}-${sig.signal_type}-${sig.time}`,
@@ -259,11 +261,11 @@ export function UnifiedSignalFeed({
         stock_code: sig.stock_code,
         stock_name: sig.stock_name,
         emoji: sig.emoji,
-        label: SNIPER_LABELS[sig.signal_type] || sig.signal_type,
+        label: (SNIPER_LABELS[sig.signal_type] || sig.signal_type) + (isUnverified ? " · 参考" : ""),
         detail: sig.detail,
-        urgency: sig.is_red ? 85 : isBuy ? 80 : 70,
+        urgency: isUnverified ? 50 : sig.is_red ? 85 : isBuy ? 80 : 70,
         is_red: sig.is_red,
-        ...BUCKET_STYLE[sig.is_red ? "risk" : "buy"],
+        ...BUCKET_STYLE[isUnverified ? "watch" : sig.is_red ? "risk" : "buy"],
         price: sig.price,
       });
     }

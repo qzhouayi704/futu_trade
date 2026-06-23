@@ -82,7 +82,7 @@ class PositionManager:
                         'current_price': row.get('nominal_price', 0),
                         'market_value': row.get('market_val', 0),
                         'profit_loss': row.get('pl_val', 0),
-                        'profit_loss_pct': pl_ratio * 100 if pl_ratio else 0,  # 转换为百分比
+                        'profit_loss_pct': pl_ratio if pl_ratio else 0,  # 富途 pl_ratio 已是百分比(实测 26.06=+26%)，勿再×100
                         # 保留原始字段名（向后兼容）
                         'qty': row.get('qty', 0),
                         'can_sell_qty': row.get('can_sell_qty', 0),

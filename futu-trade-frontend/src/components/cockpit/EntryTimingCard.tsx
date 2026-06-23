@@ -7,12 +7,13 @@
 import Link from "next/link";
 import { useEntryTiming, type EntryTimingItem, type EntryTimingRegime } from "@/app/hooks/useEntryTiming";
 
-function LightTag({ light }: { light: EntryTimingItem["light"] }) {
+// 渲染后端 label（防守日 🟢 会被降级为 ⚪「观察(防守日)」，此处如实显示）
+function LightTag({ light, label }: { light: EntryTimingItem["light"]; label?: string }) {
   if (light === "green")
-    return <span className="text-[9px] px-1.5 py-px rounded-full bg-emerald-500 text-white font-bold shrink-0">🟢 可低吸</span>;
+    return <span className="text-[9px] px-1.5 py-px rounded-full bg-emerald-500 text-white font-bold shrink-0">🟢 {label || "可低吸"}</span>;
   if (light === "red")
-    return <span className="text-[9px] px-1.5 py-px rounded-full bg-rose-500 text-white font-bold shrink-0">🔴 别追</span>;
-  return <span className="text-[9px] px-1.5 py-px rounded-full bg-muted text-muted-foreground font-bold shrink-0">⚪ 观望</span>;
+    return <span className="text-[9px] px-1.5 py-px rounded-full bg-rose-500 text-white font-bold shrink-0">🔴 {label || "别追"}</span>;
+  return <span className="text-[9px] px-1.5 py-px rounded-full bg-muted text-muted-foreground font-bold shrink-0">⚪ {label || "观望"}</span>;
 }
 
 // 今日打法（纯展示·只读）：按当日 regime 给攻防口径，不下单/不门控
@@ -32,8 +33,10 @@ function RegimeBanner({ regime }: { regime?: EntryTimingRegime }) {
         <span>今日打法 · {regime.hint}</span>
         {regime.median_pct != null && (
           <span className="text-[9px] font-normal opacity-70 tabular-nums">
-            (全市场中位 {regime.median_pct >= 0 ? "+" : ""}
-            {regime.median_pct.toFixed(2)}%)
+            (中位 {regime.median_pct >= 0 ? "+" : ""}
+            {regime.median_pct.toFixed(2)}%
+            {regime.mean_pct != null ? ` · 均值 ${regime.mean_pct >= 0 ? "+" : ""}${regime.mean_pct.toFixed(2)}%` : ""}
+            {regime.breadth ? ` · ${regime.breadth}` : ""})
           </span>
         )}
       </div>
@@ -127,7 +130,7 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
                           今日+{it.gain_today.toFixed(0)}%
                         </span>
                       )}
-                      <LightTag light={it.light} />
+                      <LightTag light={it.light} label={it.label} />
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {it.mom5 != null && (
@@ -155,9 +158,9 @@ export function EntryTimingCard({ onSelectStock }: { onSelectStock?: (code: stri
         )}
         {/* 脚注：诚实边界 */}
         <div className="text-[10px] text-muted-foreground mt-2 pt-2 border-t border-border leading-relaxed">
-          实验功能·仅展示不下单。逻辑：当日强势股(今日领涨) + 逐笔回测的"买刚回调、别追刚冲高"。
-          边际<b>依行情而变</b>(见上「今日打法」)——当<b>择时过滤器</b>用(决定何时点买)、不是选股器；
-          样本仅1涨3跌日=方向性、随唯一口径评估器每周重跑校准，请自行判断。
+          实验功能·仅展示不下单。当<b>择时过滤器</b>用(决定何时点买)、不是选股器。
+          实测<b>🔴别追更靠谱</b>(~89%命中)；<b>防守日的🟢低吸易接"死猫跳"已自动降级为⚪观察</b>(只在进攻/中性日点亮)。
+          样本仍少=方向性、随唯一口径评估器每周重跑校准，请自行判断。
         </div>
       </div>
     </div>

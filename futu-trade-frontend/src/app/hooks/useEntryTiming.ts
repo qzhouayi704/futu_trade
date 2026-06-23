@@ -22,6 +22,9 @@ export interface EntryTimingItem {
 export interface EntryTimingRegime {
   regime: "up" | "flat" | "down" | "unknown";
   median_pct: number | null; // 全活跃股涨幅中位 %
+  mean_pct?: number | null; // 全活跃股涨幅均值 %（给回日识别）
+  up_ratio?: number | null; // 上涨股占比 [0,1]
+  breadth?: string | null; // 宽度，如 "71↑93↓"
   hint: string; // 进攻日/防守日/中性日
   playbook: string; // 今日打法(纯展示)
 }

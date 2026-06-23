@@ -28,6 +28,7 @@ interface SniperSignal {
   buy_count?: number;     // 当日该股第几次 mega_buy
   intraday_gain?: number; // 信号时当日已涨幅%
   posture?: string;       // 配套出场动作
+  edge?: string;          // 边际诚实标注: "unverified"=参考·无验证边际(~50%) / "holding_risk"=持仓硬风险
 }
 
 interface RankItem {
@@ -244,6 +245,11 @@ export function SniperCard() {
                           <span className={`text-[9px] px-1 py-px rounded font-medium shrink-0 ${badgeColor}`}>
                             {typeLabels[sig.signal_type] || sig.signal_type}
                           </span>
+                          {sig.edge === "unverified" && (
+                            <span className="text-[9px] px-1 py-px rounded font-medium shrink-0 bg-gray-200/70 text-gray-500" title="该类信号回测约50%命中、无验证边际，仅供参考">
+                              参考·无验证边际
+                            </span>
+                          )}
                           {sig.signal_type === "mega_buy" && sig.strength != null && sig.strength > 0 && (
                             <span className={`text-[9px] px-1 py-px rounded font-bold shrink-0 tabular-nums ${
                               sig.strength >= 81 ? "bg-amber-300/80 text-amber-900" :
