@@ -632,7 +632,12 @@ class QuotePipeline:
                     self._pending_tasks.add(ai_task)
                     ai_task.add_done_callback(self._on_task_done)
             else:
-                # 非持仓股 / 非卖出信号 → 普通推送
+                # 非持仓股的卖出信号 = 不可操作(你没持仓、卖不了)的噪声：还会把企微推爆、触发频率
+                # 限制(45009)从而把真正重要的"持仓风险"告警挤掉。故不推企微(仍进前端信号流/DB可查)。
+                # 非持仓买入(机会)/持仓买入 仍照常推。
+                if signal_type == 'SELL' and not is_position:
+                    continue
+                # 非持仓股买入 / 其它 → 普通推送
                 task = asyncio.create_task(
                     wechat.alert_trade_signal(
                         stock_code=stock_code,
