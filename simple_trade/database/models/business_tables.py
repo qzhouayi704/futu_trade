@@ -218,6 +218,24 @@ class BusinessTables:
         )
     '''
 
+    # 预设离场计划表（盘前为持仓定"开盘若X则卖"，开盘检查读取，专治开盘干等信号）
+    EXIT_PLANS_TABLE = '''
+        CREATE TABLE IF NOT EXISTS exit_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_id INTEGER NOT NULL,
+            stock_code TEXT NOT NULL,
+            planned_action TEXT NOT NULL,
+            trigger_type TEXT NOT NULL,
+            trigger_value REAL,
+            note TEXT,
+            valid_for_date TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (stock_id) REFERENCES stocks(id)
+        )
+    '''
+
     # 资金流向缓存表
     CAPITAL_FLOW_CACHE_TABLE = '''
         CREATE TABLE IF NOT EXISTS capital_flow_cache (

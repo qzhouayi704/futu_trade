@@ -508,6 +508,7 @@ async def get_positions_coach(container=Depends(get_container)):
 
             sniper = getattr(container, 'intraday_sniper', None)
             out = []
+            pos_used = []
             for p in pos_res.get('positions', []):
                 if float(p.get('qty', 0) or 0) <= 0:
                     continue
@@ -518,6 +519,7 @@ async def get_positions_coach(container=Depends(get_container)):
                 except Exception:
                     tape = None
                 out.append(build_coach(p, disc, th, tape))
+                pos_used.append(p)
 
             # 已验证有边际(回测+20~24pp)的逆高减/出货警示(R10/R3/R2): 为每只持仓附今日最新一条
             try:
@@ -542,6 +544,27 @@ async def get_positions_coach(container=Depends(get_container)):
             # 断语经 2026-06 回测证伪(次日无边际)，不再参与主张，仅作前端"参考·非预测"脚注。
             for c in out:
                 c["stance"] = reconcile_stance(c.get("selloff"))
+
+            # 开盘检查：每只持仓的开盘判读(低开/跌破昨收/高开低走) + 预设离场计划命中。
+            # 只读 quote_cache(已含 prev_close/open_price/last_price)，不额外拉 OpenD。
+            try:
+                db = getattr(container, 'db_manager', None)
+                qc = getattr(container, 'quote_cache', None)
+                if db and qc and pos_used:
+                    from ...services.trading.exit_timing import ExitTimingService
+                    from ...database.queries.exit_plan_queries import ExitPlanQueries
+                    from ...utils.market_helper import MarketTimeHelper
+                    codes = [c["stock_code"] for c in out]
+                    qmap = qc.get_quotes_for_codes(codes)
+                    today = MarketTimeHelper.get_market_today('HK')
+                    plans = ExitPlanQueries(db).get_active_plans_map(codes, today)
+                    svc = ExitTimingService(db)
+                    oc = svc.open_check(pos_used, qmap, plans, regime=svc.market_regime(today))
+                    ocm = {it["stock_code"]: it for it in oc.get("items", [])}
+                    for c in out:
+                        c["open_check"] = ocm.get(c["stock_code"])
+            except Exception:
+                pass
             return out, None
 
         data, err = await asyncio.to_thread(_compute)

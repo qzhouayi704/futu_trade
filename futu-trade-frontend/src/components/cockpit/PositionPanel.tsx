@@ -21,6 +21,15 @@ interface CoachInfo {
   flow_warning?: string | null;   // 已验证有边际的逆高减/出货警示(R10/R3/R2)
   // 收口：把"洗盘别割"(微观承接)与"逆高减/出货"(有边际·偏收盘)仲裁成单一主张
   stance?: { primary: string; note: string; level: string; tone: string } | null;
+  // 开盘检查：低开/跌破昨收/高开低走 + 预设离场计划命中(只读·不下单)
+  open_check?: {
+    light: "red" | "amber" | "green";
+    label: string;
+    reason: string;
+    gap_pct?: number | null;
+    has_plan?: boolean;
+    plan_action?: string | null;
+  } | null;
   hold_recommendation: { label: string; detail: string; activate_pct: number; pullback_pct: number };
 }
 
@@ -86,6 +95,9 @@ const STANCE_TONE: Record<string, { chip: string; box: string; icon: string }> =
   },
 };
 const stanceTone = (t?: string) => STANCE_TONE[t || ""] || STANCE_TONE.caution;
+// 开盘检查灯色 → 复用 STANCE_TONE 配色
+const OC_TONE: Record<string, string> = { red: "danger", amber: "caution", green: "ok" };
+const ocTone = (light?: string) => stanceTone(OC_TONE[light || ""] || "caution");
 
 const MODE_KEY = "positionExitModes";
 
@@ -258,7 +270,9 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                     if (!coach) return null;
                     const so = coach.selloff;
                     const drift = coach.cost_drift_pct ?? 0;
-                    const showStrip = coach.churn || drift > 0 || !!so || !!coach.stance;
+                    const oc = coach.open_check;
+                    const ocShow = !!oc && oc.light !== "green";
+                    const showStrip = coach.churn || drift > 0 || !!so || !!coach.stance || ocShow;
                     return (
                       <>
                         {showStrip && (
@@ -295,6 +309,13 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                             <span className="text-[9px] px-1.5 py-px rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
                               🏦 {coach.hold_recommendation.activate_pct}%/{coach.hold_recommendation.pullback_pct}%
                             </span>
+                          </div>
+                        )}
+                        {/* 开盘检查：低开/跌破昨收/高开低走 + 预设离场计划命中(只读·不下单·别干等信号) */}
+                        {ocShow && oc && (
+                          <div className={`mt-1 text-[10px] rounded px-1.5 py-1 leading-snug ${ocTone(oc.light).box}`}>
+                            📋 开盘检查 {ocTone(oc.light).icon} {oc.label}
+                            {oc.has_plan ? " ·已设计划" : ""}：{oc.reason}
                           </div>
                         )}
                         {coach.churn && coach.blunt && (

@@ -46,6 +46,9 @@ class DatabaseSchema(BaseTables, BusinessTables):
         'CREATE INDEX IF NOT EXISTS idx_kline_5min_time ON kline_5min_data(time_key)',
         'CREATE INDEX IF NOT EXISTS idx_kline_5min_code_time ON kline_5min_data(stock_code, time_key DESC)',
 
+        # === 离场计划表索引 ===
+        'CREATE INDEX IF NOT EXISTS idx_exit_plans_date_code ON exit_plans(valid_for_date, stock_code, is_active)',
+
         # === 交易信号表索引 ===
         'CREATE INDEX IF NOT EXISTS idx_signals_created ON trade_signals(created_at DESC)',
         'CREATE INDEX IF NOT EXISTS idx_signals_stock_time ON trade_signals(stock_id, created_at DESC)',
@@ -156,6 +159,7 @@ class DatabaseSchema(BaseTables, BusinessTables):
             cls.NEWS_PLATES_TABLE,
             cls.TAKE_PROFIT_TASKS_TABLE,
             cls.TAKE_PROFIT_EXECUTIONS_TABLE,
+            cls.EXIT_PLANS_TABLE,
             cls.CAPITAL_FLOW_CACHE_TABLE,
             cls.CAPITAL_FLOW_DAILY_TABLE,
             cls.BIG_ORDER_TRACKING_TABLE,
@@ -225,6 +229,7 @@ class TableNames:
     NEWS_PLATES = "news_plates"
     TAKE_PROFIT_TASKS = "take_profit_tasks"
     TAKE_PROFIT_EXECUTIONS = "take_profit_executions"
+    EXIT_PLANS = "exit_plans"
     CAPITAL_FLOW_CACHE = "capital_flow_cache"
     CAPITAL_FLOW_DAILY = "capital_flow_daily"
     BIG_ORDER_TRACKING = "big_order_tracking"

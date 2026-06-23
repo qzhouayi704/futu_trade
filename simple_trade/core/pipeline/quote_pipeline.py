@@ -11,7 +11,7 @@ import logging
 import asyncio
 import os
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from ...utils.logger import get_flow_logger
 
 from .pipeline_broadcast import PipelineBroadcast
@@ -156,6 +156,12 @@ class QuotePipeline:
         # 日内自动化防砸盘风控与真空区止盈（新增）
         risk_actions = await self._check_intraday_risks(quotes, positions)
 
+        # 开盘持仓即时风险（持仓股专用·绕过策略预热盲区·仅用已取报价的昨收/开盘价/现价，
+        # 零额外 OpenD 调用）：专治"开盘想卖却干等信号"——09:30 就能报低开/跌破昨收/高开低走。
+        open_risk_actions = await self._check_open_risk(quotes, positions)
+        # 开盘一次性"持仓检查"全仓快照（每个交易日一次，全绿也推，给确定答复而非沉默）
+        await self._push_open_check_once(quotes, positions)
+
         # 信号检测/策略检测仅对"所属市场此刻真正在交易"的报价进行（每60s，每轮算一次共用）：
         # _should_run_strategy 用 is_any_market_trading（任意市场），美股时段(北京 21:30~04:00)
         # 也会放行，但监控池是港股、夜间只有昨收快照——不过滤就会拿陈旧数据反复触发
@@ -172,6 +178,7 @@ class QuotePipeline:
         trade_actions: List[Dict] = []
         trade_actions.extend(intraday_signals)
         trade_actions.extend(risk_actions)
+        trade_actions.extend(open_risk_actions)
         trade_actions.extend(flow_signals)
         trade_actions.extend(absorption_alerts)
 
@@ -311,6 +318,139 @@ class QuotePipeline:
         except Exception as e:
             logging.debug(f"获取持仓信息失败: {e}")
         return {}
+
+    @staticmethod
+    def _mins_since_hk_open() -> Optional[int]:
+        """距港股 09:30 开盘的分钟数（服务器=北京时间=HK）。盘前为负、午后很大。"""
+        try:
+            from datetime import datetime
+            now = datetime.now()
+            return (now.hour * 60 + now.minute) - (9 * 60 + 30)
+        except Exception:
+            return None
+
+    async def _check_open_risk(self, quotes: List[Dict], positions: dict) -> List[Dict]:
+        """开盘持仓即时风险（持仓股专用快路径）。
+
+        只读本周期已取的 quotes(昨收/开盘价/现价) + 少量持仓 + 预设离场计划，**零额外 OpenD
+        调用**（不碰策略预热闸所保护的 fetch_kline 资源），故可绕过预热盲区在 09:30 即出信号。
+        仅 red(或 push_on_amber 时的 amber) 产出一条 SELL action → 自动走 _push_position_sell_alert
+        的持仓推送通道（含去重）。每只持仓每个交易日只报一次，避免 5min 冷却内反复刷。
+        """
+        if not positions:
+            return []
+        try:
+            from ...utils.market_helper import MarketTimeHelper
+            if not MarketTimeHelper.is_market_trading('HK'):
+                return []
+            db = getattr(self.container, 'db_manager', None)
+            if not db:
+                return []
+            from ...services.trading.exit_timing import ExitTimingService
+            from ...database.queries.exit_plan_queries import ExitPlanQueries
+
+            svc = ExitTimingService(db)
+            th = svc.th
+            # 即时风险快路径只在开盘窗内生效（之后盘中数据已足，交回常规 R规则/狙击）
+            mins = self._mins_since_hk_open()
+            if mins is None or mins < 0 or mins > th.open_window_min:
+                return []
+
+            today = MarketTimeHelper.get_market_today('HK')
+            # 每个交易日重置"已报"集合
+            if getattr(self, '_open_risk_date', None) != today:
+                self._open_risk_date = today
+                self._open_risk_fired = set()
+
+            codes = list(positions.keys())
+            qmap = {q.get('code'): q for q in quotes if q.get('code')}
+            try:
+                plans = ExitPlanQueries(db).get_active_plans_map(codes, today)
+            except Exception:
+                plans = {}
+            result = svc.open_check(list(positions.values()), qmap, plans, regime=None)
+
+            actions: List[Dict] = []
+            for it in result.get('items', []):
+                code = it['stock_code']
+                hit = it['light'] == 'red' or (th.push_on_amber and it['light'] == 'amber')
+                if not hit or code in self._open_risk_fired:
+                    continue
+                self._open_risk_fired.add(code)
+                actions.append({
+                    'stock_code': code,
+                    'stock_name': it.get('stock_name', code),
+                    'signal_type': 'SELL',
+                    'price': it.get('last_price') or 0,
+                    'reason': f"[OPEN] 开盘风险 {it['label']}：{it['reason']}",
+                    'strategy_id': 'open_check',
+                    'source': 'open_check',
+                })
+            return actions
+        except Exception as e:
+            logging.debug(f"开盘持仓即时风险检查异常: {e}")
+            return []
+
+    async def _push_open_check_once(self, quotes: List[Dict], positions: dict):
+        """每个交易日一次：把每只持仓的开盘判读组成单条"📋 开盘持仓检查"推送（全绿也推）。
+
+        给用户一个开盘的确定答复，而非沉默——把被动等信号变成执行计划。
+        幂等：实例属性按 HK 交易日键控，次日自动复位；日期级 dedup_key 二次兜底。
+        """
+        wechat = getattr(self.container, 'wechat_alert_service', None)
+        if not wechat or not getattr(wechat, 'enabled', False) or not positions:
+            return
+        try:
+            from ...utils.market_helper import MarketTimeHelper
+            if not MarketTimeHelper.is_market_trading('HK'):
+                return
+            today = MarketTimeHelper.get_market_today('HK')
+            if getattr(self, '_open_check_pushed_date', None) == today:
+                return
+            db = getattr(self.container, 'db_manager', None)
+            if not db:
+                return
+            from ...services.trading.exit_timing import ExitTimingService
+            from ...database.queries.exit_plan_queries import ExitPlanQueries
+            from ...services.alert.wechat_alert import AlertLevel
+
+            codes = list(positions.keys())
+            qmap = {q.get('code'): q for q in quotes if q.get('code')}
+            try:
+                plans = ExitPlanQueries(db).get_active_plans_map(codes, today)
+            except Exception:
+                plans = {}
+            svc = ExitTimingService(db)
+            result = svc.open_check(list(positions.values()), qmap, plans,
+                                    regime=svc.market_regime(today))
+
+            icon = {'red': '🔴', 'amber': '🟡', 'green': '🟢'}
+            lines, any_red = [], False
+            for it in result.get('items', []):
+                if it['light'] == 'red':
+                    any_red = True
+                tag = ' ·已设计划' if it.get('has_plan') else ''
+                lines.append(
+                    f"- {it['stock_name']}({it['stock_code']}) "
+                    f"{icon.get(it['light'], '⚪')} {it['label']}：{it['reason']}{tag}")
+            if not lines:
+                return
+
+            rg = result.get('regime') or {}
+            head = f"今日{rg.get('hint', '')}({rg.get('breadth', '')})\n" if rg.get('hint') else ''
+            content = (head + "\n".join(lines)
+                       + "\n> 纯咨询·不下单：按你盘前的离场计划执行，别干等信号")
+            level = AlertLevel.WARNING if any_red else AlertLevel.INFO
+
+            # 同步置位幂等标志（此前无 await，不会与下一周期交错）
+            self._open_check_pushed_date = today
+            task = asyncio.create_task(
+                wechat.send(level, "📋 开盘持仓检查", content,
+                            dedup_key=f"open_check:{today}"))
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._on_task_done)
+        except Exception as e:
+            logging.error(f"开盘持仓检查推送失败: {e}")
 
     async def _check_price_triggers_legacy(self, quotes: List[Dict]):
         """降级方案：RiskCoordinator 不可用时直接调用各服务"""
@@ -663,7 +803,7 @@ class QuotePipeline:
             stock_name = action.get('stock_name', stock_code)
             price = action.get('price', 0)
             rule_id = ''
-            for tag in ('R2', 'R3', 'R7', 'R10', 'R13'):
+            for tag in ('OPEN', 'R2', 'R3', 'R7', 'R10', 'R13'):
                 if tag in reason:
                     rule_id = tag
                     break
