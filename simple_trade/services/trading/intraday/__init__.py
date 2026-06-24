@@ -7,5 +7,6 @@
 """
 
 from .intraday_swing_tracker import IntradaySwingTracker
+from .t_trade_assistant import TTradeAssistant
 
-__all__ = ["IntradaySwingTracker"]
+__all__ = ["IntradaySwingTracker", "TTradeAssistant"]

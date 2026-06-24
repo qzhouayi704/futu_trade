@@ -80,6 +80,7 @@ class BusinessServices:
         self._smart_position_manager = None
         self._stock_ai_analyzer = None
         self._trade_decision_engine = None
+        self._t_trade_assistant = None
 
     def __getattr__(self, name: str):
         """代理到 core/data 子容器，使 DecisionEngine 等服务能访问 db_manager 等"""
@@ -318,6 +319,23 @@ class BusinessServices:
             except Exception as e:
                 logging.warning(f"日内高抛低吸服务初始化失败: {e}")
         return self._intraday_profit_taker
+
+    @property
+    def t_trade_assistant(self):
+        """持仓做T助手（盘中高抛低吸；默认告警模式，开关在 system_config: t_trade.enabled）。"""
+        if self._t_trade_assistant is None:
+            try:
+                from ...services.trading.intraday import TTradeAssistant
+                futu = getattr(self, 'futu_trade_service', None)
+                self._t_trade_assistant = TTradeAssistant(
+                    db_manager=self.core.db_manager,
+                    order_manager=getattr(futu, 'order_manager', None),
+                    position_manager=getattr(futu, 'position_manager', None),
+                )
+                logging.info("持仓做T助手懒加载完成")
+            except Exception as e:
+                logging.warning(f"持仓做T助手初始化失败: {e}")
+        return self._t_trade_assistant
 
     @property
     def capital_flow_signal_engine(self):

@@ -49,6 +49,11 @@ class DatabaseSchema(BaseTables, BusinessTables):
         # === 离场计划表索引 ===
         'CREATE INDEX IF NOT EXISTS idx_exit_plans_date_code ON exit_plans(valid_for_date, stock_code, is_active)',
 
+        # === 持仓做T腿表索引 ===
+        'CREATE INDEX IF NOT EXISTS idx_t_legs_date ON t_trade_legs(trade_date)',
+        'CREATE INDEX IF NOT EXISTS idx_t_legs_code_date ON t_trade_legs(stock_code, trade_date)',
+        'CREATE INDEX IF NOT EXISTS idx_t_legs_state ON t_trade_legs(state)',
+
         # === 交易信号表索引 ===
         'CREATE INDEX IF NOT EXISTS idx_signals_created ON trade_signals(created_at DESC)',
         'CREATE INDEX IF NOT EXISTS idx_signals_stock_time ON trade_signals(stock_id, created_at DESC)',
@@ -160,6 +165,7 @@ class DatabaseSchema(BaseTables, BusinessTables):
             cls.TAKE_PROFIT_TASKS_TABLE,
             cls.TAKE_PROFIT_EXECUTIONS_TABLE,
             cls.EXIT_PLANS_TABLE,
+            cls.T_TRADE_LEGS_TABLE,
             cls.CAPITAL_FLOW_CACHE_TABLE,
             cls.CAPITAL_FLOW_DAILY_TABLE,
             cls.BIG_ORDER_TRACKING_TABLE,
@@ -230,6 +236,7 @@ class TableNames:
     TAKE_PROFIT_TASKS = "take_profit_tasks"
     TAKE_PROFIT_EXECUTIONS = "take_profit_executions"
     EXIT_PLANS = "exit_plans"
+    T_TRADE_LEGS = "t_trade_legs"
     CAPITAL_FLOW_CACHE = "capital_flow_cache"
     CAPITAL_FLOW_DAILY = "capital_flow_daily"
     BIG_ORDER_TRACKING = "big_order_tracking"

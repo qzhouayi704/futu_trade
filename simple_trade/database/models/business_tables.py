@@ -236,6 +236,36 @@ class BusinessTables:
         )
     '''
 
+    # 持仓做T腿表（高抛低吸的两腿状态机：卖一档→回落买回；先告警后半自动，专治"看到了却干等/手慢"）
+    T_TRADE_LEGS_TABLE = '''
+        CREATE TABLE IF NOT EXISTS t_trade_legs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_id INTEGER NOT NULL,
+            stock_code TEXT NOT NULL,
+            stock_name TEXT,
+            trade_date TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'IDLE',
+            mode TEXT NOT NULL DEFAULT 'alert',
+            sold_qty INTEGER DEFAULT 0,
+            sold_price REAL,
+            sold_time TIMESTAMP,
+            sell_order_id TEXT,
+            sell_reason TEXT,
+            target_buyback_price REAL,
+            bought_price REAL,
+            bought_time TIMESTAMP,
+            buy_order_id TEXT,
+            buy_reason TEXT,
+            peak_after_sell REAL,
+            trough_after_sell REAL,
+            realized_pnl REAL,
+            original_qty INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (stock_id) REFERENCES stocks(id)
+        )
+    '''
+
     # 资金流向缓存表
     CAPITAL_FLOW_CACHE_TABLE = '''
         CREATE TABLE IF NOT EXISTS capital_flow_cache (

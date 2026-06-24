@@ -17,6 +17,33 @@ from ...utils.logger import get_flow_logger
 from .pipeline_broadcast import PipelineBroadcast
 from .signal_arbitrator import SignalArbitrator
 
+import re as _re
+
+# 实时推送质量地板：非持仓买入若"流入不大/占日均过低/多日选股语"=低质噪声，源头不推企微
+# （仍进 DB/前端）。置 False 即还原旧行为(可逆)。默认 OFF，治理器上线观察一节后再开。
+REALTIME_QUALITY_FLOOR = False
+_MARGINAL_OCCUPY_MAX = 1.5  # "占日均X%" 中 X 低于此值视为边际信号
+_MARGINAL_OCCUPY_RE = _re.compile(r"占日均\s*([0-9.]+)\s*%")
+
+
+def _is_marginal_signal(reason: str) -> bool:
+    """判断一条买入 reason 是否为低质边际信号（用于实时推送降噪，不影响 DB/前端）。"""
+    if not reason:
+        return False
+    if "流入不大" in reason:
+        return True
+    # 多日选股语：日频结果，非盘中可操作
+    if ("连续" in reason and "日资金净流入" in reason) or "前日大涨" in reason:
+        return True
+    m = _MARGINAL_OCCUPY_RE.search(reason)
+    if m:
+        try:
+            if float(m.group(1)) < _MARGINAL_OCCUPY_MAX:
+                return True
+        except ValueError:
+            pass
+    return False
+
 
 class QuotePipeline:
     """统一行情处理管道"""
@@ -185,6 +212,10 @@ class QuotePipeline:
         # 日内波段卖后跟踪买回检查（每轮都检查，不受 strategy_check_interval 限制）
         swing_signals = await self._check_swing_buyback(quotes)
         trade_actions.extend(swing_signals)
+
+        # 持仓做T助手（高抛低吸；每轮检查，绕开开新仓门卫；默认告警模式，开关在 system_config）
+        t_trade_actions = await self._check_t_trade(quotes, positions)
+        trade_actions.extend(t_trade_actions)
 
         # 将 R13 卖出信号送入卖后跟踪器
         self._feed_sell_signals_to_swing_tracker(flow_signals + intraday_signals)
@@ -670,6 +701,53 @@ class QuotePipeline:
             logging.debug(f"日内波段买回检查异常: {e}")
             return []
 
+    async def _check_t_trade(self, quotes: List[Dict], positions: dict = None) -> List[Dict]:
+        """持仓做T助手：高位+主力净流出→高抛；回落+资金转入→买回。复用资金流/动量读取。
+
+        与 _check_swing_buyback 同源拿 capital_flows / momentum，但只针对当前持仓股，
+        且自带"高抛"触发（不依赖 R13），先对账(Phase 2)再评估、过收盘截点失效。
+        默认告警模式（system_config: t_trade.enabled=false）；关时整段早退、零开销。
+        """
+        try:
+            if not positions:
+                return []
+            from ...utils.market_helper import MarketTimeHelper
+            if not MarketTimeHelper.is_market_trading('HK'):
+                return []
+            assistant = getattr(self.container, 't_trade_assistant', None)
+            if not assistant:
+                return []
+
+            position_codes = [c for c in positions.keys() if c]
+            if not position_codes:
+                return []
+
+            # 资金流 + 5分钟动量（与波段买回同一读取方式）
+            capital_flows = {}
+            momentum_map = {}
+            engine = getattr(self.container, 'capital_flow_signal_engine', None)
+            if engine:
+                analyzer = getattr(engine, '_analyzer', None)
+                if analyzer:
+                    capital_flows = analyzer.batch_read_cache_only(position_codes)
+                momentum_analyzer = getattr(engine, '_momentum_analyzer', None)
+                if momentum_analyzer:
+                    momentum_map = momentum_analyzer.analyze_batch(position_codes)
+
+            # 先对账真实成交（alert 模式无挂单，安全空跑），再评估，最后过截点失效
+            def _run():
+                try:
+                    assistant.expire_eod()
+                except Exception as e:
+                    logging.debug(f"做T收盘失效检查异常: {e}")
+                return assistant.evaluate_cycle(
+                    quotes, positions, capital_flows, momentum_map
+                )
+            return await self._run_in_executor(_run)
+        except Exception as e:
+            logging.debug(f"持仓做T检查异常: {e}")
+            return []
+
     def _feed_sell_signals_to_swing_tracker(self, signals: List[Dict]):
         """将卖出信号送入卖后跟踪器"""
         tracker = getattr(self, '_swing_tracker', None)
@@ -750,6 +828,13 @@ class QuotePipeline:
             reason = action.get('reason', '')
             is_position = stock_code in position_codes
 
+            # 做T助手专属推送（高抛/买回建议，自带文案+按 leg 去重），与普通信号区分
+            if action.get('source') == 't_trade':
+                task = asyncio.create_task(self._push_t_trade_alert(wechat, action))
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._on_task_done)
+                continue
+
             if is_position and signal_type == 'SELL':
                 # 持仓股卖出信号 → 高优先级推送
                 task = asyncio.create_task(
@@ -784,6 +869,12 @@ class QuotePipeline:
                         and action.get('strategy_id') == 'absorption_scanner'
                         and action.get('severity') != 'high'):
                     continue
+                # 质量地板(flag,默认OFF)：非持仓买入的低质边际信号源头不推（"占日均0.9%"/"连续5日"等噪声族）
+                if (REALTIME_QUALITY_FLOOR and signal_type == 'BUY' and not is_position
+                        and action.get('severity') != 'high'
+                        and _is_marginal_signal(reason)):
+                    logging.info(f"[质量地板] 抑制低质买入 {stock_code}: {reason[:30]}")
+                    continue
                 # 非持仓股(强)买入 / 其它 → 普通推送
                 task = asyncio.create_task(
                     wechat.alert_trade_signal(
@@ -791,10 +882,42 @@ class QuotePipeline:
                         signal_type=signal_type,
                         price=action['price'],
                         reason=reason,
+                        severity=action.get('severity'),
                     )
                 )
                 self._pending_tasks.add(task)
                 task.add_done_callback(self._on_task_done)
+
+    async def _push_t_trade_alert(self, wechat, action: dict):
+        """做T助手高抛/买回建议 — 企业微信推送（按 t_{side}:{code}:{leg_id} 去重）。"""
+        try:
+            leg = action.get('t_leg', {}) or {}
+            side = leg.get('side', 'sell')
+            leg_id = leg.get('leg_id', '')
+            stock_code = action.get('stock_code', '')
+            stock_name = action.get('stock_name', stock_code)
+            price = action.get('price', 0)
+            message = action.get('message', action.get('reason', ''))
+            mode = leg.get('mode', 'alert')
+            mode_tip = "（告警·不下单）" if mode == 'alert' else "（点确认后下单）"
+            if side == 'sell':
+                title = f"🅣 做T高抛建议 - {stock_name}"
+                color = "warning"
+            else:
+                title = f"🅣 做T买回建议 - {stock_name}"
+                color = "info"
+            content = (
+                f"- 股票：**{stock_name}** ({stock_code})\n"
+                f"- 现价：**{price:.3f}**\n"
+                f"- 建议：<font color=\"{color}\">{message}</font>\n"
+                f"- 模式：{mode}{mode_tip}"
+            )
+            await wechat.warning(
+                title, content,
+                dedup_key=f"t_{side}:{stock_code}:{leg_id}",
+            )
+        except Exception as e:
+            logging.error(f"做T推送失败: {e}")
 
     async def _push_position_sell_alert(self, wechat, action: dict, reason: str):
         """持仓股卖出信号 — 高优先级企业微信推送"""

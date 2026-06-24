@@ -43,6 +43,11 @@ const navGroups: NavGroup[] = [
         path: "/trading",
         icon: <Icon d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />,
       },
+      {
+        name: "持仓做T",
+        path: "/t-trade",
+        icon: <Icon d="M7 12l3-3 4 4 5-6m0 0V7m0 0h-4M4 20h16" />,
+      },
     ],
   },
   {

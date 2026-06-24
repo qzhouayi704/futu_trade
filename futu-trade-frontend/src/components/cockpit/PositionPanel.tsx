@@ -9,6 +9,8 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Card } from "@/components/common";
 import { sniperApi } from "@/lib/api/sniper";
 import { usePositionsCoach } from "@/app/hooks/useSniper";
+import { useTTradeStatus } from "@/app/hooks/useTTrade";
+import type { TLeg } from "@/lib/api/t-trade";
 
 // 持仓教练卡(纯咨询)：今日交易计数(churn)/成本买高/洗盘别割/持有规则
 interface CoachInfo {
@@ -111,6 +113,10 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
     for (const c of coachList as unknown as CoachInfo[]) m[c.stock_code] = c;
     return m;
   }, [coachList]);
+  // 持仓做T助手状态（高抛低吸；默认告警·只读展示，开关在 system_config）
+  const { data: tStatus } = useTTradeStatus();
+  const tByCode: Record<string, TLeg> = tStatus?.by_code || {};
+  const tEnabled = !!tStatus?.enabled;
   const peakRef = useRef<Record<string, number>>({}); // 本会话每股峰值价
 
   // 读取本地保存的"日内/波段"标记
@@ -339,6 +345,29 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
                     );
                   })()}
 
+                  {/* 持仓做T助手：高抛待回补/今日做T完成(只读·告警阶段不下单) */}
+                  {tEnabled && (() => {
+                    const t = tByCode[pos.stock_code];
+                    if (!t || t.state === "EXPIRED" || t.state === "IDLE") return null;
+                    const sold = t.sold_price ?? 0;
+                    const tgt = t.target_buyback_price;
+                    const pnl = t.realized_pnl;
+                    const labelByState: Record<string, string> = {
+                      SOLD_WAITING_BUYBACK: `高抛待回补 @${sold.toFixed(2)}${tgt ? ` ·目标≤${tgt.toFixed(2)}` : ""}`,
+                      SELL_PENDING: `待确认高抛 ${t.sold_qty}股`,
+                      BUY_PENDING: `待确认买回 ${t.sold_qty}股`,
+                      COMPLETED: `今日做T完成${pnl != null ? ` ·实现${pnl >= 0 ? "+" : ""}${pnl.toFixed(0)}HKD` : ""}`,
+                    };
+                    const label = labelByState[t.state] || t.state;
+                    const modeTip = t.mode === "alert" ? "告警·不下单" : t.mode;
+                    return (
+                      <div className="mt-1 text-[10px] rounded px-1.5 py-1 leading-snug bg-violet-50/70 text-violet-700 dark:bg-violet-950/30 dark:text-violet-300">
+                        🅣 做T {label}
+                        <span className="ml-1 text-violet-400 dark:text-violet-500">({modeTip})</span>
+                      </div>
+                    );
+                  })()}
+
                   {/* Sniper止盈状态(后端追踪, 若有) */}
                   {ts?.activated && ts.peak_price > 0 && (
                     <div className="flex items-center gap-1.5 mt-0.5 text-emerald-500/80">
@@ -358,6 +387,14 @@ export function PositionPanel({ positions, loading, realtimePrices }: PositionPa
         {livePositions.length > 0 && (
           <div className="text-[10px] text-muted-foreground mt-2 pt-2 border-t border-border/40 leading-relaxed">
             💡 卖出建议为<b>影子提示</b>(不自动下单):默认<b>日内</b>(冲高分批+收盘了结);看好的日线机会点徽章切<b>波段</b>(宽跟踪、拿几天)。
+            {tEnabled && (
+              <>
+                <br />🅣 <b>做T助手</b>({tStatus?.mode === "alert" ? "告警阶段·不下单" : tStatus?.mode}):高位+主力净流出→建议高抛一档,回落+资金回流→建议买回摊低成本。
+                {typeof tStatus?.realized_pnl_today === "number" && tStatus.realized_pnl_today !== 0 && (
+                  <> 今日做T实现<b>{tStatus.realized_pnl_today >= 0 ? "+" : ""}{tStatus.realized_pnl_today.toFixed(0)}</b>HKD。</>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>
