@@ -20,8 +20,8 @@ from .signal_arbitrator import SignalArbitrator
 import re as _re
 
 # 实时推送质量地板：非持仓买入若"流入不大/占日均过低/多日选股语"=低质噪声，源头不推企微
-# （仍进 DB/前端）。置 False 即还原旧行为(可逆)。默认 OFF，治理器上线观察一节后再开。
-REALTIME_QUALITY_FLOOR = False
+# （仍进 DB/前端）。经环境变量 REALTIME_QUALITY_FLOOR 控制(默认 OFF=还原旧行为，可逆)。
+REALTIME_QUALITY_FLOOR = os.environ.get("REALTIME_QUALITY_FLOOR", "").strip().lower() in ("1", "true", "yes", "on")
 _MARGINAL_OCCUPY_MAX = 1.5  # "占日均X%" 中 X 低于此值视为边际信号
 _MARGINAL_OCCUPY_RE = _re.compile(r"占日均\s*([0-9.]+)\s*%")
 
