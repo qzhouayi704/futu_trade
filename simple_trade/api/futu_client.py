@@ -75,9 +75,14 @@ class AdaptiveTimeoutManager:
 try:
     from futu import (
         OpenQuoteContext, Market, KLType, AuType, KL_FIELD,
-        RET_OK, RET_ERROR, PeriodType, TradeDateMarket
+        RET_OK, RET_ERROR, PeriodType, TradeDateMarket,
+        set_futu_debug_model
     )
     FUTU_AVAILABLE = True
+    # 关闭 futu SDK 的逐包 debug 日志（默认 file_level=DEBUG，会把每个
+    # Push/Recv/Send 协议包写进 ~/.com.futunn.FutuOpenD/Log/py_*.log，
+    # 交易日单文件可达 ~425MB）。生产只保留 WARNING 及以上。
+    set_futu_debug_model(False)
 except ImportError:
     FUTU_AVAILABLE = False
     OpenQuoteContext = None
