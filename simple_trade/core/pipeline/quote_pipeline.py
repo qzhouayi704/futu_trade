@@ -869,11 +869,12 @@ class QuotePipeline:
                         and action.get('strategy_id') == 'absorption_scanner'
                         and action.get('severity') != 'high'):
                     continue
-                # 质量地板(flag,默认OFF)：非持仓买入的低质边际信号源头不推（"占日均0.9%"/"连续5日"等噪声族）
-                if (REALTIME_QUALITY_FLOOR and signal_type == 'BUY' and not is_position
+                # 质量地板(flag)：非持仓的低质边际信号源头不推（"占日均0.9%"/"连续5日"/"资金由负转正但流入不大"
+                # 等噪声族）。覆盖 BUY 与 ALERT 两类——上午噪声主力"资金由负转正但流入不大"正是 ALERT 型。
+                if (REALTIME_QUALITY_FLOOR and signal_type in ('BUY', 'ALERT') and not is_position
                         and action.get('severity') != 'high'
                         and _is_marginal_signal(reason)):
-                    logging.info(f"[质量地板] 抑制低质买入 {stock_code}: {reason[:30]}")
+                    logging.info(f"[质量地板] 抑制低质信号 {signal_type} {stock_code}: {reason[:30]}")
                     continue
                 # 非持仓股(强)买入 / 其它 → 普通推送
                 task = asyncio.create_task(
