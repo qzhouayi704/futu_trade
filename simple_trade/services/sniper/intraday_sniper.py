@@ -132,6 +132,18 @@ MEGA_FLOOR_MIN = 50        # 最低地板50万(防微盘股误触发)
 MIN_DAILY_TURNOVER = 100   # 日成交额 <100万 不监控(放宽)
 PUSH_MIN_STRENGTH = 61     # 机构信号(非 opportunity 档 mega_buy)需强度≥此值才进企微INFO推送(收敛~50%掷硬币洪流;可调)
 
+# 早段突破抢筹（实验·仅提示）：把"资金加速/反转(accel_in/reversal_bull) + 资金评分上穿 + 仍早段"
+# 的最早高确定性转强做成独立显眼告警(priority=90 经治理器豁免预算)。默认 OFF，回测过闸后再开(可逆)。
+# 闸/判据见 scripts/analysis/early_breakout_eval.py。置 EARLY_BREAKOUT_ENABLED=False 即还原。
+EARLY_BREAKOUT_ENABLED = False
+EB_CONF_WINDOW_MIN = 6      # 合流窗口(分钟)：±窗口内有 accel_in/reversal_bull/mega_buy(触发行自身算一个)
+EB_SCORE_CROSS = 60.0      # 资金评分上穿阈值
+EB_SCORE_SLOPE_MIN = 5.0   # 上穿斜率(分差)下限
+EB_SCORE_LOOKBACK_MIN = 12 # 资金评分上穿回看窗口(分钟)
+EB_EARLY_GAIN_CAP = 4.0    # 仍早段：当日(对开盘)涨幅须 < 此值(%)，过滤已冲高的追高
+EB_EARLY_POS_MAX = 0.70    # 仍早段：日内价位须 <= 此值
+EB_THROTTLE_MIN = 30       # 同股早段突破推送节流(分钟)
+
 
 # ============================================================
 # 核心引擎
@@ -154,6 +166,8 @@ class IntradaySniper:
         self._top_ranking: dict = {'opportunity': [], 'risk': [], 'updated_at': None}
         # 持仓股集合（每次扫描刷新，供"持仓硬风险"绕过TOP5门槛优先推送）
         self._held_codes: set = set()
+        # 早段突破推送节流：{stock_code: "HH:MM"}（上次推送时间）
+        self._eb_last: Dict[str, str] = {}
 
     # ==================== 公共接口 ====================
 
@@ -445,6 +459,7 @@ class IntradaySniper:
 
             with db.get_connection() as conn:
                 new_signals = []
+                eb_hits = []  # 早段突破候选 [(sig, reason)]
 
                 for stock_code in watch_codes:
                     # 加载分钟级数据
@@ -523,6 +538,13 @@ class IntradaySniper:
                             except Exception as e:
                                 logger.debug(f"强度评分计算失败: {stock_code}: {e}")
 
+                    # 早段突破抢筹候选（timeline 在此块内有效；推送在主推送循环后统一限频）
+                    if EARLY_BREAKOUT_ENABLED:
+                        for _sig in signals:
+                            _eb_reason = self._check_early_breakout(_sig, timeline, signals, today)
+                            if _eb_reason:
+                                eb_hits.append((_sig, _eb_reason))
+
                     new_signals.extend(signals)
 
                     # [DISABLED 2026-06-12] 经纪商偏向独立检测已禁用 (distribution_trap/accumulation_signal)
@@ -580,6 +602,12 @@ class IntradaySniper:
                         f"本次扫描产生 {len(new_signals)} 条信号, "
                         f"推送 {pushed} 条(TOP5: {[s['stock_name'] for s in self._top_ranking.get('opportunity', [])]})"
                     )
+
+                # 早段突破：独立显眼告警，统一限频后推送（priority=90 经治理器豁免预算）
+                for _sig, _reason in eb_hits:
+                    if self._eb_throttle_ok(_sig.stock_code, _sig.time):
+                        await self._push_early_breakout(_sig, _reason)
+                        self._eb_last[_sig.stock_code] = _sig.time
 
         except Exception as e:
             logger.error(f"扫描执行异常: {e}", exc_info=True)
@@ -1151,6 +1179,9 @@ class IntradaySniper:
                         title=f"⚠️持仓风险 — {signal.stock_name}",
                         content="**【你的持仓】**\n" + signal.to_wechat_text(),
                         dedup_key=f"hold_risk:{signal.stock_code}:{signal.signal_type}",
+                        category="持仓风险",
+                        stock_code=signal.stock_code,
+                        price=getattr(signal, 'price', None),
                     )
                 else:
                     level = AlertLevel.CRITICAL if signal.is_red else AlertLevel.INFO
@@ -1159,6 +1190,9 @@ class IntradaySniper:
                         title=f"盘中狙击 — {signal.stock_name}",
                         content=signal.to_wechat_text(),
                         dedup_key=f"sniper:{signal.stock_code}:{signal.signal_type}",
+                        category="狙击",
+                        stock_code=signal.stock_code,
+                        price=getattr(signal, 'price', None),
                     )
         except Exception as e:
             logger.debug(f"企业微信推送失败: {e}")
@@ -1170,6 +1204,151 @@ class IntradaySniper:
                 await engine.on_sniper_signal(signal)
         except Exception as e:
             logger.warning(f"决策引擎通知失败: {e}", exc_info=True)
+
+    # ==================== 早段突破抢筹（实验·仅提示） ====================
+
+    @staticmethod
+    def _hhmm_to_min(s: Optional[str]) -> Optional[int]:
+        """\"HH:MM\" → 分钟数(自午夜)。解析失败返回 None。"""
+        try:
+            h, m = str(s).split(":")[:2]
+            return int(h) * 60 + int(m)
+        except (ValueError, AttributeError, TypeError):
+            return None
+
+    @staticmethod
+    def _crossed_up(series, upto_min, thr, slope, lookback) -> bool:
+        """series=[(min,score)] 升序：在 [upto-lookback, upto] 内是否存在相邻点向上穿过 thr 且涨幅≥slope。"""
+        if upto_min is None:
+            return False
+        pts = [(m, s) for (m, s) in series if (upto_min - lookback) <= m <= upto_min]
+        for i in range(1, len(pts)):
+            s0 = pts[i - 1][1]
+            s1 = pts[i][1]
+            if s0 < thr <= s1 and (s1 - s0) >= slope:
+                return True
+        return False
+
+    def _capital_score_series(self, stock_code: str, today: str):
+        """当日该股资金评分时序 [(min, score)] 升序。fail-safe → 失败返回 []。"""
+        try:
+            db = getattr(self.container, 'db_manager', None)
+            if not db:
+                return []
+            rows = db.execute_query(
+                "SELECT timestamp, capital_score FROM capital_flow_cache "
+                "WHERE stock_code=? AND substr(timestamp,1,10)=? ORDER BY timestamp",
+                (stock_code, today),
+            )
+            out = []
+            for r in (rows or []):
+                ts, score = r[0], r[1]
+                if ts is None or score is None:
+                    continue
+                mm = self._hhmm_to_min(str(ts)[11:16])  # "YYYY-MM-DD HH:MM:SS" → "HH:MM"
+                if mm is not None:
+                    out.append((mm, float(score)))
+            return out
+        except Exception:
+            return []
+
+    @staticmethod
+    def _gain_and_pos_at(timeline):
+        """从 timeline(止于约当前) 算 (当日对开盘涨幅%, 日内价位0..1)。数据不足→(None,None)。"""
+        prices = [p['price'] for p in timeline if p.get('price', 0) and p['price'] > 0]
+        if len(prices) < 2:
+            return (None, None)
+        open_p, cur = prices[0], prices[-1]
+        lo, hi = min(prices), max(prices)
+        gain = (cur / open_p - 1) * 100 if open_p > 0 else None
+        pos = (cur - lo) / (hi - lo) if hi > lo else 0.0
+        return (gain, pos)
+
+    def _check_early_breakout(self, sig, timeline, cur_signals, today) -> Optional[str]:
+        """命中"早段突破"判据返回 reason，否则 None。fail-safe。"""
+        try:
+            if not EARLY_BREAKOUT_ENABLED:
+                return None
+            if sig.signal_type not in ('accel_in', 'reversal_bull'):
+                return None
+            a = self._hhmm_to_min(sig.time)
+            if a is None:
+                return None
+            # 合流：±窗口内有 accel_in/reversal_bull/mega_buy（触发行自身满足）
+            pool = list(cur_signals) + [
+                s for s in self._today_signals if s.stock_code == sig.stock_code
+            ]
+            conf = any(
+                s.signal_type in ('accel_in', 'reversal_bull', 'mega_buy')
+                and self._hhmm_to_min(s.time) is not None
+                and abs(self._hhmm_to_min(s.time) - a) <= EB_CONF_WINDOW_MIN
+                for s in pool
+            )
+            if not conf:
+                return None
+            # 资金评分上穿
+            series = self._capital_score_series(sig.stock_code, today)
+            if not self._crossed_up(series, a, EB_SCORE_CROSS, EB_SCORE_SLOPE_MIN, EB_SCORE_LOOKBACK_MIN):
+                return None
+            # 仍早段
+            gain, pos = self._gain_and_pos_at(timeline)
+            if gain is None or gain >= EB_EARLY_GAIN_CAP or (pos is not None and pos > EB_EARLY_POS_MAX):
+                return None
+            return (
+                f"资金评分上穿{EB_SCORE_CROSS:.0f}+{sig.signal_type}，"
+                f"当日{gain:+.1f}%、日内位{(pos or 0):.0%}（早段）"
+            )
+        except Exception:
+            return None
+
+    def _eb_throttle_ok(self, code: str, hhmm: str) -> bool:
+        """同股早段突破推送节流：距上次 ≥ EB_THROTTLE_MIN 才放行。"""
+        last = self._eb_last.get(code)
+        if last is None:
+            return True
+        cur = self._hhmm_to_min(hhmm)
+        prev = self._hhmm_to_min(last)
+        if cur is None or prev is None:
+            return True
+        return (cur - prev) >= EB_THROTTLE_MIN
+
+    async def _push_early_breakout(self, sig, reason: str):
+        """早段突破：独立 WS 事件 + 独立企微告警（priority=90，不触决策引擎，纯提示）。"""
+        # WebSocket（独立事件，前端单独渲染）
+        try:
+            socket_manager = getattr(self.container, '_socket_manager', None)
+            if not socket_manager:
+                from ...dependencies import get_socket_manager
+                socket_manager = get_socket_manager()
+            if socket_manager:
+                payload = sig.to_dict()
+                payload['early_breakout'] = True
+                payload['eb_reason'] = reason
+                await socket_manager.emit_to_all('sniper_early_breakout', payload)
+        except Exception as e:
+            logger.debug(f"早段突破WS推送失败: {e}")
+        # 企业微信（独立去重键 + 早段突破类别，治理器豁免预算）
+        try:
+            wechat = getattr(self.container, 'wechat_alert_service', None)
+            if wechat and wechat.enabled:
+                from ..alert.wechat_alert import AlertLevel
+                await wechat.send(
+                    level=AlertLevel.WARNING,
+                    title=f"🔥 早段突破 — {sig.stock_name}",
+                    content=(
+                        "**🔥 早段突破抢筹（实验·仅提示，不下单）**\n"
+                        + sig.to_wechat_text()
+                        + f"\n- 判定：{reason}"
+                    ),
+                    dedup_key=f"early_breakout:{sig.stock_code}",
+                    category="早段突破",
+                    stock_code=sig.stock_code,
+                    priority=90,
+                    price=getattr(sig, 'price', None),
+                )
+            logger.info(f"🔥 早段突破 {sig.stock_name} {reason}")
+        except Exception as e:
+            logger.debug(f"早段突破微信推送失败: {e}")
 
     # ==================== 双窗口评分排行 ====================
 

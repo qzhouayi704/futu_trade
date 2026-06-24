@@ -16,6 +16,8 @@ from typing import Optional
 
 import aiohttp
 
+from .push_governor import PushGovernor, GovernorConfig, DROP, DIGEST
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,6 +51,8 @@ class WeChatAlertService:
         self._cooldown = cooldown_seconds
         self._sent_cache: dict[str, float] = {}
         self._session: Optional[aiohttp.ClientSession] = None
+        # 中心化推送治理器（master flag 默认 OFF=历史行为；置 WECHAT_GOVERNOR_ENABLED=1 启用）
+        self.governor = PushGovernor(GovernorConfig.from_env())
 
         if self.enabled:
             logger.info("企业微信群机器人告警服务已启用")
@@ -81,6 +85,12 @@ class WeChatAlertService:
         title: str,
         content: str,
         dedup_key: Optional[str] = None,
+        *,
+        category: str = "系统",
+        stock_code: Optional[str] = None,
+        priority: Optional[int] = None,
+        severity: Optional[str] = None,
+        price: Optional[float] = None,
     ) -> bool:
         """
         发送告警消息
@@ -90,6 +100,11 @@ class WeChatAlertService:
             title: 告警标题
             content: 告警详情（支持企业微信 Markdown 子集）
             dedup_key: 去重键（为空则用 level+title）
+            category: 推送类别（治理器分桶/优先级用，如 交易信号/持仓风险/早段突破）
+            stock_code: 关联股票（治理器每股上限/节流用）
+            priority: 显式优先级覆盖（缺省按 level+category 推导）
+            severity: 信号强度（'high' 的买点提升到预算豁免线）
+            price: 现价（CRITICAL 升级节流判定用）
 
         Returns:
             是否发送成功
@@ -97,12 +112,36 @@ class WeChatAlertService:
         if not self.enabled:
             return False
 
-        # 防抖检查
+        # 防抖检查（既有 300s/key 去重，治理器在其之上叠加，不改它）
         cache_key = dedup_key or f"{level.name}:{title}"
         if not self._check_cooldown(cache_key):
             return False
 
-        # 构建企业微信 Markdown 消息体
+        # master flag OFF → 整条治理路径短路，与历史行为字节级一致
+        gov = self.governor
+        if not gov.enabled:
+            return await self._do_send(level, title, content)
+
+        prio = gov.resolve_priority(level.name, category, severity, priority)
+        verdict, reason = gov.decide(category, stock_code, prio, level.name, price)
+        if verdict == DROP:
+            logger.info(f"[governor] drop {category}/{stock_code} prio={prio} ({reason})")
+            return False
+        if verdict == DIGEST:
+            gov.buffer_digest(category, stock_code, title)
+            logger.info(f"[governor] digest {category}/{stock_code} ({reason})")
+            digest_text = gov.due_digest()
+            if digest_text:
+                await self._do_send(AlertLevel.INFO, "📊 低优信号摘要", digest_text)
+            return False
+
+        ok = await self._do_send(level, title, content)
+        if ok:
+            gov.record_sent(category, stock_code, prio, level.name, price)
+        return ok
+
+    async def _do_send(self, level: AlertLevel, title: str, content: str) -> bool:
+        """实际构建并发送企业微信消息（HTTP/markdown），不经治理器/去重。"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         markdown_content = (
             f"## {level.value} {title}\n"
@@ -137,17 +176,32 @@ class WeChatAlertService:
 
     # ========== 便捷方法 ==========
 
-    async def critical(self, title: str, content: str, dedup_key: Optional[str] = None):
+    async def critical(self, title: str, content: str, dedup_key: Optional[str] = None,
+                       *, category: str = "系统", stock_code: Optional[str] = None,
+                       priority: Optional[int] = None, severity: Optional[str] = None,
+                       price: Optional[float] = None):
         """发送紧急告警"""
-        await self.send(AlertLevel.CRITICAL, title, content, dedup_key)
+        await self.send(AlertLevel.CRITICAL, title, content, dedup_key,
+                        category=category, stock_code=stock_code, priority=priority,
+                        severity=severity, price=price)
 
-    async def warning(self, title: str, content: str, dedup_key: Optional[str] = None):
+    async def warning(self, title: str, content: str, dedup_key: Optional[str] = None,
+                      *, category: str = "系统", stock_code: Optional[str] = None,
+                      priority: Optional[int] = None, severity: Optional[str] = None,
+                      price: Optional[float] = None):
         """发送警告"""
-        await self.send(AlertLevel.WARNING, title, content, dedup_key)
+        await self.send(AlertLevel.WARNING, title, content, dedup_key,
+                        category=category, stock_code=stock_code, priority=priority,
+                        severity=severity, price=price)
 
-    async def info(self, title: str, content: str, dedup_key: Optional[str] = None):
+    async def info(self, title: str, content: str, dedup_key: Optional[str] = None,
+                   *, category: str = "系统", stock_code: Optional[str] = None,
+                   priority: Optional[int] = None, severity: Optional[str] = None,
+                   price: Optional[float] = None):
         """发送通知"""
-        await self.send(AlertLevel.INFO, title, content, dedup_key)
+        await self.send(AlertLevel.INFO, title, content, dedup_key,
+                        category=category, stock_code=stock_code, priority=priority,
+                        severity=severity, price=price)
 
     # ========== 预定义告警场景 ==========
 
@@ -164,7 +218,8 @@ class WeChatAlertService:
         await self.critical("FutuOpenD 断连", f"与 FutuOpenD 的连接已断开：\n> {error}")
 
     async def alert_trade_signal(self, stock_code: str, signal_type: str,
-                                  price: float, reason: str):
+                                  price: float, reason: str,
+                                  severity: Optional[str] = None):
         """交易信号触发"""
         color = "info" if signal_type == "BUY" else "warning"
         type_text = "买入" if signal_type == "BUY" else "卖出"
@@ -173,6 +228,10 @@ class WeChatAlertService:
             f"- 类型：<font color=\"{color}\">**{type_text}**</font>\n"
             f"- 价格：**{price:.2f}**\n"
             f"- 原因：{reason}",
+            category="交易信号",
+            stock_code=stock_code,
+            severity=severity,
+            price=price,
         )
 
     async def alert_trade_failed(self, stock_code: str, error: str):

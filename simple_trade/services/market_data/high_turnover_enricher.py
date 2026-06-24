@@ -1034,6 +1034,8 @@ class HighTurnoverEnricher:
                 title="抗跌吸筹预警",
                 content=content,
                 dedup_key=f"absorption_{'_'.join(s['code'] for s in signals[:3])}",
+                category="抗跌吸筹",
+                stock_code=(signals[0]['code'] if signals else None),
             )
             logger.info(
                 f"【吸筹检测】推送 {len(signals)} 只: "
@@ -1399,6 +1401,8 @@ class HighTurnoverEnricher:
                 title="接盘失败预警",
                 content=content,
                 dedup_key=f"failed_catch_{'_'.join(s['code'] for s in signals[:3])}",
+                category="接盘失败",
+                stock_code=(signals[0]['code'] if signals else None),
             )
             logger.info(
                 f"【接盘检测】推送 {len(signals)} 只: "

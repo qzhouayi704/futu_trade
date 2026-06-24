@@ -239,6 +239,9 @@ class SignalPublisher:
                     f"- {signal.description}"
                 ),
                 dedup_key=f"hold_risk:{signal.stock_code}:{signal.signal_type}",
+                category="持仓风险",
+                stock_code=signal.stock_code,
+                price=getattr(signal, 'price', None),
             )
         except Exception as e:
             logger.debug(f"持仓风险微信通知失败: {e}")
