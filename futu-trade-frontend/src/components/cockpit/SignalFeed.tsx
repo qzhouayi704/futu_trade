@@ -6,7 +6,7 @@ import { useState } from "react";
 import { UnifiedSignalFeed } from "@/app/components/dashboard/UnifiedSignalFeed";
 import type { PipelineRecord } from "@/lib/hooks/useSignalPipeline";
 
-type FilterType = "all" | "v1" | "v2" | "momentum";
+type FilterType = "all" | "capital_trend" | "v1" | "v2" | "momentum";
 
 interface SignalFeedProps {
   positionStockCodes: string[];
@@ -16,6 +16,7 @@ interface SignalFeedProps {
 
 const FILTERS: { key: FilterType; label: string; emoji: string }[] = [
   { key: "all", label: "全部", emoji: "📡" },
+  { key: "capital_trend", label: "主力资金", emoji: "💰" },
   { key: "v1", label: "V1-Sniper", emoji: "🔫" },
   { key: "v2", label: "V2-StockScorer", emoji: "📈" },
   { key: "momentum", label: "动量引擎", emoji: "⚡" },

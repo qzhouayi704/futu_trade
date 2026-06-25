@@ -150,7 +150,7 @@ const PRIMARY_SNIPER_TYPES = new Set(["mega_buy", "mega_sell"]);
 interface UnifiedSignalFeedProps {
   positionStockCodes?: string[];   // 持仓股票代码列表（用于优先排序）
   maxItems?: number;
-  sourceFilter?: "all" | "v1" | "v2" | "momentum" | "decision";  // 信号源筛选
+  sourceFilter?: "all" | "v1" | "v2" | "momentum" | "decision" | "capital_trend";  // 信号源筛选
   pipelineRecords?: PipelineRecord[];
   onSelectStock?: (code: string) => void;
 }
@@ -447,6 +447,27 @@ export function UnifiedSignalFeed({
       ? items.filter(s => s.source === sourceFilter)
       : items;
 
+    const MAX_PER_STOCK = 3;
+    const capPerStock = (list: UnifiedSignal[], max: number) => {
+      const cnt = new Map<string, number>();
+      const out: UnifiedSignal[] = [];
+      for (const sig of list) {
+        const n = cnt.get(sig.stock_code) ?? 0;
+        if (n >= max) continue;
+        cnt.set(sig.stock_code, n + 1);
+        out.push(sig);
+      }
+      return out;
+    };
+
+    // 专属「主力资金」标签：只展示趋势信号(每股≤3条)，不做置顶8条截断，看全当日趋势。
+    if (sourceFilter === "capital_trend") {
+      const trend = items
+        .filter(s => s.source === "capital_trend")
+        .sort((a, b) => (b.urgency - a.urgency) || b.time.localeCompare(a.time));
+      return capPerStock(trend, MAX_PER_STOCK).slice(0, maxItems);
+    }
+
     // ① 主力资金趋势置顶（独立流：每股≤1条取最强、最多 TREND_MAX 条）——
     //    否则会被"持仓股优先"排序埋没在底部(趋势多为非持仓股),用户看不到。
     const TREND_MAX = 8;
@@ -472,18 +493,7 @@ export function UnifiedSignalFeed({
       return b.time.localeCompare(a.time);
     });
 
-    // 每股条数上限（仅作用于"其余"）：防止单只股票高频信号霸占列表。
-    const MAX_PER_STOCK = 3;
-    const perStockCount = new Map<string, number>();
-    const othersCapped: UnifiedSignal[] = [];
-    for (const sig of others) {
-      const n = perStockCount.get(sig.stock_code) ?? 0;
-      if (n >= MAX_PER_STOCK) continue;
-      perStockCount.set(sig.stock_code, n + 1);
-      othersCapped.push(sig);
-    }
-
-    return [...trendTop, ...othersCapped].slice(0, maxItems);
+    return [...trendTop, ...capPerStock(others, MAX_PER_STOCK)].slice(0, maxItems);
   }, [sniperSignals, vpAlerts, pipelineRecords, momentumSignals, capitalTrendSignals, positionSet, maxItems, sourceFilter]);
 
   // ── 统计 ──────────────────────────────────
