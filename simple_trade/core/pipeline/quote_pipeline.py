@@ -1099,7 +1099,12 @@ class QuotePipeline:
                 return
             bs = getattr(self.container, 'baseline_service', None)
             held = positions or {}
+            held_set = set(held.keys())
             wechat = getattr(self.container, 'wechat_alert_service', None)
+            # 企微推送范围：默认只推"持仓的回落/拉高出货"(治"及时卖出止盈"痛点)，其余只上前端——
+            # 避免市场级强信号刷屏触发企微 45009 限频、淹没持仓风险等必看告警。
+            # CAPITAL_TREND_WECHAT_ALL=1 可恢复"所有强信号(含上升)/回落都推"。
+            push_all = os.environ.get("CAPITAL_TREND_WECHAT_ALL", "").strip().lower() in ("1", "true", "yes", "on")
             for q in trading:
                 code = q.get('code')
                 if not code:
@@ -1116,7 +1121,9 @@ class QuotePipeline:
                 if not alert:
                     continue
                 await self.socket_manager.emit_to_all('capital_trend_alert', alert.to_dict())
-                if alert.is_strong_push and wechat and getattr(wechat, 'enabled', False):
+                should_push = ((alert.direction == "FALLING" and code in held_set)
+                               or (push_all and alert.is_strong_push))
+                if should_push and wechat and getattr(wechat, 'enabled', False):
                     task = asyncio.create_task(self._push_capital_trend_wechat(wechat, alert))
                     self._pending_tasks.add(task)
                     task.add_done_callback(self._on_task_done)
