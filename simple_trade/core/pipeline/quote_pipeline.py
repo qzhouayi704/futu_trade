@@ -9,6 +9,7 @@
 
 import logging
 import asyncio
+import json
 import os
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
@@ -1105,6 +1106,7 @@ class QuotePipeline:
             # 避免市场级强信号刷屏触发企微 45009 限频、淹没持仓风险等必看告警。
             # CAPITAL_TREND_WECHAT_ALL=1 可恢复"所有强信号(含上升)/回落都推"。
             push_all = os.environ.get("CAPITAL_TREND_WECHAT_ALL", "").strip().lower() in ("1", "true", "yes", "on")
+            emitted = []
             for q in trading:
                 code = q.get('code')
                 if not code:
@@ -1121,14 +1123,38 @@ class QuotePipeline:
                 if not alert:
                     continue
                 await self.socket_manager.emit_to_all('capital_trend_alert', alert.to_dict())
+                emitted.append(alert.to_dict())
                 should_push = ((alert.direction == "FALLING" and code in held_set)
                                or (push_all and alert.is_strong_push))
                 if should_push and wechat and getattr(wechat, 'enabled', False):
                     task = asyncio.create_task(self._push_capital_trend_wechat(wechat, alert))
                     self._pending_tasks.add(task)
                     task.add_done_callback(self._on_task_done)
+            # 落库 signal_pipeline 供前端打开即回填（不只靠实时 socket）
+            if emitted:
+                await self._run_in_executor(self._persist_capital_trends, emitted)
         except Exception as e:
             logging.debug(f"主力资金趋势检测异常: {e}")
+
+    def _persist_capital_trends(self, alerts):
+        """把已发的主力资金趋势提醒写 signal_pipeline(source='capital_trend')，供回填接口读取。"""
+        db = getattr(self.container, 'db_manager', None)
+        if not db or not alerts:
+            return
+        sql = ("INSERT INTO signal_pipeline (trade_date, timestamp, stock_code, stock_name, "
+               "source, direction, strength, resonance_result, guard_result, final_action, "
+               "final_reason, raw_detail) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+        for a in alerts:
+            try:
+                ts = a.get('timestamp') or 0
+                ts_iso = datetime.fromtimestamp(ts).isoformat() if ts else datetime.now().isoformat()
+                db.execute_update(sql, (
+                    a.get('trade_date'), ts_iso, a.get('stock_code'), a.get('stock_name'),
+                    'capital_trend', a.get('direction'), a.get('strength_mult') or 0,
+                    '{}', '{}', 'broadcast', a.get('reason', ''),
+                    json.dumps(a, ensure_ascii=False, default=str)))
+            except Exception:
+                pass
 
     async def _push_capital_trend_wechat(self, wechat, alert):
         """主力资金趋势 → 企业微信（仅强信号/回落；经治理器"主力资金趋势"类别收口）。"""

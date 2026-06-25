@@ -246,6 +246,41 @@ async def get_multi_dimensional_signal_list(
         raise BusinessError(message=f"获取多维信号列表失败: {str(e)}")
 
 
+@router.get("/capital-trends")
+async def get_capital_trends(
+    limit: int = Query(40, ge=1, le=200),
+    date_str: str = Query("", description="日期 YYYY-MM-DD，默认今天"),
+    container=Depends(get_container)
+):
+    """主力资金趋势提醒回填：信号流打开即可见当日已发的上升/回落提醒（不只靠实时 socket）。
+
+    读 signal_pipeline 中 source='capital_trend' 的记录，raw_detail 即完整 CapitalTrendAlert。
+    """
+    try:
+        db = getattr(container, 'db_manager', None)
+        if not db:
+            return {"success": False, "message": "数据库未挂载", "data": []}
+        if not date_str:
+            date_str = date.today().isoformat()
+        rows = db.execute_query(
+            '''SELECT raw_detail FROM signal_pipeline
+               WHERE trade_date = ? AND source = 'capital_trend'
+               ORDER BY timestamp DESC LIMIT ?''',
+            (date_str, limit),
+        )
+        data = []
+        for r in (rows or []):
+            try:
+                if r[0]:
+                    data.append(json.loads(r[0]))
+            except Exception:
+                pass
+        return {"success": True, "message": f"共 {len(data)} 条", "data": data}
+    except Exception as e:
+        logger.error(f"获取主力资金趋势回填失败: {e}")
+        return {"success": False, "message": str(e), "data": []}
+
+
 @router.get("/multi-dimensional/{stock_code}")
 async def get_multi_dimensional_signal(stock_code: str, container=Depends(get_container)):
     """获取单只股票的三维信号聚合状态"""

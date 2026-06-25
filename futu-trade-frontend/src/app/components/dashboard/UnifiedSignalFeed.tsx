@@ -182,15 +182,31 @@ export function UnifiedSignalFeed({
     try {
       // 注: /sniper/signals 已移到共享 useSniperSignals 钩子，避免与 DailyPickCard 重复请求
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const [vpRes, pipeRes, momRes]: any[] = await Promise.all([
+      const [vpRes, pipeRes, momRes, capRes]: any[] = await Promise.all([
         apiClient.get("/enhanced-heat/volume-price-alerts?source=all"),
         hasExternalPipelineRecords
           ? Promise.resolve(null)
           : apiClient.get("/sniper/signal-pipeline?limit=20"),
         apiClient.get("/signals/multi-dimensional/list?limit=15"),
+        apiClient.get("/signals/capital-trends?limit=40"),
       ]);
       if (vpRes.success && Array.isArray(vpRes.data)) setVpAlerts(vpRes.data);
       if (pipeRes?.success && Array.isArray(pipeRes.data)) setLocalPipelineRecords(pipeRes.data);
+      // 主力资金趋势回填(当日已发)：与实时 socket 推送合并去重，避免页面打开/重启后为空
+      if (capRes?.success && Array.isArray(capRes.data)) {
+        setCapitalTrendSignals(prev => {
+          const merged = [...capRes.data, ...prev];
+          const seen = new Set<string>();
+          const out: CapitalTrendSignal[] = [];
+          for (const s of merged) {
+            const k = `${s.stock_code}:${s.direction}:${s.big_buy_count}:${s.big_sell_count}`;
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.push(s);
+          }
+          return out.slice(0, 40);
+        });
+      }
       
       // 解析多维列表中的动量信号作为初始动量数据
       if (momRes.success && momRes.data && Array.isArray(momRes.data.list)) {
