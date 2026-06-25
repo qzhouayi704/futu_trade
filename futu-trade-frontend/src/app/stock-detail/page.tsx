@@ -2,7 +2,7 @@
 
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { stockApi } from "@/lib/api/stock";
@@ -30,6 +30,10 @@ const MainCapitalDetailPanel = dynamic(
   () => import("./components/MainCapitalDetailPanel").then(m => m.MainCapitalDetailPanel),
   { ssr: false }
 );
+const MainCapitalDailyPanel = dynamic(
+  () => import("./components/MainCapitalDailyPanel").then(m => m.MainCapitalDailyPanel),
+  { ssr: false }
+);
 const IntradayCompositeChart = dynamic(
   () => import("./components/IntradayCompositeChart").then(m => m.IntradayCompositeChart),
   { ssr: false }
@@ -51,6 +55,7 @@ export default function StockDetailPage() {
   const [stock, setStock] = useState<TopHotStock | null>(null);
   const [loading, setLoading] = useState(false);
   const [flowTimeline, setFlowTimeline] = useState<CapitalFlowTimelinePoint[]>([]);
+  const capitalFlowRef = useRef<HTMLDivElement>(null);
 
   // URL参数初始化
   useEffect(() => {
@@ -97,6 +102,16 @@ export default function StockDetailPage() {
     }, 30_000);
     return () => clearInterval(timer);
   }, [stockCode, fetchStockData, fetchFlowTimeline]);
+
+  // 从主力资金趋势提醒点击进入（?focus=capital-flow）：数据加载后平滑滚动到净额曲线图
+  useEffect(() => {
+    if (searchParams.get("focus") !== "capital-flow") return;
+    if (!stockCode || flowTimeline.length === 0) return;
+    const t = setTimeout(() => {
+      capitalFlowRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [searchParams, stockCode, flowTimeline.length]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -199,9 +214,9 @@ export default function StockDetailPage() {
           </div>
         )}
 
-        {/* ⑤ 主力 vs 散户 日内资金走势 */}
+        {/* ⑤ 主力 vs 散户 日内资金走势（净额累计曲线；主力资金趋势提醒 focus=capital-flow 锚点）*/}
         {stockCode && flowTimeline.length > 0 && (
-          <div className="bg-card rounded-xl border border-border overflow-hidden">
+          <div ref={capitalFlowRef} id="capital-flow" className="bg-card rounded-xl border border-border overflow-hidden scroll-mt-20">
             <div className="px-4 py-2.5 bg-gradient-to-r from-blue-500/5 to-indigo-500/5 border-b border-border flex items-center justify-between">
               <span className="text-sm font-semibold text-foreground">📈 主力 vs 散户 日内资金走势</span>
               <span className="text-[10px] text-muted-foreground">30秒自动刷新</span>
@@ -212,6 +227,9 @@ export default function StockDetailPage() {
 
         {/* ⑥ 逐笔主力资金明细 + 累计净额走势 */}
         {stockCode && <MainCapitalDetailPanel stockCode={stockCode} />}
+
+        {/* ⑦ 近几日主力资金流向 + 日净额走势 */}
+        {stockCode && <MainCapitalDailyPanel stockCode={stockCode} />}
       </div>
     </div>
   );

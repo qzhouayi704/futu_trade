@@ -426,6 +426,81 @@ async def main_capital_detail(stock_code: str, container=Depends(get_container))
         raise BusinessError(f"主力资金明细失败: {str(e)}")
 
 
+@router.get("/main-capital-daily/{stock_code}", response_model=APIResponse)
+async def main_capital_daily(stock_code: str, container=Depends(get_container)):
+    """单只股票近几日主力资金日净额 + 走势（逐笔大单≥10万口径，同 main-capital-detail）。
+
+    数据源：ticker_data 按 trade_date 聚合，大单过滤同盘中逐笔面板（≥10万/笔），
+    所以"当日"日净额 = 盘中面板的最终累计，两块口径一致、不打架。
+    受 ticker_data 保留期限制（约7天），仅返回近几个有效交易日。金额单位：万元。
+    """
+    try:
+        db = getattr(container, 'db_manager', None)
+        if not db:
+            return APIResponse(success=True, data=None, message="数据库不可用")
+
+        code = stock_code.strip()
+        thr = 100_000.0       # 大单门槛，与 main-capital-detail 同值
+        MIN_TICKS = 500       # 过滤非交易日/数据缺口（仅零星几笔的天）
+
+        rows = db.execute_query("""
+            SELECT trade_date, COUNT(*) AS n,
+                SUM(CASE WHEN turnover >= ? AND direction='BUY'  THEN turnover ELSE 0 END) AS big_buy,
+                SUM(CASE WHEN turnover >= ? AND direction='SELL' THEN turnover ELSE 0 END) AS big_sell
+            FROM ticker_data
+            WHERE stock_code = ?
+            GROUP BY trade_date
+            HAVING n >= ?
+            ORDER BY trade_date
+        """, (thr, thr, code, MIN_TICKS))
+
+        stock_name = ''
+        try:
+            nr = db.execute_query("SELECT name FROM stocks WHERE code = ?", (code,))
+            if nr and nr[0]:
+                stock_name = nr[0][0] or ''
+        except Exception:
+            pass
+
+        base = {"stock_code": code, "stock_name": stock_name, "threshold": thr}
+        if not rows:
+            return APIResponse(success=True, data={**base, "days": [], "summary": None},
+                               message="暂无逐笔历史数据")
+
+        WAN = 10000.0
+        days = []
+        cum = 0.0
+        pos_days = 0
+        for trade_date, _n, big_buy, big_sell in rows:
+            bb = float(big_buy or 0)
+            bs = float(big_sell or 0)
+            net = bb - bs
+            cum += net
+            if net > 0:
+                pos_days += 1
+            days.append({
+                "date": trade_date,
+                "big_buy": round(bb / WAN, 1),
+                "big_sell": round(bs / WAN, 1),
+                "net": round(net / WAN, 1),
+                "cum": round(cum / WAN, 1),
+            })
+
+        summary = {
+            "cum_net": round(cum / WAN, 1),
+            "positive_days": pos_days,
+            "total_days": len(days),
+        }
+        return APIResponse(
+            success=True,
+            data={**base, "days": days, "summary": summary},
+            message=f"近 {len(days)} 个交易日主力日净额",
+        )
+    except Exception as e:
+        logging.error(f"主力资金日线失败: {stock_code}, {e}")
+        raise BusinessError(f"主力资金日线失败: {str(e)}")
+
+
 # ==================== 市场热度接口 ====================
 
 @router.get("/market-heat", response_model=APIResponse)

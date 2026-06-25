@@ -14,6 +14,7 @@ import type {
   OrderBookResponse,
   PriceLevelDistributionData,
   MainCapitalDetailData,
+  MainCapitalDailyData,
 } from "@/types/enhanced-heat";
 
 interface ApiResponse<T> {
@@ -114,6 +115,13 @@ export async function getMainCapitalDetail(
   stockCode: string
 ): Promise<ApiResponse<MainCapitalDetailData | null>> {
   return apiClient.get(`/enhanced-heat/main-capital-detail/${stockCode}`);
+}
+
+/** 获取近几日主力资金日净额 + 走势（逐笔大单口径） */
+export async function getMainCapitalDaily(
+  stockCode: string
+): Promise<ApiResponse<MainCapitalDailyData | null>> {
+  return apiClient.get(`/enhanced-heat/main-capital-daily/${stockCode}`);
 }
 
 /** 获取价位成交分布 */

@@ -272,3 +272,28 @@ export interface MainCapitalDetailData {
   rows: MainCapitalDetailRow[];
   summary: MainCapitalDetailSummary | null;
 }
+
+/** 近几日主力资金 — 单日（金额单位：万元，逐笔大单口径） */
+export interface MainCapitalDailyDay {
+  date: string;       // YYYY-MM-DD
+  big_buy: number;    // 大买（万）
+  big_sell: number;   // 大卖（万）
+  net: number;        // 主力日净额（万）
+  cum: number;        // 区间累计（万）
+}
+
+/** 近几日主力资金 — 汇总 */
+export interface MainCapitalDailySummary {
+  cum_net: number;
+  positive_days: number;
+  total_days: number;
+}
+
+/** 近几日主力资金流向数据 */
+export interface MainCapitalDailyData {
+  stock_code: string;
+  stock_name: string;
+  threshold: number;
+  days: MainCapitalDailyDay[];
+  summary: MainCapitalDailySummary | null;
+}
