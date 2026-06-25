@@ -1,11 +1,27 @@
-// 近几日主力资金流向面板（逐笔大单≥10万口径，与盘中逐笔面板同源）
-// 左：每个交易日 大买/大卖/主力净额 明细表（最新置顶）
-// 右：每日主力净额 柱状走势（红流入/绿流出）
+// 近几日主力资金流向面板（可切换口径）
+// · 逐笔大单：ticker_data 大单≥10万按日聚合，与盘中逐笔面板同源（近几个有效交易日）
+// · 富途聚合：capital_flow_daily 富途主力净流入，历史更长但口径不同，可能与逐笔不同向
+// 左：每日 主力净额(逐笔下含大买/大卖) 明细表（最新置顶）；右：每日主力净额柱状走势
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { getMainCapitalDaily } from "@/lib/api/enhanced-heat";
-import type { MainCapitalDailyData, MainCapitalDailyDay } from "@/types/enhanced-heat";
+import { getMainCapitalDaily, getCapitalFlowHistory } from "@/lib/api/enhanced-heat";
+
+type Mode = "tick" | "futu30" | "futu90";
+
+/** 统一后的单日结构（万元）；大买/大卖仅逐笔口径有 */
+interface UDay {
+  date: string;
+  net: number;
+  big_buy?: number;
+  big_sell?: number;
+}
+
+const MODES: { key: Mode; label: string }[] = [
+  { key: "tick", label: "逐笔大单" },
+  { key: "futu30", label: "富途30天" },
+  { key: "futu90", label: "富途90天" },
+];
 
 /** 金额格式化：入参单位为「万元」 */
 function fmtWan(v: number | null | undefined): string {
@@ -21,9 +37,13 @@ function pnColor(v: number | null | undefined): string {
   return v > 0 ? "text-red-600" : "text-green-600";
 }
 
+function toDateStr(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
 // ==================== 每日主力净额柱状走势 ====================
 
-function DailyNetChart({ days, height = 300 }: { days: MainCapitalDailyDay[]; height?: number }) {
+function DailyNetChart({ days, height = 300 }: { days: UDay[]; height?: number }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof import("lightweight-charts").createChart> | null>(null);
 
@@ -38,6 +58,9 @@ function DailyNetChart({ days, height = 300 }: { days: MainCapitalDailyDay[]; he
         chartRef.current = null;
       }
 
+      // 柱数多时收窄间距
+      const barSpacing = days.length > 40 ? 6 : days.length > 15 ? 12 : 36;
+
       const chart = createChart(containerRef.current, {
         width: containerRef.current.clientWidth,
         height,
@@ -45,7 +68,7 @@ function DailyNetChart({ days, height = 300 }: { days: MainCapitalDailyDay[]; he
         grid: { vertLines: { color: "#f0f0f0" }, horzLines: { color: "#f0f0f0" } },
         crosshair: { mode: CrosshairMode.Magnet },
         rightPriceScale: { borderColor: "#e5e7eb", scaleMargins: { top: 0.15, bottom: 0.15 } },
-        timeScale: { borderColor: "#e5e7eb", timeVisible: false, barSpacing: 36, minBarSpacing: 16 },
+        timeScale: { borderColor: "#e5e7eb", timeVisible: false, barSpacing, minBarSpacing: 4 },
       });
       chartRef.current = chart;
 
@@ -87,85 +110,134 @@ function DailyNetChart({ days, height = 300 }: { days: MainCapitalDailyDay[]; he
 // ==================== 主面板 ====================
 
 export function MainCapitalDailyPanel({ stockCode }: { stockCode: string }) {
-  const [data, setData] = useState<MainCapitalDailyData | null>(null);
+  const [mode, setMode] = useState<Mode>("tick");
+  const [days, setDays] = useState<UDay[]>([]);
+  const [threshold, setThreshold] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const isFutu = mode !== "tick";
+
+  const fetchData = useCallback(async (m: Mode) => {
     if (!stockCode.trim()) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await getMainCapitalDaily(stockCode.trim());
-      if (res.success) {
-        setData(res.data);
-        if (!res.data || res.data.days.length === 0) setError("暂无逐笔历史数据");
+      if (m === "tick") {
+        const res = await getMainCapitalDaily(stockCode.trim());
+        if (res.success) {
+          const d = res.data;
+          setThreshold(d?.threshold ?? null);
+          setDays((d?.days ?? []).map((x) => ({ date: x.date, net: x.net, big_buy: x.big_buy, big_sell: x.big_sell })));
+          if (!d || d.days.length === 0) setError("暂无逐笔历史数据");
+        }
+      } else {
+        const span = m === "futu30" ? 30 : 90;
+        const end = new Date();
+        const start = new Date();
+        start.setDate(end.getDate() - span);
+        const res = await getCapitalFlowHistory(stockCode.trim(), toDateStr(start), toDateStr(end));
+        if (res.success) {
+          // 富途 date 可能带 " 00:00:00"，统一裁成 YYYY-MM-DD（图表业务日 + 表格标签都需要）
+          const hist = (res.data?.history ?? []).map((x) => ({ date: x.date.slice(0, 10), net: x.net_inflow / 10000 }));
+          const sorted = hist.sort((a, b) => a.date.localeCompare(b.date));
+          setThreshold(null);
+          setDays(sorted);
+          if (sorted.length === 0) setError("暂无历史资金流向数据");
+        }
       }
     } catch {
-      setError("获取近几日主力资金失败");
+      setError("获取主力资金历史失败");
     } finally {
       setLoading(false);
     }
   }, [stockCode]);
 
+  // stockCode / mode 变化时加载
   useEffect(() => {
-    if (stockCode.trim()) fetchData();
-  }, [stockCode, fetchData]);
+    if (stockCode.trim()) fetchData(mode);
+  }, [stockCode, mode, fetchData]);
 
-  // 60 秒刷新（仅当日那根柱会变）
+  // 仅逐笔口径 60 秒刷新（当日那根会变）；富途日线静态不刷
   useEffect(() => {
-    if (!stockCode.trim()) return;
-    const timer = setInterval(fetchData, 60000);
+    if (!stockCode.trim() || mode !== "tick") return;
+    const timer = setInterval(() => fetchData("tick"), 60000);
     return () => clearInterval(timer);
-  }, [stockCode, fetchData]);
+  }, [stockCode, mode, fetchData]);
 
-  const days = data?.days ?? [];
-  const summary = data?.summary ?? null;
-  // 表格最新置顶
-  const tableDays = [...days].reverse();
+  // 汇总
+  const cumNet = days.reduce((s, d) => s + d.net, 0);
+  const posDays = days.filter((d) => d.net > 0).length;
+  const tableDays = [...days].reverse(); // 最新置顶
+
+  const subtitle = isFutu
+    ? `富途聚合口径 · ${mode === "futu30" ? 30 : 90}天`
+    : threshold != null
+    ? `逐笔大单 ≥ ${(threshold / 10000).toFixed(0)}万/笔 · 近 ${days.length} 日`
+    : `逐笔大单 · 近 ${days.length} 日`;
 
   return (
     <div className="bg-card rounded-lg shadow p-6">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
         <h3 className="text-lg font-semibold text-foreground flex items-center gap-2">
           <svg className="w-5 h-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
           近几日主力资金流向
-          {data && (
-            <span className="text-[11px] font-normal text-muted-foreground">
-              逐笔大单 ≥ {(data.threshold / 10000).toFixed(0)}万/笔 · 近 {days.length} 日
-            </span>
-          )}
+          <span className="text-[11px] font-normal text-muted-foreground">{subtitle}</span>
         </h3>
-        <button
-          onClick={fetchData}
-          disabled={loading}
-          className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
-        >
-          {loading ? "刷新中..." : "刷新"}
-        </button>
+        <div className="flex items-center gap-2">
+          {/* 口径切换 */}
+          <div className="flex items-center gap-1 bg-muted/40 p-0.5 rounded-lg">
+            {MODES.map((m) => (
+              <button
+                key={m.key}
+                onClick={() => setMode(m.key)}
+                disabled={loading}
+                className={`px-2.5 py-1 text-xs rounded-md transition-colors disabled:opacity-50 ${
+                  mode === m.key ? "bg-card text-foreground shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => fetchData(mode)}
+            disabled={loading}
+            className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            {loading ? "刷新中..." : "刷新"}
+          </button>
+        </div>
       </div>
 
+      {/* 富途口径提示 */}
+      {isFutu && days.length > 0 && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-500 mb-3">
+          ⚠ 富途聚合口径，与上方逐笔大单口径不同，可能出现方向相反，仅供历史趋势参考。
+        </p>
+      )}
+
       {/* 汇总条 */}
-      {summary && (
+      {days.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 mb-4 text-sm">
           <span className="text-muted-foreground">
             区间累计{" "}
-            <span className={`font-semibold ${pnColor(summary.cum_net)}`}>
-              {summary.cum_net >= 0 ? "+" : ""}
-              {fmtWan(summary.cum_net)}
+            <span className={`font-semibold ${pnColor(cumNet)}`}>
+              {cumNet >= 0 ? "+" : ""}
+              {fmtWan(cumNet)}
             </span>
           </span>
           <span className="text-muted-foreground">
-            净流入天数 <span className="font-medium text-foreground">{summary.positive_days}/{summary.total_days}</span>
+            净流入天数 <span className="font-medium text-foreground">{posDays}/{days.length}</span>
           </span>
         </div>
       )}
 
       {error && days.length === 0 && <p className="text-sm text-muted-foreground py-8 text-center">{error}</p>}
 
-      {days.length > 0 && data && (
+      {days.length > 0 && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
           {/* 左：每日明细表 */}
           <div className="max-h-[360px] overflow-y-auto">
@@ -173,8 +245,8 @@ export function MainCapitalDailyPanel({ stockCode }: { stockCode: string }) {
               <thead className="sticky top-0 bg-card">
                 <tr className="border-b border-border text-muted-foreground">
                   <th className="py-1.5 px-2 text-left font-medium">日期</th>
-                  <th className="py-1.5 px-2 font-medium">大买(万)</th>
-                  <th className="py-1.5 px-2 font-medium">大卖(万)</th>
+                  {!isFutu && <th className="py-1.5 px-2 font-medium">大买(万)</th>}
+                  {!isFutu && <th className="py-1.5 px-2 font-medium">大卖(万)</th>}
                   <th className="py-1.5 px-2 font-medium">主力净额(万)</th>
                 </tr>
               </thead>
@@ -182,8 +254,8 @@ export function MainCapitalDailyPanel({ stockCode }: { stockCode: string }) {
                 {tableDays.map((d) => (
                   <tr key={d.date} className="border-b border-border/50 hover:bg-muted/50">
                     <td className="py-1.5 px-2 text-left text-foreground">{d.date.slice(5)}</td>
-                    <td className="py-1.5 px-2 text-red-600">{d.big_buy.toFixed(0)}</td>
-                    <td className="py-1.5 px-2 text-green-600">{d.big_sell.toFixed(0)}</td>
+                    {!isFutu && <td className="py-1.5 px-2 text-red-600">{(d.big_buy ?? 0).toFixed(0)}</td>}
+                    {!isFutu && <td className="py-1.5 px-2 text-green-600">{(d.big_sell ?? 0).toFixed(0)}</td>}
                     <td className={`py-1.5 px-2 font-semibold ${pnColor(d.net)}`}>
                       {d.net > 0 ? "+" : ""}
                       {d.net.toFixed(0)}
