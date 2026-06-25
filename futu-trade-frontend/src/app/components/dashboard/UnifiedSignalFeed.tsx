@@ -60,10 +60,30 @@ interface MomentumSignal {
   dimensions: string[];
 }
 
+// 主力资金趋势提醒（后端 capital_trend_alert 推送；置 V1 之前，可点开净额曲线）
+interface CapitalTrendSignal {
+  stock_code: string;
+  stock_name: string;
+  direction: "RISING" | "FALLING";
+  strength_tier: string;        // 强 / 中 / 弱
+  strength_mult: number;        // 力度倍数（相对自身）
+  cum_main_net: number;         // 当日累计主力净流入（元）
+  window_main_net: number;
+  pullback_amount: number;      // 自峰值回落额（元）
+  intraday_change_pct: number;
+  big_buy_count: number;
+  big_sell_count: number;
+  big_order_threshold: number;
+  last_price: number;
+  reason: string;
+  timestamp: number;            // epoch 秒
+  is_strong_push: boolean;
+}
+
 // 统一信号项
 interface UnifiedSignal {
   id: string;
-  source: "v1" | "v2" | "momentum" | "decision";
+  source: "v1" | "v2" | "momentum" | "decision" | "capital_trend";
   time: string;           // HH:MM 格式
   stock_code: string;
   stock_name: string;
@@ -148,6 +168,7 @@ export function UnifiedSignalFeed({
   const [vpAlerts, setVpAlerts] = useState<VolumePriceAlert[]>([]);
   const [localPipelineRecords, setLocalPipelineRecords] = useState<PipelineRecord[]>([]);
   const [momentumSignals, setMomentumSignals] = useState<MomentumSignal[]>([]);
+  const [capitalTrendSignals, setCapitalTrendSignals] = useState<CapitalTrendSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
@@ -229,15 +250,32 @@ export function UnifiedSignalFeed({
       setLastUpdate(new Date());
     };
 
+    const handleCapitalTrend = (data: CapitalTrendSignal) => {
+      setCapitalTrendSignals(prev => {
+        const updated = [data, ...prev];
+        const seen = new Set<string>();
+        return updated.filter(s => {
+          // 同股同方向同"第几次大单"折叠，保留最新
+          const key = `${s.stock_code}:${s.direction}:${s.big_buy_count}:${s.big_sell_count}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }).slice(0, 30);
+      });
+      setLastUpdate(new Date());
+    };
+
     if (!hasExternalPipelineRecords) {
       socket.on("signal_pipeline", handlePipeline);
     }
     socket.on("momentum_signal", handleMomentum);
+    socket.on("capital_trend_alert", handleCapitalTrend);
     return () => {
       if (!hasExternalPipelineRecords) {
         socket.off("signal_pipeline", handlePipeline);
       }
       socket.off("momentum_signal", handleMomentum);
+      socket.off("capital_trend_alert", handleCapitalTrend);
     };
   }, [hasExternalPipelineRecords, socket]);
 
@@ -245,6 +283,31 @@ export function UnifiedSignalFeed({
 
   const unifiedSignals = useMemo((): UnifiedSignal[] => {
     const items: UnifiedSignal[] = [];
+
+    // 0. 主力资金趋势（置于 V1 之前：urgency 88-92 高于 V1 mega 80-85）
+    //    上升=买入语义(绿)，回落=风险语义(红)；detail 已含 累计流入/力度/涨幅/第几次大单。
+    for (const sig of capitalTrendSignals) {
+      const rising = sig.direction === "RISING";
+      const strong = sig.strength_tier === "强";
+      const timeStr = sig.timestamp
+        ? new Date(sig.timestamp * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+        : new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+      items.push({
+        id: `capital_trend-${sig.stock_code}-${sig.direction}-${sig.timestamp}`,
+        source: "capital_trend",
+        time: timeStr,
+        stock_code: sig.stock_code,
+        stock_name: sig.stock_name,
+        emoji: rising ? "📈" : "📉",
+        label: `${rising ? "主力流入" : "主力回落"}·${sig.strength_tier}`,
+        detail: sig.reason,
+        urgency: (rising ? 88 : 89) + (strong ? 2 : 0),
+        is_red: !rising,
+        ...BUCKET_STYLE[rising ? "buy" : "risk"],
+        price: sig.last_price,
+        pricePct: sig.intraday_change_pct,
+      });
+    }
 
     // 1. V1 Sniper（仅 mega_buy / mega_sell，见 PRIMARY_SNIPER_TYPES）
     for (const sig of sniperSignals) {
@@ -390,7 +453,7 @@ export function UnifiedSignalFeed({
     }
 
     return capped.slice(0, maxItems);
-  }, [sniperSignals, vpAlerts, pipelineRecords, momentumSignals, positionSet, maxItems, sourceFilter]);
+  }, [sniperSignals, vpAlerts, pipelineRecords, momentumSignals, capitalTrendSignals, positionSet, maxItems, sourceFilter]);
 
   // ── 统计 ──────────────────────────────────
 
@@ -525,6 +588,15 @@ export function UnifiedSignalFeed({
                       {sig.detail}
                     </span>
                     <div className="flex items-center gap-1 shrink-0">
+                      {sig.source === "capital_trend" && (
+                        <Link
+                          href={`/stock-detail?code=${sig.stock_code}&focus=capital-flow`}
+                          onClick={(e) => { e.stopPropagation(); }}
+                          className="text-[9px] px-1.5 py-0.5 rounded bg-amber-100/80 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-800/50 transition-colors font-medium"
+                        >
+                          📈净额曲线
+                        </Link>
+                      )}
                       {onSelectStock && (
                         <button
                           onClick={(e) => {

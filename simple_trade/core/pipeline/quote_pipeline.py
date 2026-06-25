@@ -22,6 +22,11 @@ import re as _re
 # 实时推送质量地板：非持仓买入若"流入不大/占日均过低/多日选股语"=低质噪声，源头不推企微
 # （仍进 DB/前端）。经环境变量 REALTIME_QUALITY_FLOOR 控制(默认 OFF=还原旧行为，可逆)。
 REALTIME_QUALITY_FLOOR = os.environ.get("REALTIME_QUALITY_FLOOR", "").strip().lower() in ("1", "true", "yes", "on")
+
+# 非持仓卖出不进前端信号流/Toast（用户规则："没有仓位的卖出信号不要提醒"）。仍写 DB 供回测/查证。
+# 默认 ON；置 HIDE_NONHELD_SELL=0/false/off 可还原旧行为。
+HIDE_NONHELD_SELL = os.environ.get("HIDE_NONHELD_SELL", "1").strip().lower() in ("1", "true", "yes", "on")
+
 _MARGINAL_OCCUPY_MAX = 1.5  # "占日均X%" 中 X 低于此值视为边际信号
 _MARGINAL_OCCUPY_RE = _re.compile(r"占日均\s*([0-9.]+)\s*%")
 
@@ -238,11 +243,23 @@ class QuotePipeline:
                 flow.step(f"{a['signal_type']} {a['stock_code']}",
                           price=a['price'], reason=a.get('reason', '')[:40])
             flow.end(signals=len(trade_actions))
-            # 异步发送企业微信通知（不阻塞管道）
+            # 异步发送企业微信通知（不阻塞管道）；持仓卖出会被喂入离场协调器（若启用）
             self._notify_trade_signals(trade_actions, positions)
 
-        # 始终广播报价（quote_cycle 在监控运行时不再广播，由此处统一负责）
-        await self._broadcaster.broadcast(quotes, trade_actions, conditions)
+        # 持仓离场协调器：每周期收口决断（含动量引擎异步喂入的观测），
+        # 与 trade_actions 是否为空无关——故放在 if 块外无条件执行。
+        await self._flush_exit_coordinator(positions, quotes)
+        # 逐笔主力资金口径落库（与富途口径双跑对照；flag OFF 时早退）
+        await self._flush_tick_capital(positions)
+        # 主力资金趋势提醒（上升/回落 + 流入额/力度/涨幅/第几次大单；广播前端置V1前 + 强信号推企微）
+        await self._run_capital_trend_detector(quotes, positions)
+        # 收盘前持仓对账（窗口内每日一次，自带幂等/开关）
+        await self._push_eod_reconcile_once(quotes, positions)
+
+        # 始终广播报价（quote_cycle 在监控运行时不再广播，由此处统一负责）；
+        # 前端信号流按用户规则过滤掉非持仓卖出（仍写 DB）。
+        broadcast_actions = self._filter_feed_actions(trade_actions, positions)
+        await self._broadcaster.broadcast(quotes, broadcast_actions, conditions)
 
     async def run_pipeline(self):
         """执行完整管道（兼容方法，内部调用两个独立周期）"""
@@ -804,6 +821,21 @@ class QuotePipeline:
             logging.error(f"【行情管道】多策略信号检测异常: {e}")
 
 
+    def _filter_feed_actions(self, trade_actions: List[Dict], positions: dict = None) -> List[Dict]:
+        """前端信号流过滤：非持仓的卖出信号不进前端/Toast（用户规则:"没有仓位的卖出信号不要提醒"）。
+
+        仅影响广播给前端的列表；DB 落库不变(回测/查证仍可见)。HIDE_NONHELD_SELL 默认 ON。
+        """
+        if not HIDE_NONHELD_SELL or not trade_actions:
+            return trade_actions
+        held = set(positions.keys()) if positions else set()
+        out = []
+        for a in trade_actions:
+            if a.get('signal_type') == 'SELL' and a.get('stock_code') not in held:
+                continue
+            out.append(a)
+        return out
+
     def _notify_trade_signals(self, trade_actions: List[Dict], positions: dict = None):
         """异步发送交易信号的企业微信通知（保存 task 引用）
 
@@ -836,7 +868,23 @@ class QuotePipeline:
                 continue
 
             if is_position and signal_type == 'SELL':
-                # 持仓股卖出信号 → 高优先级推送
+                # 盘外守卫：所属市场此刻未交易则不推持仓卖出（治 06-23 凌晨 00:00–03:53
+                # 用昨收陈旧报价反复刷"持仓预警"）。
+                if not self._is_stock_market_trading(stock_code):
+                    continue
+
+                coord = self._get_exit_coordinator()
+                if coord is not None and coord.enabled:
+                    # 收口：喂离场协调器，由每周期 _flush_exit_coordinator 统一决断，
+                    # 不再每传感器各推一条（治 135 条/日裸告警洪流）。
+                    from ...services.trading.intraday.exit_coordinator import ExitCoordinator
+                    tag = ExitCoordinator.tag_from_text(
+                        f"{action.get('message', '')} {reason}"
+                    ) or 'RISK'
+                    coord.observe(stock_code, tag, reason, price=action.get('price'))
+                    continue
+
+                # 持仓股卖出信号 → 高优先级推送（协调器未启用时的历史行为）
                 task = asyncio.create_task(
                     self._push_position_sell_alert(
                         wechat, action, reason
@@ -946,6 +994,259 @@ class QuotePipeline:
             )
         except Exception as e:
             logging.error(f"持仓卖出推送失败: {e}")
+
+    def _is_stock_market_trading(self, stock_code: str) -> bool:
+        """该股所属市场此刻是否在交易。判断失败保守放行(True)，不误伤日间真实信号。"""
+        try:
+            from ...utils.market_helper import MarketTimeHelper
+            market = MarketTimeHelper.get_market_from_code(stock_code)
+            return MarketTimeHelper.is_market_trading(market)
+        except Exception:
+            return True
+
+    def _get_exit_coordinator(self):
+        return getattr(self.container, 'exit_coordinator', None)
+
+    async def _flush_exit_coordinator(self, positions: dict, quotes: List[Dict]):
+        """每周期收口决断：把多源持仓卖出观测（资金流/动量/仲裁/风控）汇成
+        每持仓一条、会升级、智能去重的离场告警并推送。协调器关 → 整段早退。
+
+        coord.decide()/observe() 是纯逻辑、须在本事件循环内串行调用（不能丢线程池），
+        与 push_governor 同一线程假设。
+        """
+        coord = self._get_exit_coordinator()
+        if coord is None or not coord.enabled or not positions:
+            return
+        wechat = getattr(self.container, 'wechat_alert_service', None)
+        if not wechat or not getattr(wechat, 'enabled', False):
+            return
+        try:
+            held_codes = [c for c in positions.keys() if self._is_stock_market_trading(c)]
+            if not held_codes:
+                return
+            price_map = {
+                q.get('code'): (q.get('last_price') or q.get('nominal_price') or 0)
+                for q in quotes if q.get('code')
+            }
+            decisions = coord.decide(held_codes, price_map)
+            for d in decisions:
+                pos = positions.get(d.stock_code, {})
+                task = asyncio.create_task(self._push_exit_alert(wechat, d, pos))
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._on_task_done)
+        except Exception as e:
+            logging.debug(f"离场协调器决断异常: {e}")
+
+    async def _flush_tick_capital(self, positions: dict = None):
+        """把逐笔主力资金累加器的快照周期落库 tick_capital_flow（与富途 capital_flow 双跑对照）。
+
+        节流 ~55s 一次（与策略周期同量级，控制行数）。flag OFF / 无累计 → 早退。
+        """
+        acc = getattr(self.container, 'tick_capital_accumulator', None)
+        if not acc or not getattr(acc, 'enabled', False):
+            return
+        try:
+            import time as _t
+            now = _t.time()
+            if now - getattr(self, '_last_tick_flush', 0) < 55:
+                return
+            snaps = acc.snapshot_all()
+            self._last_tick_flush = now
+            if not snaps or not getattr(self.container, 'db_manager', None):
+                return
+            ts = datetime.now().isoformat()
+            rows = [
+                (code, s['trade_date'], ts, s['cum_main_net'], s['window_main_net'],
+                 s['super_large_buy'], s['super_large_sell'], s['large_buy'],
+                 s['large_sell'], s['big_order_buy_ratio'])
+                for code, s in snaps.items()
+            ]
+            await self._run_in_executor(self._insert_tick_capital_rows, rows)
+        except Exception as e:
+            logging.debug(f"逐笔主力资金落库异常: {e}")
+
+    def _insert_tick_capital_rows(self, rows):
+        """同步批量写 tick_capital_flow（在线程池执行，避免阻塞事件循环）。"""
+        db = getattr(self.container, 'db_manager', None)
+        if not db:
+            return
+        sql = ("INSERT OR IGNORE INTO tick_capital_flow "
+               "(stock_code, trade_date, timestamp, cum_main_net, window_main_net, "
+               "super_large_buy, super_large_sell, large_buy, large_sell, big_order_buy_ratio) "
+               "VALUES (?,?,?,?,?,?,?,?,?,?)")
+        for r in rows:
+            try:
+                db.execute_update(sql, r)
+            except Exception:
+                pass
+
+    async def _run_capital_trend_detector(self, quotes: List[Dict], positions: dict = None):
+        """主力资金趋势提醒：对在交易的每股取累加器快照 → 检测器判上升/回落 →
+        广播 socket(capital_trend_alert, 前端置 V1 之前) + 强信号/回落推企微。
+
+        det.evaluate() 是纯逻辑、须在本事件循环内串行调用（与 push_governor 同线程假设，不丢线程池）。
+        检测器/累加器任一 OFF → 整段早退（零开销可逆）。
+        """
+        det = getattr(self.container, 'capital_trend_detector', None)
+        acc = getattr(self.container, 'tick_capital_accumulator', None)
+        if det is None or not getattr(det, 'enabled', False):
+            return
+        if acc is None or not getattr(acc, 'enabled', False):
+            return
+        try:
+            trading = self._filter_trading_quotes(quotes)
+            if not trading:
+                return
+            bs = getattr(self.container, 'baseline_service', None)
+            held = positions or {}
+            wechat = getattr(self.container, 'wechat_alert_service', None)
+            for q in trading:
+                code = q.get('code')
+                if not code:
+                    continue
+                snap = acc.snapshot(code)
+                if not snap:
+                    continue
+                last_price = q.get('last_price') or q.get('nominal_price') or 0
+                prev_close = q.get('prev_close') or 0
+                tiers = bs.get_capital_tiers(code) if bs else (0.0, 0.0, 0.0)
+                name = ((held.get(code) or {}).get('stock_name')
+                        or q.get('name') or q.get('stock_name') or code)
+                alert = det.evaluate(snap, last_price, prev_close, tiers, stock_name=name)
+                if not alert:
+                    continue
+                await self.socket_manager.emit_to_all('capital_trend_alert', alert.to_dict())
+                if alert.is_strong_push and wechat and getattr(wechat, 'enabled', False):
+                    task = asyncio.create_task(self._push_capital_trend_wechat(wechat, alert))
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._on_task_done)
+        except Exception as e:
+            logging.debug(f"主力资金趋势检测异常: {e}")
+
+    async def _push_capital_trend_wechat(self, wechat, alert):
+        """主力资金趋势 → 企业微信（仅强信号/回落；经治理器"主力资金趋势"类别收口）。"""
+        try:
+            from ...services.alert.wechat_alert import AlertLevel
+            rising = alert.direction == "RISING"
+            head = "主力资金上升" if rising else "主力资金回落"
+            emoji = "📈" if rising else "📉"
+            level = AlertLevel.WARNING
+            if rising:
+                flow_line = f"- 累计净流入：**+{alert.cum_main_net / 1e4:.0f}万**　第 **{alert.big_buy_count}** 次大单买入"
+            elif alert.cum_main_net < 0:
+                flow_line = f"- 主力净流出：**{-alert.cum_main_net / 1e4:.0f}万**（疑似拉高出货）　第 **{alert.big_sell_count}** 次大单流出"
+            else:
+                flow_line = f"- 自峰值回落：**{alert.pullback_amount / 1e4:.0f}万**　第 **{alert.big_sell_count}** 次大单流出"
+            content = (
+                f"- 股票：**{alert.stock_name}** ({alert.stock_code})\n"
+                f"- 现价：**{alert.last_price:.3f}**　日内：**{alert.intraday_change_pct:+.2f}%**\n"
+                f"{flow_line}\n"
+                f"- 力度：**{alert.strength_mult:.1f}×**（{alert.strength_tier}）　大单门槛≈{alert.big_order_threshold / 1e4:.0f}万\n"
+                f"- ℹ️ 仅供判断参考（你自己决定是否操作）"
+            )
+            await wechat.send(
+                level, f"{emoji} {head} - {alert.stock_name}", content,
+                dedup_key=f"captrend:{alert.stock_code}:{alert.direction}:{alert.big_buy_count}:{alert.big_sell_count}",
+                category="主力资金趋势",
+                stock_code=alert.stock_code,
+                price=alert.last_price or None,
+                severity="high" if alert.strength_tier == "强" else None,
+            )
+        except Exception as e:
+            logging.error(f"主力资金趋势推送失败: {e}")
+
+    async def _push_exit_alert(self, wechat, decision, position: dict):
+        """离场协调器决断 → 企业微信"持仓离场"告警（每持仓一条，带 P&L 与 CTA）。"""
+        try:
+            from ...services.alert.wechat_alert import AlertLevel
+            code = decision.stock_code
+            name = position.get('stock_name', code)
+            price = (decision.price or position.get('nominal_price')
+                     or position.get('last_price') or 0)
+            pl_ratio = position.get('pl_ratio')
+            qty = position.get('qty') or position.get('can_sell_qty') or 0
+            reasons = "、".join(decision.reasons[:3])
+            is_critical = decision.level == 'CRITICAL'
+            level = AlertLevel.CRITICAL if is_critical else AlertLevel.WARNING
+            head = "强烈离场" if is_critical else "离场建议"
+            in_profit = isinstance(pl_ratio, (int, float)) and pl_ratio > 0
+            pl_txt = f"{pl_ratio:+.2f}%" if isinstance(pl_ratio, (int, float)) else "—"
+            cta = "建议锁定利润/减仓" if in_profit else "建议减仓控制风险"
+            content = (
+                f"- 股票：**{name}** ({code})\n"
+                f"- 现价：**{float(price):.3f}**　持仓：{float(qty):.0f}　盈亏：{pl_txt}\n"
+                f"- 撤离强度：**{decision.score}**/100\n"
+                f"- 依据：{reasons}\n"
+                f"- ⚡ {cta}（你自己手动下单）"
+            )
+            await wechat.send(
+                level, f"🅧 {head} - {name}", content,
+                dedup_key=f"exit:{code}:{decision.score}:{int(float(price) or 0)}",
+                category="持仓离场",
+                stock_code=code,
+                price=float(price) or None,
+            )
+        except Exception as e:
+            logging.error(f"离场告警推送失败: {e}")
+
+    async def _push_eod_reconcile_once(self, quotes: List[Dict], positions: dict):
+        """收盘前一次：对每个持仓，若当日收涨但主力净流出 → 一条"📋 收盘对账"。
+
+        治"日内拉高但收盘净流出、明日想离场却无预案"。默认 OFF（EOD_RECONCILE_ENABLED=1）。
+        幂等：按 HK 交易日键控，次日复位。
+        """
+        if os.environ.get("EOD_RECONCILE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+            return
+        wechat = getattr(self.container, 'wechat_alert_service', None)
+        if not wechat or not getattr(wechat, 'enabled', False) or not positions:
+            return
+        try:
+            from ...utils.market_helper import MarketTimeHelper
+            if not MarketTimeHelper.is_market_trading('HK'):
+                return
+            mins = self._mins_since_hk_open()
+            # 收盘前窗口：约 15:50–16:02（开盘后 380–392 分钟）
+            if mins is None or mins < 380 or mins > 392:
+                return
+            today = MarketTimeHelper.get_market_today('HK')
+            if getattr(self, '_eod_reconcile_date', None) == today:
+                return
+            db = getattr(self.container, 'db_manager', None)
+            qmap = {q.get('code'): q for q in quotes if q.get('code')}
+            lines = []
+            for code, pos in positions.items():
+                q = qmap.get(code, {})
+                last = q.get('last_price') or 0
+                prev = q.get('prev_close') or 0
+                change_pct = ((last - prev) / prev * 100) if (last and prev) else 0
+                net = None
+                if db:
+                    try:
+                        rows = db.execute_query(
+                            "SELECT net_inflow FROM capital_flow_daily "
+                            "WHERE stock_code=? ORDER BY date DESC LIMIT 1", (code,))
+                        if rows:
+                            net = rows[0][0]
+                    except Exception:
+                        pass
+                # 只对"收涨但主力净流出"产出对账行
+                if change_pct > 0 and net is not None and net < 0:
+                    lines.append(
+                        f"- {pos.get('stock_name', code)}({code}) 今日{change_pct:+.2f}% "
+                        f"但主力净流出{abs(net) / 1e4:.0f}万 → 明日开盘留意离场")
+            self._eod_reconcile_date = today  # 无论是否有行，当日只跑一次
+            if not lines:
+                return
+            from ...services.alert.wechat_alert import AlertLevel
+            content = ("\n".join(lines)
+                       + "\n> 涨但主力撤：纯咨询·不下单，明日按离场计划执行")
+            task = asyncio.create_task(
+                wechat.send(AlertLevel.WARNING, "📋 收盘对账", content,
+                            dedup_key=f"eod_reconcile:{today}", category="持仓离场"))
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._on_task_done)
+        except Exception as e:
+            logging.error(f"收盘对账推送失败: {e}")
 
     async def _claude_confirm_position_signal(
         self, wechat, stock_code: str, action: dict

@@ -15,6 +15,7 @@
 """
 
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
@@ -22,6 +23,13 @@ from typing import Dict, Optional
 from .flow_signal_models import FlowSignal, RuleContext
 
 logger = logging.getLogger("capital_flow.rules")
+
+
+def _envf(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
 
 
 class BaseFlowRule(ABC):
@@ -338,8 +346,10 @@ class VolumePriceDivergenceRule(BaseFlowRule):
     rule_name = "量价背离"
     cooldown = 900
 
-    PRICE_NEAR_HIGH_PCT = 0.98  # 价格 ≥ 日高的98%
-    VOLUME_SHRINK_RATIO = 0.7   # 当前量能 < 日均的70%
+    # 阈值收紧(治三天591条噪声)，且经环境变量可调：贴日高带宽 2%→1%、量缩 70%→50%、涨幅 1%→2%
+    PRICE_NEAR_HIGH_PCT = _envf("R10_NEAR_HIGH_PCT", 0.99)  # 价格 ≥ 日高的99%
+    VOLUME_SHRINK_RATIO = _envf("R10_VOL_SHRINK", 0.5)      # 当前量能 < 日均的50%
+    MIN_CHANGE_PCT = _envf("R10_MIN_CHANGE", 2.0)           # 涨幅须 ≥ 2%
 
     def evaluate(self, ctx: RuleContext) -> Optional[FlowSignal]:
         if ctx.high_price <= 0 or ctx.avg_daily_turnover <= 0:
@@ -350,8 +360,8 @@ class VolumePriceDivergenceRule(BaseFlowRule):
         if not near_high:
             return None
 
-        # 涨幅必须为正
-        if ctx.change_pct < 1.0:
+        # 涨幅必须达到阈值（收紧：>1% → ≥2%，过滤微涨噪声）
+        if ctx.change_pct < self.MIN_CHANGE_PCT:
             return None
 
         # 成交量/额萎缩（用成交额比较）

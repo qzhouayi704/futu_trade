@@ -21,6 +21,9 @@ if project_root not in sys.path:
 
 from simple_trade.database.core.db_manager import DatabaseManager
 from simple_trade.services.baseline.baseline_updater import BaselineUpdater
+from simple_trade.services.baseline.capital_threshold_calibrator import (
+    CapitalThresholdCalibrator,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,11 +57,13 @@ def main():
     db_path = str(Path(project_root) / "simple_trade" / "data" / "trade.db")
     db_manager = DatabaseManager(db_path)
     updater = BaselineUpdater(db_manager)
+    calibrator = CapitalThresholdCalibrator(db_manager)
 
     stocks = get_active_stocks(db_manager)
     logger.info(f"待更新股票数: {len(stocks)}")
 
     success_count = 0
+    cap_count = 0
     for i, code in enumerate(stocks, 1):
         try:
             # 20日窗口
@@ -67,12 +72,19 @@ def main():
             n60 = updater.update_all_for_stock(code, window_days=60)
             if n20 > 0 or n60 > 0:
                 success_count += 1
+            # 主力资金趋势提醒：按股自适应大单门槛 + 力度基准（读 ticker_data，无逐笔则跳过）
+            try:
+                if calibrator.calibrate(code):
+                    cap_count += 1
+            except Exception as e:
+                logger.warning(f"标定大单门槛 {code} 失败: {e}")
             if i % 50 == 0:
-                logger.info(f"进度: {i}/{len(stocks)}, 成功: {success_count}")
+                logger.info(f"进度: {i}/{len(stocks)}, 成功: {success_count}, 大单门槛: {cap_count}")
         except Exception as e:
             logger.warning(f"更新 {code} 失败: {e}")
 
-    logger.info(f"========== 更新完成: {success_count}/{len(stocks)} 只股票 ==========")
+    logger.info(f"========== 更新完成: {success_count}/{len(stocks)} 只股票, "
+                f"大单门槛标定: {cap_count} 只 ==========")
 
 
 if __name__ == "__main__":

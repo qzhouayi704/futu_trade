@@ -81,6 +81,7 @@ class BusinessServices:
         self._stock_ai_analyzer = None
         self._trade_decision_engine = None
         self._t_trade_assistant = None
+        self._exit_coordinator = None
 
     def __getattr__(self, name: str):
         """代理到 core/data 子容器，使 DecisionEngine 等服务能访问 db_manager 等"""
@@ -336,6 +337,22 @@ class BusinessServices:
             except Exception as e:
                 logging.warning(f"持仓做T助手初始化失败: {e}")
         return self._t_trade_assistant
+
+    @property
+    def exit_coordinator(self):
+        """持仓离场协调器：把资金流/动量/仲裁/开盘风险等多源持仓卖出信号收口成
+        每持仓一条、会升级、智能去重的离场告警。默认 OFF（EXIT_COORDINATOR_ENABLED=1 启用）。"""
+        if self._exit_coordinator is None:
+            try:
+                from ...services.trading.intraday.exit_coordinator import (
+                    ExitCoordinator, ExitCoordinatorConfig,
+                )
+                self._exit_coordinator = ExitCoordinator(ExitCoordinatorConfig.from_env())
+                if self._exit_coordinator.enabled:
+                    logging.info("持仓离场协调器已启用 (EXIT_COORDINATOR_ENABLED=1)")
+            except Exception as e:
+                logging.warning(f"持仓离场协调器初始化失败: {e}")
+        return self._exit_coordinator
 
     @property
     def capital_flow_signal_engine(self):

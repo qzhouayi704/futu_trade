@@ -261,6 +261,84 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning(f"动量引擎启动失败: {e}")
 
+            # 逐笔主力资金累加器（推送驱动；默认 OFF，CAPITAL_TICK_ACCUMULATOR_ENABLED=1 启用）
+            # 挂在 TICKER 推送链上逐笔累加主力净流入（全天累计 + 滚动窗口），与富途口径双跑对照。
+            # 大单分级按每股自适应：threshold_provider 查 BaselineService 标定门槛（MINIMAX≈300万、
+            # 翼菲≈15万），冷启动回退 kline 日均成交额代理。
+            try:
+                from .services.analysis.flow.tick_capital_accumulator import (
+                    TickCapitalAccumulator, TickCapitalConfig,
+                )
+
+                def _capital_threshold_provider(code):
+                    try:
+                        bs = getattr(container, 'baseline_service', None)
+                        if bs is None:
+                            return None
+                        large, sup, _scale = bs.get_capital_tiers(code)
+                        return (large, sup) if large and large > 0 else None
+                    except Exception:
+                        return None
+
+                container.tick_capital_accumulator = TickCapitalAccumulator(
+                    TickCapitalConfig.from_env(),
+                    threshold_provider=_capital_threshold_provider)
+                if container.tick_capital_accumulator.enabled:
+                    logging.info("逐笔主力资金累加器已启用 (CAPITAL_TICK_ACCUMULATOR_ENABLED=1)")
+            except Exception as e:
+                logging.warning(f"逐笔主力资金累加器初始化失败: {e}")
+
+            # 主力资金趋势检测器（信息型提醒：上升/回落 + 流入额/力度/涨幅/第几次大单；
+            # 默认 OFF，CAPITAL_TREND_ALERT_ENABLED=1 启用；依赖累加器一起开）。
+            try:
+                from .services.analysis.flow.capital_trend_detector import (
+                    CapitalTrendDetector, CapitalTrendConfig,
+                )
+                container.capital_trend_detector = CapitalTrendDetector(
+                    CapitalTrendConfig.from_env())
+                if container.capital_trend_detector.enabled:
+                    logging.info("主力资金趋势检测器已启用 (CAPITAL_TREND_ALERT_ENABLED=1)")
+            except Exception as e:
+                logging.warning(f"主力资金趋势检测器初始化失败: {e}")
+
+            # 启动一次性大单门槛/力度基准标定（仅累加器或检测器启用时；放线程池不阻塞事件循环）
+            try:
+                acc_on = getattr(getattr(container, 'tick_capital_accumulator', None), 'enabled', False)
+                det_on = getattr(getattr(container, 'capital_trend_detector', None), 'enabled', False)
+                if acc_on or det_on:
+                    def _calibrate_capital_thresholds_sync():
+                        from .services.baseline import CapitalThresholdCalibrator
+                        db = getattr(container, 'db_manager', None)
+                        if not db:
+                            return
+                        cal = CapitalThresholdCalibrator(db)
+                        latest = db.execute_query(
+                            "SELECT trade_date FROM ticker_data GROUP BY trade_date "
+                            "ORDER BY trade_date DESC LIMIT 1")
+                        if not latest:
+                            return
+                        codes = [r[0] for r in (db.execute_query(
+                            "SELECT DISTINCT stock_code FROM ticker_data WHERE trade_date=?",
+                            (latest[0][0],)) or [])]
+                        n = sum(1 for c in codes if _safe_calibrate(cal, c))
+                        logging.info(f"主力资金大单门槛标定完成: {n}/{len(codes)} 只")
+
+                    def _safe_calibrate(cal, c):
+                        try:
+                            return cal.calibrate(c)
+                        except Exception:
+                            return False
+
+                    async def _calibrate_capital_thresholds():
+                        await asyncio.sleep(120)  # 等订阅/逐笔积累
+                        try:
+                            await asyncio.to_thread(_calibrate_capital_thresholds_sync)
+                        except Exception as e:
+                            logging.warning(f"主力资金门槛标定失败: {e}")
+                    _track(_calibrate_capital_thresholds(), name="capital_threshold_calibration")
+            except Exception as e:
+                logging.warning(f"主力资金门槛标定调度失败: {e}")
+
             # 启动盘中狙击手引擎（IntradaySniper）
             try:
                 from .services.sniper.intraday_sniper import IntradaySniper

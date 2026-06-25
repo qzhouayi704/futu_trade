@@ -335,6 +335,26 @@ class BusinessTables:
         )
     '''
 
+    # 逐笔主力资金表（推送驱动累加器落库的快照流；与富途 capital_flow 双跑对照）
+    # 时间序列(每次 flush 一行)便于看日内演化 + 与富途口径对照回放
+    TICK_CAPITAL_FLOW_TABLE = '''
+        CREATE TABLE IF NOT EXISTS tick_capital_flow (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_code VARCHAR(20) NOT NULL,
+            trade_date TEXT NOT NULL,
+            timestamp TIMESTAMP NOT NULL,
+            cum_main_net DECIMAL(18,2),
+            window_main_net DECIMAL(18,2),
+            super_large_buy DECIMAL(18,2),
+            super_large_sell DECIMAL(18,2),
+            large_buy DECIMAL(18,2),
+            large_sell DECIMAL(18,2),
+            big_order_buy_ratio DECIMAL(5,4),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(stock_code, timestamp)
+        )
+    '''
+
     # 自动交易任务表
     AUTO_TRADE_TASKS_TABLE = '''
         CREATE TABLE IF NOT EXISTS auto_trade_tasks (

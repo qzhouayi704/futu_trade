@@ -36,7 +36,9 @@ DIGEST = "DIGEST"
 _CAT_PRIORITY = {
     "持仓风险": 100,
     "止损": 100,
+    "持仓离场": 95,   # 离场协调器收口后的决断告警：必看，但与原始"持仓风险"洪流区分
     "早段突破": 90,
+    "主力资金趋势": 85,  # 主力资金上升/回落趋势提醒（信息型，辅助人工判断）
 }
 _LEVEL_PRIORITY = {"CRITICAL": 100, "WARNING": 50, "INFO": 10}
 
@@ -77,7 +79,8 @@ class GovernorConfig:
     digest_flush_seconds: int = 600       # 折叠摘要至多 10min 出一条
     digest_max_items: int = 30            # 摘要缓冲上限（超出丢最旧）
     daily_cap_per_stock: Dict[str, int] = field(
-        default_factory=lambda: {"交易信号": 2, "抗跌吸筹": 2, "大单": 2, "默认": 4}
+        default_factory=lambda: {"交易信号": 2, "抗跌吸筹": 2, "大单": 2,
+                                 "主力资金趋势": 3, "默认": 4}
     )
 
     @classmethod

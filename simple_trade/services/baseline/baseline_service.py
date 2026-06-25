@@ -87,6 +87,38 @@ class BaselineService:
         )
         return large * 10, large, large * 0.2
 
+    def get_capital_tiers(self, stock_code: str) -> Tuple[float, float, float]:
+        """主力资金趋势提醒专用按股自适应阈值：(大单门槛, 超大单门槛, 力度基准)。
+
+        读 CapitalThresholdCalibrator 标定的 big_order_threshold / window_net_scale；
+        样本不足(< MIN_CALIB_DAYS)或无标定 → 冷启动代理(kline 日均成交额)。
+        独立缓存(5min TTL)——本方法在累加器逐笔热路径上被调用，必须便宜。
+        """
+        cache_key = (stock_code, "__capital_tiers__", 20)
+        now = time.time()
+        cached = self._cache.get(cache_key)
+        if cached and cached[1] > now:
+            return cached[0]
+        tiers = self._compute_capital_tiers(stock_code)
+        self._cache[cache_key] = (tiers, now + self.CACHE_TTL)
+        return tiers
+
+    def _compute_capital_tiers(self, code: str) -> Tuple[float, float, float]:
+        from .capital_threshold_calibrator import (
+            cold_start_threshold, MIN_CALIB_DAYS, SUPER_MULT,
+        )
+        thr_row = self._query_baseline(code, "big_order_threshold", 20)
+        if (thr_row and (thr_row.get("sample_count") or 0) >= MIN_CALIB_DAYS
+                and thr_row.get("p50")):
+            large = float(thr_row["p50"])
+            sup = float(thr_row.get("p90") or 0) or large * SUPER_MULT
+            scale_row = self._query_baseline(code, "window_net_scale", 20)
+            scale = (float(scale_row["p50"])
+                     if (scale_row and scale_row.get("p50")) else large)
+            return (large, sup, scale)
+        proxy = cold_start_threshold(self._db, code)
+        return (proxy, proxy * SUPER_MULT, proxy)
+
     def _query_baseline(self, stock_code: str, metric_key: str,
                         window_days: int) -> Optional[dict]:
         """从 DB 查询最新基准"""

@@ -92,19 +92,33 @@ class SignalPublisher:
         # 2. WebSocket推送
         await self._push_websocket(signal, priority)
 
-        # 3. 持仓股的卖出风险 → "持仓风险" CRITICAL 告警（绕过仅 HIGH 才推的门）。
-        #    momentum 是 sniper 之外的第二传感器：2026-06-23 HK.06871 的 EXTREME_DELTA/VWAP_BREAK
-        #    @09:49 早于 sniper 抓到风险，却因非持仓路由从未变成"持仓风险"——此处补上。
+        # 3. 持仓股的卖出风险：启用离场协调器时收口喂入（由管道每周期统一决断，治"112条/日
+        #    裸持仓风险洪流"）；否则走历史"持仓风险"CRITICAL 直推。
+        #    momentum 是 sniper 之外的第二传感器（2026-06-23 HK.06871 早于 sniper 抓到风险）。
         held_risk = False
         if signal.signal_type in self.SELL_TYPES:
             held_codes = await self._get_held_codes()
             if signal.stock_code in held_codes:
                 held_risk = True
-                await self._send_held_risk_wechat(signal)
+                coord = getattr(self.container, 'exit_coordinator', None)
+                if coord is not None and getattr(coord, 'enabled', False):
+                    # 子类型细分(MOM_HIGH:<type>)→不同看空维度在协调器里累加而非互相覆盖
+                    base = "MOM_HIGH" if priority == "HIGH" else "MOM_MEDIUM"
+                    tag = f"{base}:{signal.signal_type}"
+                    try:
+                        coord.observe(
+                            signal.stock_code, tag,
+                            f"动量{signal.signal_type}: {signal.description}",
+                            price=getattr(signal, 'price', None),
+                        )
+                    except Exception as e:
+                        logger.debug(f"喂离场协调器失败: {e}")
+                else:
+                    await self._send_held_risk_wechat(signal)
 
-        # 4. 高优先级 → 微信（持仓风险已单独推过，避免重复）
-        if priority == "HIGH" and not held_risk:
-            await self._send_wechat(signal)
+        # 4. 非持仓卖出绝不推送（用户规则:"没有仓位的卖出信号不要提醒"）。历史上这里调用
+        #    _send_wechat→不存在的 send_text，是静默失败的死代码兼潜在泄漏口，已移除。
+        #    买入类高优信号由 sniper/入场择时/决策引擎另行处理，不在此重复推送。
 
         # 5. 接入决策引擎 (STRONG_BUY / MODERATE_BUY)
         if signal.signal_type in ("STRONG_BUY", "MODERATE_BUY"):
@@ -181,24 +195,6 @@ class SignalPublisher:
                 )
         except Exception as e:
             logger.debug(f"WebSocket推送失败: {e}")
-
-    async def _send_wechat(self, signal):
-        """企业微信通知"""
-        try:
-            wechat = getattr(self.container, 'wechat_alert_service', None)
-            if not wechat:
-                return
-
-            emoji = "🟢" if "BUY" in signal.signal_type or "RECOVERY" in signal.signal_type else "🔴"
-            msg = (
-                f"{emoji} 动量信号 | {signal.stock_code}\n"
-                f"类型: {signal.signal_type}\n"
-                f"价格: {signal.price}\n"
-                f"{signal.description}"
-            )
-            await wechat.send_text(msg)
-        except Exception as e:
-            logger.debug(f"微信通知失败: {e}")
 
     async def _get_held_codes(self) -> set:
         """带缓存(60s)的持仓集合。失败保留上次结果、绝不抛出（不能打断信号发布）。"""

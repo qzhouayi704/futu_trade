@@ -115,6 +115,10 @@ class DatabaseSchema(BaseTables, BusinessTables):
         # === 每日大单累计表索引 ===
         'CREATE INDEX IF NOT EXISTS idx_daily_order_accum_code_date ON daily_order_accumulator(stock_code, trade_date)',
 
+        # === 逐笔主力资金表索引 ===
+        'CREATE INDEX IF NOT EXISTS idx_tick_capital_code_date ON tick_capital_flow(stock_code, trade_date)',
+        'CREATE INDEX IF NOT EXISTS idx_tick_capital_ts ON tick_capital_flow(timestamp)',
+
         # === 信号效果追踪表索引 ===
         'CREATE INDEX IF NOT EXISTS idx_signal_perf_signal ON signal_performance(signal_id)',
         'CREATE INDEX IF NOT EXISTS idx_signal_perf_stock ON signal_performance(stock_code)',
@@ -170,6 +174,7 @@ class DatabaseSchema(BaseTables, BusinessTables):
             cls.CAPITAL_FLOW_DAILY_TABLE,
             cls.BIG_ORDER_TRACKING_TABLE,
             cls.DAILY_ORDER_ACCUMULATOR_TABLE,
+            cls.TICK_CAPITAL_FLOW_TABLE,
             cls.AUTO_TRADE_TASKS_TABLE,
             cls.SIGNAL_PERFORMANCE_TABLE,
             cls.ADVISOR_EVALUATIONS_TABLE,
@@ -241,6 +246,7 @@ class TableNames:
     CAPITAL_FLOW_DAILY = "capital_flow_daily"
     BIG_ORDER_TRACKING = "big_order_tracking"
     DAILY_ORDER_ACCUMULATOR = "daily_order_accumulator"
+    TICK_CAPITAL_FLOW = "tick_capital_flow"
     AUTO_TRADE_TASKS = "auto_trade_tasks"
     SIGNAL_PERFORMANCE = "signal_performance"
     ADVISOR_EVALUATIONS = "advisor_evaluations"

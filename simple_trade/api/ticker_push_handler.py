@@ -76,6 +76,9 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             # 2. 喂给 MomentumEngine
             self._feed_momentum(stock_code, df)
 
+            # 2b. 喂给逐笔主力资金累加器（推送驱动，全天累计+滚动窗口；flag OFF 时零开销）
+            self._feed_capital_accumulator(stock_code, df)
+
             # 3. 落库到 ticker_data 表（供资金流时间线等查询）
             self._persist_to_db(stock_code, df)
 
@@ -123,6 +126,24 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                     engine.on_ticker(stock_code, ticker_data)
         except Exception as e:
             logger.debug(f"[TickerPush] 喂动量引擎失败: {e}")
+
+    def _feed_capital_accumulator(self, stock_code: str, df):
+        """将推送逐笔喂给逐笔主力资金累加器（按成交额分级累加主力净流入）。"""
+        if not self._container:
+            return
+        try:
+            acc = getattr(self._container, 'tick_capital_accumulator', None)
+            if not acc or not getattr(acc, 'enabled', False):
+                return
+            for _, row in df.iterrows():
+                price = float(row.get('price', 0) or 0)
+                volume = int(row.get('volume', 0) or 0)
+                if price <= 0 or volume <= 0:
+                    continue
+                turnover = float(row.get('turnover', 0) or 0) or price * volume
+                acc.on_tick(stock_code, turnover, row.get('ticker_direction', 'NEUTRAL'))
+        except Exception as e:
+            logger.debug(f"[TickerPush] 喂逐笔资金累加器失败: {e}")
 
     def _persist_to_db(self, stock_code: str, df):
         """将推送的逐笔数据异步写入 ticker_data 表"""
