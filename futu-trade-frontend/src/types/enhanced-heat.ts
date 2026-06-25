@@ -242,3 +242,33 @@ export interface PriceLevelDistributionData {
   total_turnover: number;
   level_count: number;
 }
+
+/** 逐笔主力资金分钟明细 — 单行（金额单位：万元） */
+export interface MainCapitalDetailRow {
+  time: string;              // HH:MM
+  price: number | null;      // 该分钟均价
+  change_pct: number | null; // 相对昨收涨幅 %
+  big_buy: number;           // 主力大买（万）
+  big_sell: number;          // 主力大卖（万）
+  net: number;               // 本分钟净额（万）
+  cum: number;               // 累计净额（万）
+}
+
+/** 逐笔主力资金分钟明细 — 汇总 */
+export interface MainCapitalDetailSummary {
+  cum_net: number;
+  total_big_buy: number;
+  total_big_sell: number;
+  buy_ratio: number | null;
+}
+
+/** 逐笔主力资金分钟明细数据 */
+export interface MainCapitalDetailData {
+  stock_code: string;
+  stock_name: string;
+  trade_date: string;
+  prev_close: number | null;
+  threshold: number;         // 大单门槛（元）
+  rows: MainCapitalDetailRow[];
+  summary: MainCapitalDetailSummary | null;
+}

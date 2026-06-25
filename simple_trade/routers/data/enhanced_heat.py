@@ -306,6 +306,126 @@ async def flow_momentum_scan(container=Depends(get_container)):
         raise BusinessError(f"资金动能扫描失败: {str(e)}")
 
 
+# ==================== 逐笔主力资金分钟明细 ====================
+
+@router.get("/main-capital-detail/{stock_code}", response_model=APIResponse)
+async def main_capital_detail(stock_code: str, container=Depends(get_container)):
+    """单只股票逐笔主力资金分钟明细 + 累计净额。
+
+    口径：单笔成交额 ≥ TickCapitalConfig.large_threshold(默认10万) 的主动买/卖逐笔，
+    按分钟聚合为 大买/大卖/净额，并滚动累计 cum（与 tick_capital_accumulator 同源口径）。
+    仅服务"当日"（ticker_data 约 7 天保留），不做历史选日。
+    返回金额单位均为「万元」。
+    """
+    try:
+        from ...utils.market_helper import MarketTimeHelper
+        from .helpers.quote_helpers import get_stock_quote
+
+        db = getattr(container, 'db_manager', None)
+        if not db:
+            return APIResponse(success=True, data=None, message="数据库不可用")
+
+        code = stock_code.strip()
+        # 大单门槛：与 tick_capital_accumulator.TickCapitalConfig.large_threshold 同值（单笔≥10万）
+        thr = 100_000.0
+        today_str = MarketTimeHelper.get_market_today("HK")
+
+        # 昨收：优先实时报价，回退最近一根已收盘日K
+        quote = get_stock_quote(container, code) or {}
+        try:
+            prev_close = float(quote.get('prev_close_price') or quote.get('prev_close') or 0)
+        except (TypeError, ValueError):
+            prev_close = 0.0
+        if prev_close <= 0:
+            try:
+                klines = db.kline_queries.get_stock_kline(code, 2)  # 升序、已排除今天
+                if klines:
+                    last_k = klines[-1]
+                    prev_close = float(last_k.get('close') or last_k.get('close_price') or 0)
+            except Exception:
+                prev_close = 0.0
+
+        # 股票名称
+        stock_name = ''
+        try:
+            name_rows = db.execute_query("SELECT name FROM stocks WHERE code = ?", (code,))
+            if name_rows and name_rows[0]:
+                stock_name = name_rows[0][0] or ''
+        except Exception:
+            pass
+
+        # 分钟聚合（CASE 做大单过滤；分钟切片沿用 flow-momentum-scan 口径）
+        rows = db.execute_query("""
+            SELECT
+                substr(datetime(timestamp/1000, 'unixepoch', '+8 hours'), 12, 5) AS minute,
+                SUM(CASE WHEN turnover >= ? AND direction='BUY'  THEN turnover ELSE 0 END) AS big_buy,
+                SUM(CASE WHEN turnover >= ? AND direction='SELL' THEN turnover ELSE 0 END) AS big_sell,
+                AVG(price) AS price
+            FROM ticker_data
+            WHERE stock_code = ? AND trade_date = ?
+            GROUP BY minute
+            ORDER BY minute
+        """, (thr, thr, code, today_str))
+
+        base = {
+            "stock_code": code,
+            "stock_name": stock_name,
+            "trade_date": today_str,
+            "prev_close": round(prev_close, 3) if prev_close > 0 else None,
+            "threshold": thr,
+        }
+
+        if not rows:
+            return APIResponse(
+                success=True,
+                data={**base, "rows": [], "summary": None},
+                message="今日暂无逐笔数据",
+            )
+
+        WAN = 10000.0
+        detail = []
+        cum = 0.0
+        total_buy = 0.0
+        total_sell = 0.0
+        for minute, big_buy, big_sell, price in rows:
+            if not minute or not ('09:15' <= minute <= '16:10'):
+                continue
+            bb = float(big_buy or 0)
+            bs = float(big_sell or 0)
+            net = bb - bs
+            cum += net
+            total_buy += bb
+            total_sell += bs
+            p = float(price or 0)
+            change_pct = round((p / prev_close - 1) * 100, 2) if (prev_close > 0 and p > 0) else None
+            detail.append({
+                "time": minute,
+                "price": round(p, 3) if p > 0 else None,
+                "change_pct": change_pct,
+                "big_buy": round(bb / WAN, 1),
+                "big_sell": round(bs / WAN, 1),
+                "net": round(net / WAN, 1),
+                "cum": round(cum / WAN, 1),
+            })
+
+        total = total_buy + total_sell
+        summary = {
+            "cum_net": round(cum / WAN, 1),
+            "total_big_buy": round(total_buy / WAN, 1),
+            "total_big_sell": round(total_sell / WAN, 1),
+            "buy_ratio": round(total_buy / total, 4) if total > 0 else None,
+        }
+
+        return APIResponse(
+            success=True,
+            data={**base, "rows": detail, "summary": summary},
+            message=f"{len(detail)} 分钟主力明细",
+        )
+    except Exception as e:
+        logging.error(f"主力资金明细失败: {stock_code}, {e}")
+        raise BusinessError(f"主力资金明细失败: {str(e)}")
+
+
 # ==================== 市场热度接口 ====================
 
 @router.get("/market-heat", response_model=APIResponse)

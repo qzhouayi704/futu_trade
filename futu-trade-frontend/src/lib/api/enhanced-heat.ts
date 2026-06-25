@@ -13,6 +13,7 @@ import type {
   CombinedAnalysisData,
   OrderBookResponse,
   PriceLevelDistributionData,
+  MainCapitalDetailData,
 } from "@/types/enhanced-heat";
 
 interface ApiResponse<T> {
@@ -107,6 +108,13 @@ export async function getCombinedAnalysis(
 
 /** 获取盘口10档原始数据（同 getOrderBookAnalysis，需从 data.order_book 提取） */
 export const getOrderBook = getOrderBookAnalysis;
+
+/** 获取逐笔主力资金分钟明细 + 累计净额 */
+export async function getMainCapitalDetail(
+  stockCode: string
+): Promise<ApiResponse<MainCapitalDetailData | null>> {
+  return apiClient.get(`/enhanced-heat/main-capital-detail/${stockCode}`);
+}
 
 /** 获取价位成交分布 */
 export async function getPriceDistribution(

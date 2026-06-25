@@ -26,12 +26,8 @@ const IntradayFlowChart = dynamic(
   () => import("@/app/market-scan/components/CapitalFlowChart").then(m => m.CapitalFlowChart),
   { ssr: false }
 );
-const OrderBookPanel = dynamic(
-  () => import("@/app/enhanced-heat/components/OrderBookPanel").then(m => m.OrderBookPanel),
-  { ssr: false }
-);
-const TickerAnalysisPanel = dynamic(
-  () => import("@/app/enhanced-heat/components/TickerAnalysisPanel").then(m => m.TickerAnalysisPanel),
+const MainCapitalDetailPanel = dynamic(
+  () => import("./components/MainCapitalDetailPanel").then(m => m.MainCapitalDetailPanel),
   { ssr: false }
 );
 const IntradayCompositeChart = dynamic(
@@ -214,13 +210,8 @@ export default function StockDetailPage() {
           </div>
         )}
 
-        {/* ⑥ 盘口深度 + 逐笔成交 */}
-        {stockCode && (
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
-            <OrderBookPanel stockCode={stockCode} />
-            <TickerAnalysisPanel stockCode={stockCode} />
-          </div>
-        )}
+        {/* ⑥ 逐笔主力资金明细 + 累计净额走势 */}
+        {stockCode && <MainCapitalDetailPanel stockCode={stockCode} />}
       </div>
     </div>
   );
