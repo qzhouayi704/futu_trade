@@ -129,6 +129,7 @@ class DatabaseManager:
         cleanup_rules = [
             ('ticker_data', 'trade_date', 7),
             ('ticker_minute', 'trade_date', 180),
+            ('capital_flow_minute', 'trade_date', 180),
             ('big_order_tracking', 'timestamp', 30),
             ('signal_performance', 'created_at', 30),
             ('capital_flow_cache', 'timestamp', 30),

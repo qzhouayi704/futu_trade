@@ -49,6 +49,23 @@ class TickerMinuteArchiver:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tm_date ON ticker_minute(trade_date)")
+        # 大单口径分钟归档（按每股门槛过滤，供多日·精确大单口径回测/标定，突破逐笔 7 天限制）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS capital_flow_minute (
+                stock_code TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                minute TEXT NOT NULL,            -- HH:MM (HK)
+                big_buy_amt REAL,                -- 大单(含超大,≥门槛)主买额
+                big_sell_amt REAL,               -- 大单主卖额
+                super_buy_amt REAL,              -- 超大单(≥超大门槛)主买额
+                super_sell_amt REAL,             -- 超大单主卖额
+                big_buy_count INTEGER,           -- 大单买入笔数
+                big_sell_count INTEGER,          -- 大单卖出笔数
+                big_order_threshold REAL,        -- 当时该股大单门槛(可溯源)
+                PRIMARY KEY (stock_code, trade_date, minute)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cfm_date ON capital_flow_minute(trade_date)")
 
     # ---------- 归档 ----------
 
@@ -75,10 +92,59 @@ class TickerMinuteArchiver:
         )
         return cur.rowcount or 0
 
-    def archive_present(self) -> dict:
-        """把 ticker_data 里现存的、尚未归档的交易日补进 ticker_minute。
+    def _archive_capital_minute(self, conn, D: str) -> int:
+        """重算并写入某交易日的「大单口径」分钟归档(每股门槛过滤)。先删后插，幂等。返回行数。
 
-        过去日：已归档则跳过；当日：仅收盘后(>16:10)归档。返回 {date: rows}。
+        门槛按每股取 BaselineService.get_capital_tiers(冷启动有回退);写临时表后一条 JOIN 大查询，
+        不逐股慢查询。direction 用 'BUY'/'SELL'(与 _archive_date 一致)。
+        """
+        bs = getattr(self._container, 'baseline_service', None)
+        if bs is None:
+            return 0
+        codes = [r[0] for r in conn.execute(
+            "SELECT DISTINCT stock_code FROM ticker_data WHERE trade_date=?", (D,)).fetchall() if r[0]]
+        if not codes:
+            return 0
+        conn.execute("DROP TABLE IF EXISTS _cf_thr")
+        conn.execute("CREATE TEMP TABLE _cf_thr (stock_code TEXT PRIMARY KEY, large REAL, sup REAL)")
+        for code in codes:
+            try:
+                large, sup, _scale = bs.get_capital_tiers(code)
+            except Exception:
+                continue
+            if large and large > 0:
+                conn.execute("INSERT OR REPLACE INTO _cf_thr VALUES (?,?,?)",
+                             (code, float(large), float(sup or large)))
+        conn.execute("DELETE FROM capital_flow_minute WHERE trade_date = ?", (D,))
+        cur = conn.execute(
+            """
+            INSERT INTO capital_flow_minute
+                (stock_code, trade_date, minute, big_buy_amt, big_sell_amt,
+                 super_buy_amt, super_sell_amt, big_buy_count, big_sell_count, big_order_threshold)
+            SELECT t.stock_code, ?,
+                   substr(datetime(t.timestamp/1000, 'unixepoch', '+8 hours'), 12, 5) AS m,
+                   SUM(CASE WHEN t.direction='BUY'  THEN t.turnover ELSE 0 END),
+                   SUM(CASE WHEN t.direction='SELL' THEN t.turnover ELSE 0 END),
+                   SUM(CASE WHEN t.direction='BUY'  AND t.turnover>=thr.sup THEN t.turnover ELSE 0 END),
+                   SUM(CASE WHEN t.direction='SELL' AND t.turnover>=thr.sup THEN t.turnover ELSE 0 END),
+                   SUM(CASE WHEN t.direction='BUY'  THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN t.direction='SELL' THEN 1 ELSE 0 END),
+                   thr.large
+            FROM ticker_data t JOIN _cf_thr thr ON t.stock_code = thr.stock_code
+            WHERE t.trade_date = ? AND t.turnover >= thr.large
+            GROUP BY t.stock_code, m
+            HAVING m BETWEEN '09:15' AND '16:10'
+            """,
+            (D, D),
+        )
+        conn.execute("DROP TABLE IF EXISTS _cf_thr")
+        return cur.rowcount or 0
+
+    def archive_present(self) -> dict:
+        """把 ticker_data 里现存的、尚未归档的交易日补进 ticker_minute + capital_flow_minute。
+
+        过去日：已归档则跳过；当日：仅收盘后(>16:10)归档。两表各自维护已归档日集合。
+        返回 ticker_minute 的 {date: rows}。
         """
         db = getattr(self._container, 'db_manager', None)
         if not db:
@@ -93,20 +159,26 @@ class TickerMinuteArchiver:
                     "SELECT DISTINCT trade_date FROM ticker_data ORDER BY trade_date").fetchall() if r[0]]
                 done = {r[0] for r in conn.execute(
                     "SELECT DISTINCT trade_date FROM ticker_minute").fetchall()}
+                done_cf = {r[0] for r in conn.execute(
+                    "SELECT DISTINCT trade_date FROM capital_flow_minute").fetchall()}
+                out_cf = {}
                 for D in src_dates:
-                    if D == today:
-                        if hhmm <= "16:10":
-                            continue  # 当日盘中不归档(数据还在长)
-                    elif D in done:
-                        continue      # 过去日已归档
-                    n = self._archive_date(conn, D)
-                    out[D] = n
+                    is_today = (D == today)
+                    if is_today and hhmm <= "16:10":
+                        continue  # 当日盘中不归档(数据还在长)
+                    if is_today or D not in done:
+                        out[D] = self._archive_date(conn, D)
+                    if is_today or D not in done_cf:
+                        out_cf[D] = self._archive_capital_minute(conn, D)
                 conn.commit()
             if out:
                 logger.info("ticker_minute 归档完成: " +
                             ", ".join(f"{d}={n}" for d, n in out.items()))
+            if out_cf:
+                logger.info("capital_flow_minute 归档完成: " +
+                            ", ".join(f"{d}={n}" for d, n in out_cf.items()))
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"ticker_minute 归档失败: {e}")
+            logger.warning(f"分钟归档失败: {e}")
         return out
 
     # ---------- 生命周期 ----------
