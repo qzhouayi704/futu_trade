@@ -159,6 +159,33 @@ def test_big_counts_and_peak_trough():
     assert s["cum_main_net"] == -400_000
 
 
+# ---------- 10. 序号去重：回放/补发不重复累加（Bug2） ----------
+def test_sequence_dedup_blocks_replay():
+    clock, day = FakeClock(), FakeDay()
+    a = _acc(clock, day)
+    a.on_tick("HK.00700", 500_000, "BUY", sequence=5001)   # 计入
+    a.on_tick("HK.00700", 300_000, "BUY", sequence=5002)   # 计入
+    assert a.snapshot("HK.00700")["cum_main_net"] == 800_000
+    # 断线补发/缓存回放：重发序号 ≤ 已计入最大序号 → 跳过，不重复累加
+    a.on_tick("HK.00700", 500_000, "BUY", sequence=5001)
+    a.on_tick("HK.00700", 300_000, "BUY", sequence=5002)
+    s = a.snapshot("HK.00700")
+    assert s["cum_main_net"] == 800_000        # 仍是 0.8M，未翻倍
+    assert s["big_buy_count"] == 2             # 计数也未被回放抬高
+    # 新序号继续正常累加
+    a.on_tick("HK.00700", 200_000, "BUY", sequence=5003)
+    assert a.snapshot("HK.00700")["cum_main_net"] == 1_000_000
+
+
+def test_no_sequence_keeps_backward_compat():
+    """不传 sequence（None）时退化为不去重，保持旧行为。"""
+    clock, day = FakeClock(), FakeDay()
+    a = _acc(clock, day)
+    a.on_tick("HK.00700", 500_000, "BUY")      # 无序号
+    a.on_tick("HK.00700", 500_000, "BUY")      # 无序号 → 照常累加
+    assert a.snapshot("HK.00700")["cum_main_net"] == 1_000_000
+
+
 # ---------- 9. snapshot_all ----------
 def test_snapshot_all():
     clock, day = FakeClock(), FakeDay()

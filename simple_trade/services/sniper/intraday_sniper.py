@@ -775,9 +775,14 @@ class IntradaySniper:
     @staticmethod
     def _load_minute_data(conn, stock_code: str, today: str):
         """从 ticker_data 加载分钟级聚合数据"""
+        # 分钟归桶优先用富途真实成交时间 trade_time("YYYY-MM-DD HH:MM:SS")，缺失(老行 NULL)
+        # 才回退本地接收时刻 timestamp——后者在推送积压/订阅缓存回放时会把成交归错分钟。
         rows = conn.execute("""
             SELECT
-                substr(datetime(timestamp/1000, 'unixepoch', '+8 hours'), 12, 5) as minute,
+                COALESCE(
+                    substr(trade_time, 12, 5),
+                    substr(datetime(timestamp/1000, 'unixepoch', '+8 hours'), 12, 5)
+                ) as minute,
                 direction, SUM(turnover) as tv, AVG(price) as ap
             FROM ticker_data
             WHERE stock_code = ? AND trade_date = ?

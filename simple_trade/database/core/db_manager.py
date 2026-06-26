@@ -90,6 +90,10 @@ class DatabaseManager:
                     cursor.execute(table_sql)
                 conn.commit()
 
+            # 1b. ticker_data 结构迁移：旧库重建表去掉以"接收毫秒"为轴的坏唯一键，
+            #     换成富途逐笔序号 sequence（必须在建索引之前，DROP/RENAME 会带走旧索引）
+            self._migrate_ticker_data_schema()
+
             # 2. 执行自动迁移（添加缺失的列）- 必须在创建索引之前
             self._run_auto_migrations()
 
@@ -148,6 +152,66 @@ class DatabaseManager:
                         logging.info(f"[自动清理] {table}: 删除 {old_count:,} 条 {keep_days} 天前数据")
             except Exception as e:
                 logging.warning(f"[自动清理] {table} 清理失败: {e}")
+
+    def _migrate_ticker_data_schema(self):
+        """把 ticker_data 从旧唯一键重建为基于富途逐笔序号的新结构（幂等）。
+
+        旧：UNIQUE(stock_code, timestamp, price, volume)，timestamp 是本地接收毫秒。
+        新：UNIQUE(stock_code, trade_date, sequence) + 新增 sequence/trade_time 列。
+
+        旧唯一键以"接收毫秒"为轴，会把同价同量的不同真实成交误判为重复；配
+        executemany 裸 INSERT，一旦撞键就 IntegrityError 整批回滚 → 静默丢一整批逐笔。
+        SQLite 不能 ALTER 约束，只能重建表。保留旧行（sequence/trade_time 置 NULL，
+        SQLite 中 NULL 互不相等，不会误撞新唯一键）。
+
+        幂等判据：sequence 列存在即视为已是新结构（sequence 只可能由本迁移或全新建表
+        引入——刻意不把它放进 _run_auto_migrations 的 ADD COLUMN 列表，避免"加了列但没换
+        约束"的半吊子状态）。
+        """
+        try:
+            with self._lock:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    row = cursor.execute(
+                        "SELECT sql FROM sqlite_master "
+                        "WHERE type='table' AND name='ticker_data'"
+                    ).fetchone()
+                    if not row or not row[0]:
+                        return  # 表不存在：全新库已由 CREATE 直接建成新结构
+                    cursor.execute("PRAGMA table_info(ticker_data)")
+                    cols = [r[1] for r in cursor.fetchall()]
+                    if 'sequence' in cols:
+                        return  # 已是新结构
+                    logging.info("[迁移] ticker_data 重建表：换用富途逐笔序号 sequence 作唯一键")
+                    cursor.executescript("""
+                        PRAGMA foreign_keys=OFF;
+                        CREATE TABLE ticker_data_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            stock_code VARCHAR(20) NOT NULL,
+                            price DECIMAL(10,3) NOT NULL,
+                            volume INTEGER NOT NULL,
+                            turnover DECIMAL(15,2),
+                            direction VARCHAR(10) NOT NULL,
+                            timestamp BIGINT NOT NULL,
+                            trade_date TEXT NOT NULL,
+                            sequence BIGINT,
+                            trade_time TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(stock_code, trade_date, sequence)
+                        );
+                        INSERT INTO ticker_data_new
+                            (id, stock_code, price, volume, turnover, direction,
+                             timestamp, trade_date, created_at)
+                        SELECT id, stock_code, price, volume, turnover, direction,
+                               timestamp, trade_date, created_at
+                        FROM ticker_data;
+                        DROP TABLE ticker_data;
+                        ALTER TABLE ticker_data_new RENAME TO ticker_data;
+                    """)
+                    conn.commit()
+                    logging.info("[迁移] ticker_data 重建完成（旧行已保留，sequence 置 NULL）")
+        except Exception as e:
+            logging.error(f"[迁移] ticker_data 重建失败: {e}")
 
     def _run_auto_migrations(self):
         """自动运行数据库迁移（添加缺失的列）"""

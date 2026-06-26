@@ -170,7 +170,13 @@ class TickerQueries:
         """批量插入逐笔数据
 
         Args:
-            records: [(stock_code, price, volume, turnover, direction, timestamp, trade_date), ...]
+            records: [(stock_code, price, volume, turnover, direction, timestamp,
+                       trade_date, sequence, trade_time), ...]
+
+        去重靠唯一键 (stock_code, trade_date, sequence)（富途逐笔序号，官方设计的去重轴）；
+        INSERT OR IGNORE 让断线补发/订阅缓存回放的重复逐笔被静默跳过。旧唯一键以接收毫秒
+        为轴，既会误丢同价同量的不同成交、又拦不住回放重复，已随 _migrate_ticker_data_schema
+        重建表纠正。
 
         Returns:
             插入的记录数
@@ -179,8 +185,9 @@ class TickerQueries:
             return 0
         sql = (
             "INSERT OR IGNORE INTO ticker_data "
-            "(stock_code, price, volume, turnover, direction, timestamp, trade_date) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "(stock_code, price, volume, turnover, direction, timestamp, "
+            "trade_date, sequence, trade_time) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         _CHUNK_SIZE = 500
         total_written = 0

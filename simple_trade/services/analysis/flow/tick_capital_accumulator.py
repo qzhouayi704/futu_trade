@@ -81,6 +81,7 @@ class _DayState:
     big_sell_count: int = 0      # 当日大单流出笔数(第几次大单流出)
     cum_peak: float = 0.0        # 当日累计主力净流入峰值(从0开盘)
     cum_trough: float = 0.0      # 当日累计主力净流入谷值
+    last_seq: int = 0            # 已计入的最大富途逐笔序号(去重防回放重复计数)
     window: Deque[Tuple[float, float]] = field(default_factory=deque)  # (ts, signed_amt)
 
     @property
@@ -129,8 +130,14 @@ class TickCapitalAccumulator:
                 pass
         return self.cfg.large_threshold, self.cfg.super_threshold
 
-    def on_tick(self, code: str, turnover: float, direction, now: Optional[float] = None) -> None:
-        """累加一笔逐笔成交。非大单/中性单直接忽略（热路径，先过滤再加锁）。"""
+    def on_tick(self, code: str, turnover: float, direction,
+                now: Optional[float] = None, sequence: Optional[int] = None) -> None:
+        """累加一笔逐笔成交。非大单/中性单直接忽略（热路径，先过滤再加锁）。
+
+        sequence 为富途逐笔序号（同股同日单调递增）：若提供，则按"已计入的最大序号"
+        去重——断线补发(BYDISCONN)/订阅缓存回放(CACHE) 会重发已计过的逐笔，否则会把
+        主力净流入重复累加。缺省 None 时退化为不去重（保持向后兼容）。
+        """
         if not self.cfg.enabled or not code:
             return
         d = _norm_dir(direction)
@@ -143,6 +150,10 @@ class TickCapitalAccumulator:
         large_thr, super_thr = self._thresholds(code)
         if amt < large_thr:
             return  # 非大单，不计入主力
+        try:
+            seq = int(sequence) if sequence is not None else 0
+        except (TypeError, ValueError):
+            seq = 0
         now = self._clock() if now is None else now
         today = self._today()
         is_super = amt >= super_thr
@@ -153,6 +164,11 @@ class TickCapitalAccumulator:
             if st is None or st.date != today:
                 st = _DayState(date=today)
                 self._state[code] = st
+            # 序号去重：已计入过的逐笔（回放/补发）直接跳过，避免重复累加
+            if seq > 0:
+                if seq <= st.last_seq:
+                    return
+                st.last_seq = seq
             if d == "BUY":
                 if is_super:
                     st.super_buy += amt

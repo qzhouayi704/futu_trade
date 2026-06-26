@@ -141,7 +141,14 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                 if price <= 0 or volume <= 0:
                     continue
                 turnover = float(row.get('turnover', 0) or 0) or price * volume
-                acc.on_tick(stock_code, turnover, row.get('ticker_direction', 'NEUTRAL'))
+                try:
+                    seq = int(row.get('sequence', 0) or 0)
+                except (TypeError, ValueError):
+                    seq = 0
+                # 传逐笔序号去重：断线补发/订阅缓存回放不重复累加主力净流入
+                acc.on_tick(stock_code, turnover,
+                            row.get('ticker_direction', 'NEUTRAL'),
+                            sequence=seq or None)
         except Exception as e:
             logger.debug(f"[TickerPush] 喂逐笔资金累加器失败: {e}")
 
@@ -176,11 +183,21 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                 if price <= 0 or volume <= 0:
                     continue
 
-                ts_ms = int(time.time() * 1000)
+                ts_ms = int(time.time() * 1000)   # 本地接收时刻（不是成交时刻）
                 if not turnover:
                     turnover = price * volume
 
-                rows.append((stock_code, price, volume, turnover, direction, ts_ms, today_str))
+                # 富途逐笔序号（去重唯一键）+ 真实成交时间字符串。
+                # sequence 缺失/为 0 时存 NULL：NULL 互不相等，不会让无序号的逐笔互相误撞。
+                try:
+                    seq = int(row.get('sequence', 0) or 0)
+                except (TypeError, ValueError):
+                    seq = 0
+                sequence = seq if seq > 0 else None
+                trade_time = row.get('time') or None
+
+                rows.append((stock_code, price, volume, turnover, direction,
+                             ts_ms, today_str, sequence, trade_time))
 
             if rows:
                 queries = TickerQueries(db.conn_manager)
