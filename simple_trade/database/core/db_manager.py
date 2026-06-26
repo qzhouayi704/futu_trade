@@ -154,20 +154,23 @@ class DatabaseManager:
                 logging.warning(f"[自动清理] {table} 清理失败: {e}")
 
     def _migrate_ticker_data_schema(self):
-        """把 ticker_data 从旧唯一键重建为基于富途逐笔序号的新结构（幂等）。
+        """把 ticker_data 重建为基于业务键的去重结构（幂等，可从任何旧版收敛）。
 
-        旧：UNIQUE(stock_code, timestamp, price, volume)，timestamp 是本地接收毫秒。
-        新：UNIQUE(stock_code, trade_date, sequence) + 新增 sequence/trade_time 列。
+        目标唯一键：UNIQUE(stock_code, trade_date, trade_time, price, volume, direction)。
+          富途逐笔无稳定唯一 ID——sequence 跨请求每次重新编号（实测同一笔两次拉取序号全不同）、
+          接收时刻 timestamp 也随拉取变，两者都不能做去重轴。唯一稳定的是"真实成交时间 trade_time
+          + 价/量/方向"业务组合（与 ticker_flow.py 去重口径一致）。
 
-        旧唯一键以"接收毫秒"为轴，会把同价同量的不同真实成交误判为重复；配
-        executemany 裸 INSERT，一旦撞键就 IntegrityError 整批回滚 → 静默丢一整批逐笔。
-        SQLite 不能 ALTER 约束，只能重建表。保留旧行（sequence/trade_time 置 NULL，
-        SQLite 中 NULL 互不相等，不会误撞新唯一键）。
+        历史版本：
+          v0  UNIQUE(stock_code, timestamp, price, volume)，无 sequence/trade_time 列
+          v1  UNIQUE(stock_code, trade_date, sequence)，加 sequence/trade_time 列（被本次取代）
+          v2  本目标业务键
+        从 v0/v1 都重建到 v2；保留全部现有列与行（旧行 trade_time 可能为 NULL，
+        SQLite 中 NULL 互不相等，不会误撞业务键）。
 
-        幂等判据：sequence 列存在即视为已是新结构（sequence 只可能由本迁移或全新建表
-        引入——刻意不把它放进 _run_auto_migrations 的 ADD COLUMN 列表，避免"加了列但没换
-        约束"的半吊子状态）。
+        幂等判据：建表 SQL 已含目标业务键签名即跳过。
         """
+        target_uq = "UNIQUE(stock_code, trade_date, trade_time, price, volume, direction)"
         try:
             with self._lock:
                 with self.get_connection() as conn:
@@ -177,13 +180,17 @@ class DatabaseManager:
                         "WHERE type='table' AND name='ticker_data'"
                     ).fetchone()
                     if not row or not row[0]:
-                        return  # 表不存在：全新库已由 CREATE 直接建成新结构
+                        return  # 表不存在：全新库已由 CREATE 直接建成目标结构
+                    if target_uq.replace(" ", "") in row[0].replace(" ", ""):
+                        return  # 已是目标业务键结构
                     cursor.execute("PRAGMA table_info(ticker_data)")
                     cols = [r[1] for r in cursor.fetchall()]
-                    if 'sequence' in cols:
-                        return  # 已是新结构
-                    logging.info("[迁移] ticker_data 重建表：换用富途逐笔序号 sequence 作唯一键")
-                    cursor.executescript("""
+                    has_seq = 'sequence' in cols
+                    has_tt = 'trade_time' in cols
+                    logging.info("[迁移] ticker_data 重建表：换用业务键 (trade_time,price,volume,direction) 去重")
+                    sel_seq = "sequence" if has_seq else "NULL"
+                    sel_tt = "trade_time" if has_tt else "NULL"
+                    cursor.executescript(f"""
                         PRAGMA foreign_keys=OFF;
                         CREATE TABLE ticker_data_new (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,19 +204,19 @@ class DatabaseManager:
                             sequence BIGINT,
                             trade_time TEXT,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            UNIQUE(stock_code, trade_date, sequence)
+                            {target_uq}
                         );
-                        INSERT INTO ticker_data_new
+                        INSERT OR IGNORE INTO ticker_data_new
                             (id, stock_code, price, volume, turnover, direction,
-                             timestamp, trade_date, created_at)
+                             timestamp, trade_date, sequence, trade_time, created_at)
                         SELECT id, stock_code, price, volume, turnover, direction,
-                               timestamp, trade_date, created_at
+                               timestamp, trade_date, {sel_seq}, {sel_tt}, created_at
                         FROM ticker_data;
                         DROP TABLE ticker_data;
                         ALTER TABLE ticker_data_new RENAME TO ticker_data;
                     """)
                     conn.commit()
-                    logging.info("[迁移] ticker_data 重建完成（旧行已保留，sequence 置 NULL）")
+                    logging.info("[迁移] ticker_data 重建完成（业务键去重，旧行已保留）")
         except Exception as e:
             logging.error(f"[迁移] ticker_data 重建失败: {e}")
 

@@ -490,12 +490,14 @@ class BusinessTables:
     '''
 
     # 逐笔成交明细表（用于回溯分析和诊断）
-    # 注：唯一键用富途逐笔序号 sequence（官方设计的去重序号），不再用接收时刻 timestamp。
-    #     旧版 UNIQUE(stock_code, timestamp, price, volume) 以"接收毫秒"为轴，会把同价同量
-    #     的不同真实成交误判重复 → 配 executemany 裸 INSERT 触发整批回滚丢数据；详见
-    #     _migrate_ticker_data_schema 的重建迁移。
-    #   - sequence  : 富途逐笔序号（同股同日唯一，缺失则存 NULL，NULL 互不相等不误撞）
-    #   - trade_time: 富途回报的真实成交时间字符串（timestamp 仍保留为本地接收时刻）
+    # 去重唯一键 = 业务键 (stock_code, trade_date, trade_time, price, volume, direction)。
+    #   富途逐笔无稳定唯一 ID：sequence 跨请求每次重新编号（实测同一笔成交两次拉取序号全不同），
+    #   接收时刻 timestamp 也随拉取时间变——两者都不能做去重轴。唯一稳定的是富途回报的"真实成交
+    #   时间 trade_time + 价/量/方向"业务组合（与 routers/.../ticker_flow.py 的去重口径一致）。
+    #   - trade_time: 富途真实成交时间（毫秒），去重键核心；旧行为 NULL（NULL 互不相等不误撞）
+    #   - sequence  : 富途逐笔序号，仅留存不做键（跨请求会变）
+    #   - timestamp : 本地接收时刻，留存不做键
+    # 取舍：同股同毫秒同价同量同向的两笔不同成交会被当一笔（富途无唯一 ID 的固有局限）。
     TICKER_DATA_TABLE = '''
         CREATE TABLE IF NOT EXISTS ticker_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -509,7 +511,7 @@ class BusinessTables:
             sequence BIGINT,
             trade_time TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(stock_code, trade_date, sequence)
+            UNIQUE(stock_code, trade_date, trade_time, price, volume, direction)
         )
     '''
 
