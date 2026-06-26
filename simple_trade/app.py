@@ -285,6 +285,50 @@ async def lifespan(app: FastAPI):
                     threshold_provider=_capital_threshold_provider)
                 if container.tick_capital_accumulator.enabled:
                     logging.info("逐笔主力资金累加器已启用 (CAPITAL_TICK_ACCUMULATOR_ENABLED=1)")
+
+                    # 启动 seed：从 tick_capital_flow 当日最新快照重建累加器状态，治后端
+                    # 重启清空内存→丢当日累积(cum/peak/计数)→看板回退富途口径、capital_trend
+                    # 回落判读失真。seed 是增量合并+按 last_seq 去重，与 live 推送线程竞态安全。
+                    def _seed_tick_accumulator_sync():
+                        acc = getattr(container, 'tick_capital_accumulator', None)
+                        db = getattr(container, 'db_manager', None)
+                        if not acc or not getattr(acc, 'enabled', False) or not db:
+                            return
+                        try:
+                            from .utils.market_helper import MarketTimeHelper
+                            today = MarketTimeHelper.get_market_today("HK")
+                        except Exception:
+                            today = None
+                        if not today:
+                            return
+                        rows = db.execute_query(
+                            "SELECT stock_code, trade_date, cum_main_net, window_main_net, "
+                            "super_large_buy, super_large_sell, large_buy, large_sell, "
+                            "big_order_buy_ratio, cum_peak, cum_trough, big_buy_count, "
+                            "big_sell_count, last_seq FROM tick_capital_flow WHERE id IN ("
+                            "  SELECT MAX(id) FROM tick_capital_flow WHERE trade_date=? "
+                            "  GROUP BY stock_code)", (today,)) or []
+                        n = 0
+                        for r in rows:
+                            acc.seed({
+                                "stock_code": r[0], "trade_date": r[1],
+                                "super_large_buy": r[4], "super_large_sell": r[5],
+                                "large_buy": r[6], "large_sell": r[7],
+                                "cum_peak": r[9], "cum_trough": r[10],
+                                "big_buy_count": r[11], "big_sell_count": r[12],
+                                "last_seq": r[13],
+                            })
+                            n += 1
+                        if n:
+                            logging.info(f"逐笔累加器已从快照恢复 {n} 只当日状态(治重启丢累积)")
+
+                    async def _seed_tick_accumulator():
+                        await asyncio.sleep(5)  # 让 DB/容器就绪；seed 竞态安全,无需赶在推送前
+                        try:
+                            await asyncio.to_thread(_seed_tick_accumulator_sync)
+                        except Exception as e:
+                            logging.warning(f"逐笔累加器 seed 失败: {e}")
+                    _track(_seed_tick_accumulator(), name="tick_accumulator_seed")
             except Exception as e:
                 logging.warning(f"逐笔主力资金累加器初始化失败: {e}")
 

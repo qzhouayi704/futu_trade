@@ -222,8 +222,44 @@ class TickCapitalAccumulator:
                 "big_sell_count": st.big_sell_count,
                 "cum_peak": round(st.cum_peak, 2),
                 "cum_trough": round(st.cum_trough, 2),
+                "last_seq": st.last_seq,
                 "updated_at": now,
             }
+
+    def seed(self, snap: Optional[dict]) -> None:
+        """用持久化快照(tick_capital_flow 最新行)重建某股当日状态——治后端重启内存清空、
+        丢当日累积(cum/peak/计数),致看板回退富途口径、capital_trend 回落判读失真。
+
+        竞态安全(on_tick 在 SDK 推送线程并发)：锁内做**增量合并**——把 snap 的当日基线
+        加到现有状态上(post-restart live 推送的是更新序号、与基线逐笔不相交,故相加正确)，
+        并把 last_seq 抬到 max(现状, snap)，使被回放的旧逐笔(seq≤snap.last_seq)被去重丢弃、
+        不重复计数。窗口 deque 不持久化→留给 live 重填(15min 内逐步恢复力度)。
+
+        只应在启动期调用一次(每股一次)；snap 须为当日(跨日的不喂)。
+        """
+        if not self.cfg.enabled or not snap:
+            return
+        code = snap.get("stock_code")
+        day = snap.get("trade_date")
+        if not code or not day:
+            return
+        seq = int(snap.get("last_seq") or 0)
+        with self._lock:
+            st = self._state.get(code)
+            if st is None or st.date != day:
+                st = _DayState(date=day)
+                self._state[code] = st
+            st.super_buy += float(snap.get("super_large_buy") or 0.0)
+            st.super_sell += float(snap.get("super_large_sell") or 0.0)
+            st.large_buy += float(snap.get("large_buy") or 0.0)
+            st.large_sell += float(snap.get("large_sell") or 0.0)
+            st.big_buy_count += int(snap.get("big_buy_count") or 0)
+            st.big_sell_count += int(snap.get("big_sell_count") or 0)
+            # 峰/谷：取基线峰谷与合并后当日累计的极值（近似，足够 detector 判回落幅度）
+            cur = st.cum_main_net
+            st.cum_peak = max(float(snap.get("cum_peak") or 0.0), st.cum_peak, cur)
+            st.cum_trough = min(float(snap.get("cum_trough") or 0.0), st.cum_trough, cur)
+            st.last_seq = max(st.last_seq, seq)
 
     def snapshot_all(self, now: Optional[float] = None) -> Dict[str, dict]:
         with self._lock:

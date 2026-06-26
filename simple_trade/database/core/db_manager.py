@@ -239,6 +239,12 @@ class DatabaseManager:
                 # 止盈执行记录：deal_id 和 order_id
                 ('take_profit_executions', 'deal_id', 'TEXT'),
                 ('take_profit_executions', 'order_id', 'TEXT'),
+                # 逐笔主力资金快照：补全峰谷/大单计数/序号，供后端重启 seed 回累加器
+                ('tick_capital_flow', 'cum_peak', 'DECIMAL(18,2)'),
+                ('tick_capital_flow', 'cum_trough', 'DECIMAL(18,2)'),
+                ('tick_capital_flow', 'big_buy_count', 'INTEGER DEFAULT 0'),
+                ('tick_capital_flow', 'big_sell_count', 'INTEGER DEFAULT 0'),
+                ('tick_capital_flow', 'last_seq', 'INTEGER DEFAULT 0'),
             ]
 
             for table_name, column_name, column_def in migrations:

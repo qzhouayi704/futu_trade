@@ -1059,7 +1059,9 @@ class QuotePipeline:
             rows = [
                 (code, s['trade_date'], ts, s['cum_main_net'], s['window_main_net'],
                  s['super_large_buy'], s['super_large_sell'], s['large_buy'],
-                 s['large_sell'], s['big_order_buy_ratio'])
+                 s['large_sell'], s['big_order_buy_ratio'],
+                 s['cum_peak'], s['cum_trough'], s['big_buy_count'],
+                 s['big_sell_count'], s['last_seq'])
                 for code, s in snaps.items()
             ]
             await self._run_in_executor(self._insert_tick_capital_rows, rows)
@@ -1073,8 +1075,9 @@ class QuotePipeline:
             return
         sql = ("INSERT OR IGNORE INTO tick_capital_flow "
                "(stock_code, trade_date, timestamp, cum_main_net, window_main_net, "
-               "super_large_buy, super_large_sell, large_buy, large_sell, big_order_buy_ratio) "
-               "VALUES (?,?,?,?,?,?,?,?,?,?)")
+               "super_large_buy, super_large_sell, large_buy, large_sell, big_order_buy_ratio, "
+               "cum_peak, cum_trough, big_buy_count, big_sell_count, last_seq) "
+               "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         for r in rows:
             try:
                 db.execute_update(sql, r)

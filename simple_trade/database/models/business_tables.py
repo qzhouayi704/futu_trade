@@ -350,6 +350,11 @@ class BusinessTables:
             large_buy DECIMAL(18,2),
             large_sell DECIMAL(18,2),
             big_order_buy_ratio DECIMAL(5,4),
+            cum_peak DECIMAL(18,2),
+            cum_trough DECIMAL(18,2),
+            big_buy_count INTEGER DEFAULT 0,
+            big_sell_count INTEGER DEFAULT 0,
+            last_seq INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(stock_code, timestamp)
         )
