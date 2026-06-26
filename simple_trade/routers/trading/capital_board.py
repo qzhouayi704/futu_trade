@@ -87,6 +87,43 @@ def _derive_cache_state(cf: dict):
     return direction, tier
 
 
+def _load_db_tick_snaps(db) -> dict:
+    """从 tick_capital_flow 读每股当日最新一行(逐笔口径)——治后端重启内存累加器清空、
+    当日累积丢失→看板全回退富途口径的问题(数据本就每55s落库,只是累加器启动没读回)。
+
+    表缺 cum_peak/大单计数:direction 退化为只判流入/流出/拉高出货(distribution 只需
+    cum<0+股价涨,仍可判),"回落"(需真峰值)与大单买卖次数降级为0;内存累加器追上后由
+    更丰富的 in-memory 快照覆盖。
+    """
+    if not db:
+        return {}
+    try:
+        d = db.execute_query("SELECT MAX(trade_date) FROM tick_capital_flow")
+        trade_date = d[0][0] if d and d[0] else None
+        if not trade_date:
+            return {}
+        rows = db.execute_query(
+            "SELECT stock_code, cum_main_net, window_main_net, big_order_buy_ratio "
+            "FROM tick_capital_flow WHERE id IN ("
+            "  SELECT MAX(id) FROM tick_capital_flow WHERE trade_date=? GROUP BY stock_code)",
+            (trade_date,))
+        out = {}
+        for r in (rows or []):
+            code = r[0]
+            cum = float(r[1] or 0.0)
+            out[code] = {
+                "stock_code": code, "trade_date": trade_date,
+                "cum_main_net": cum,
+                "window_main_net": float(r[2] or 0.0),
+                "cum_peak": max(cum, 0.0),   # 库无峰值,近似 max(cum,0):不误判回落
+                "big_buy_count": 0, "big_sell_count": 0,
+            }
+        return out
+    except Exception as e:
+        logger.debug(f"读 tick_capital_flow 兜底失败: {e}")
+        return {}
+
+
 def _slim_sniper(sig: dict) -> dict:
     """精简 sniper 信号给看板行内展示。"""
     return {
@@ -149,10 +186,21 @@ async def get_capital_board_ranking(
             except Exception as e:
                 logger.debug(f"取逐笔快照失败: {e}")
 
-        # 4. 富途缓存口径（兜底，纯缓存不调 API）——仅对池内、且无逐笔快照的票补读
+        # 3b. DB 逐笔兜底：内存累加器没有的票(重启清空/未及累积)，读 tick_capital_flow
+        #     当日最新行补回逐笔口径——避免重启后看板全回退富途口径、丢当日累积。
+        db = getattr(container, "db_manager", None)
+        db_tick_snaps = {}
+        if db and any(c not in tick_snaps for c in pool):
+            try:
+                loop = asyncio.get_running_loop()
+                db_tick_snaps = await loop.run_in_executor(None, _load_db_tick_snaps, db)
+            except Exception as e:
+                logger.debug(f"读 DB 逐笔兜底失败: {e}")
+
+        # 4. 富途缓存口径（最末兜底，纯缓存不调 API）——内存+DB 两层逐笔都没有的票才用
         cache_map = {}
         analyzer = getattr(container, "capital_analyzer", None)
-        cache_codes = [c for c in pool if c not in tick_snaps]
+        cache_codes = [c for c in pool if c not in tick_snaps and c not in db_tick_snaps]
         if analyzer and cache_codes:
             try:
                 loop = asyncio.get_running_loop()
@@ -183,7 +231,7 @@ async def get_capital_board_ranking(
         big_rows = []       # 达标真大单
         sniper_only = []    # 未达门槛但有买入 sniper 信号
         # 候选 = 有任一口径资金数据的票（避免对全池算门槛）
-        candidates = set(tick_snaps.keys()) | set(cache_map.keys())
+        candidates = set(tick_snaps.keys()) | set(db_tick_snaps.keys()) | set(cache_map.keys())
         # 有 sniper 信号但无资金数据的票也纳入候选（走 sniper_only）
         candidates |= set(c for c in sniper_map.keys() if c in pool)
         for code in candidates:
@@ -211,7 +259,7 @@ async def get_capital_board_ranking(
             snip = sniper_map.get(code, [])
             has_buy_sniper = any(s.get("signal_type") in _BUY_SNIPER_TYPES for s in snip)
 
-            snap = tick_snaps.get(code)
+            snap = tick_snaps.get(code) or db_tick_snaps.get(code)
             net_amount = None
             strength_mult = None
             direction = "flat"
