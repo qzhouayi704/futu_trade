@@ -141,14 +141,10 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                 if price <= 0 or volume <= 0:
                     continue
                 turnover = float(row.get('turnover', 0) or 0) or price * volume
-                try:
-                    seq = int(row.get('sequence', 0) or 0)
-                except (TypeError, ValueError):
-                    seq = 0
-                # 传逐笔序号去重：断线补发/订阅缓存回放不重复累加主力净流入
+                # 传业务键字段去重：同一笔成交(成交时间,价,量,向)只计一次，挡补发/回放
                 acc.on_tick(stock_code, turnover,
                             row.get('ticker_direction', 'NEUTRAL'),
-                            sequence=seq or None)
+                            trade_time=row.get('time'), price=price, volume=volume)
         except Exception as e:
             logger.debug(f"[TickerPush] 喂逐笔资金累加器失败: {e}")
 

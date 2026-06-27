@@ -159,30 +159,30 @@ def test_big_counts_and_peak_trough():
     assert s["cum_main_net"] == -400_000
 
 
-# ---------- 10. 序号去重：回放/补发不重复累加（Bug2） ----------
-def test_sequence_dedup_blocks_replay():
+# ---------- 10. 业务键去重：回放/补发不重复累加（与 ticker_data 一致） ----------
+def test_business_key_dedup_blocks_replay():
     clock, day = FakeClock(), FakeDay()
     a = _acc(clock, day)
-    a.on_tick("HK.00700", 500_000, "BUY", sequence=5001)   # 计入
-    a.on_tick("HK.00700", 300_000, "BUY", sequence=5002)   # 计入
+    a.on_tick("HK.00700", 500_000, "BUY", trade_time="2026-06-24 09:30:01.100", price=10.0, volume=50000)
+    a.on_tick("HK.00700", 300_000, "BUY", trade_time="2026-06-24 09:30:02.200", price=10.0, volume=30000)
     assert a.snapshot("HK.00700")["cum_main_net"] == 800_000
-    # 断线补发/缓存回放：重发序号 ≤ 已计入最大序号 → 跳过，不重复累加
-    a.on_tick("HK.00700", 500_000, "BUY", sequence=5001)
-    a.on_tick("HK.00700", 300_000, "BUY", sequence=5002)
+    # 回放同一笔(同 成交时间+价+量+向) → 跳过，不重复累加
+    a.on_tick("HK.00700", 500_000, "BUY", trade_time="2026-06-24 09:30:01.100", price=10.0, volume=50000)
+    a.on_tick("HK.00700", 300_000, "BUY", trade_time="2026-06-24 09:30:02.200", price=10.0, volume=30000)
     s = a.snapshot("HK.00700")
     assert s["cum_main_net"] == 800_000        # 仍是 0.8M，未翻倍
     assert s["big_buy_count"] == 2             # 计数也未被回放抬高
-    # 新序号继续正常累加
-    a.on_tick("HK.00700", 200_000, "BUY", sequence=5003)
+    # 新成交(不同成交时间) 继续正常累加
+    a.on_tick("HK.00700", 200_000, "BUY", trade_time="2026-06-24 09:30:03.300", price=10.0, volume=20000)
     assert a.snapshot("HK.00700")["cum_main_net"] == 1_000_000
 
 
-def test_no_sequence_keeps_backward_compat():
-    """不传 sequence（None）时退化为不去重，保持旧行为。"""
+def test_no_trade_time_no_dedup():
+    """缺 trade_time/price/volume 时退化为不去重(正常推送均带，缺失不误杀)。"""
     clock, day = FakeClock(), FakeDay()
     a = _acc(clock, day)
-    a.on_tick("HK.00700", 500_000, "BUY")      # 无序号
-    a.on_tick("HK.00700", 500_000, "BUY")      # 无序号 → 照常累加
+    a.on_tick("HK.00700", 500_000, "BUY")      # 无业务键字段
+    a.on_tick("HK.00700", 500_000, "BUY")      # → 照常累加
     assert a.snapshot("HK.00700")["cum_main_net"] == 1_000_000
 
 
@@ -205,7 +205,7 @@ def _snap(day, **ov):
         "super_large_buy": 0.0, "super_large_sell": 0.0,
         "large_buy": 0.0, "large_sell": 0.0,
         "cum_peak": 0.0, "cum_trough": 0.0,
-        "big_buy_count": 0, "big_sell_count": 0, "last_seq": 0,
+        "big_buy_count": 0, "big_sell_count": 0,
     }
     base.update(ov)
     return base
@@ -216,38 +216,31 @@ def test_seed_into_empty_restores_state():
     a = _acc(clock, day)
     a.seed(_snap(day.d, super_large_buy=1_500_000, large_buy=200_000, large_sell=300_000,
                  cum_peak=2_000_000, cum_trough=-100_000,
-                 big_buy_count=2, big_sell_count=1, last_seq=8000))
+                 big_buy_count=2, big_sell_count=1))
     s = a.snapshot("HK.00700")
     assert s["cum_main_net"] == 1_400_000      # (1.5M+0.2M)-0.3M
     assert s["cum_peak"] == 2_000_000          # 历史峰值恢复（早盘高点）
     assert s["big_buy_count"] == 2 and s["big_sell_count"] == 1
-    assert s["last_seq"] == 8000
 
 
-def test_seed_sets_last_seq_dedup_blocks_replayed_morning_ticks():
-    """seed 后早盘逐笔被回放(seq≤seed.last_seq)应被去重丢弃，不重复累加。"""
+def test_seed_then_new_ticks_accumulate():
+    """seed 恢复基线后，重启后的新逐笔正常续累(业务键去重在内存内有效)。"""
     clock, day = FakeClock(), FakeDay()
     a = _acc(clock, day)
-    a.seed(_snap(day.d, large_buy=500_000, big_buy_count=1, last_seq=5002))
-    # 回放早盘逐笔(序号≤5002) → 跳过
-    a.on_tick("HK.00700", 500_000, "BUY", sequence=5001)
-    a.on_tick("HK.00700", 300_000, "BUY", sequence=5002)
-    assert a.snapshot("HK.00700")["cum_main_net"] == 500_000   # 未翻倍
-    # 重启后的新逐笔(序号>5002) 正常续累
-    a.on_tick("HK.00700", 200_000, "BUY", sequence=5003)
-    assert a.snapshot("HK.00700")["cum_main_net"] == 700_000
+    a.seed(_snap(day.d, large_buy=500_000, big_buy_count=1))
+    a.on_tick("HK.00700", 200_000, "BUY", trade_time="2026-06-24 13:01:00.000", price=10.0, volume=20000)
+    assert a.snapshot("HK.00700")["cum_main_net"] == 700_000   # 500k基线 + 200k新
 
 
 def test_seed_merges_with_live_state():
-    """竞态：live 推送(SDK线程)已先建状态，seed 增量合并早盘基线、last_seq 取 max。"""
+    """竞态：live 推送(SDK线程)已先建状态，seed 增量合并早盘基线。"""
     clock, day = FakeClock(), FakeDay()
     a = _acc(clock, day)
-    a.on_tick("HK.00700", 200_000, "BUY", sequence=6000)   # 重启后先到的新逐笔
-    a.seed(_snap(day.d, large_buy=500_000, big_buy_count=3, last_seq=5500))  # 早盘基线
+    a.on_tick("HK.00700", 200_000, "BUY", trade_time="2026-06-24 13:00:00.000", price=10.0, volume=20000)
+    a.seed(_snap(day.d, large_buy=500_000, big_buy_count=3))  # 早盘基线
     s = a.snapshot("HK.00700")
     assert s["cum_main_net"] == 700_000        # 200k(live) + 500k(seed基线)
     assert s["big_buy_count"] == 4             # 1(live) + 3(seed)
-    assert s["last_seq"] == 6000               # max(6000, 5500)
 
 
 def test_seed_noop_when_disabled_or_empty():

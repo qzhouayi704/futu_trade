@@ -81,7 +81,7 @@ class _DayState:
     big_sell_count: int = 0      # 当日大单流出笔数(第几次大单流出)
     cum_peak: float = 0.0        # 当日累计主力净流入峰值(从0开盘)
     cum_trough: float = 0.0      # 当日累计主力净流入谷值
-    last_seq: int = 0            # 已计入的最大富途逐笔序号(去重防回放重复计数)
+    seen_keys: set = field(default_factory=set)  # 已计入业务键(成交时间,价,量,向)去重，与 ticker_data 一致
     window: Deque[Tuple[float, float]] = field(default_factory=deque)  # (ts, signed_amt)
 
     @property
@@ -131,12 +131,13 @@ class TickCapitalAccumulator:
         return self.cfg.large_threshold, self.cfg.super_threshold
 
     def on_tick(self, code: str, turnover: float, direction,
-                now: Optional[float] = None, sequence: Optional[int] = None) -> None:
+                now: Optional[float] = None, trade_time=None,
+                price=None, volume=None) -> None:
         """累加一笔逐笔成交。非大单/中性单直接忽略（热路径，先过滤再加锁）。
 
-        sequence 为富途逐笔序号（同股同日单调递增）：若提供，则按"已计入的最大序号"
-        去重——断线补发(BYDISCONN)/订阅缓存回放(CACHE) 会重发已计过的逐笔，否则会把
-        主力净流入重复累加。缺省 None 时退化为不去重（保持向后兼容）。
+        业务键去重（与 ticker_data 去重口径一致）：同一笔成交按 (成交时间, 价, 量, 方向)
+        只计一次，挡住断线补发(BYDISCONN)/订阅缓存回放(CACHE) 的重复累加。trade_time/price/
+        volume 任一缺失则退化为不去重（避免误杀；正常推送均带这三项）。
         """
         if not self.cfg.enabled or not code:
             return
@@ -150,10 +151,13 @@ class TickCapitalAccumulator:
         large_thr, super_thr = self._thresholds(code)
         if amt < large_thr:
             return  # 非大单，不计入主力
-        try:
-            seq = int(sequence) if sequence is not None else 0
-        except (TypeError, ValueError):
-            seq = 0
+        # 业务键（仅大单进入此处，集合规模小）
+        key = None
+        if trade_time and price is not None and volume is not None:
+            try:
+                key = (str(trade_time), float(price), int(volume), d)
+            except (TypeError, ValueError):
+                key = None
         now = self._clock() if now is None else now
         today = self._today()
         is_super = amt >= super_thr
@@ -164,11 +168,11 @@ class TickCapitalAccumulator:
             if st is None or st.date != today:
                 st = _DayState(date=today)
                 self._state[code] = st
-            # 序号去重：已计入过的逐笔（回放/补发）直接跳过，避免重复累加
-            if seq > 0:
-                if seq <= st.last_seq:
+            # 业务键去重：已计入过的同笔成交（回放/补发）直接跳过，避免重复累加
+            if key is not None:
+                if key in st.seen_keys:
                     return
-                st.last_seq = seq
+                st.seen_keys.add(key)
             if d == "BUY":
                 if is_super:
                     st.super_buy += amt
@@ -222,7 +226,6 @@ class TickCapitalAccumulator:
                 "big_sell_count": st.big_sell_count,
                 "cum_peak": round(st.cum_peak, 2),
                 "cum_trough": round(st.cum_trough, 2),
-                "last_seq": st.last_seq,
                 "updated_at": now,
             }
 
@@ -231,9 +234,11 @@ class TickCapitalAccumulator:
         丢当日累积(cum/peak/计数),致看板回退富途口径、capital_trend 回落判读失真。
 
         竞态安全(on_tick 在 SDK 推送线程并发)：锁内做**增量合并**——把 snap 的当日基线
-        加到现有状态上(post-restart live 推送的是更新序号、与基线逐笔不相交,故相加正确)，
-        并把 last_seq 抬到 max(现状, snap)，使被回放的旧逐笔(seq≤snap.last_seq)被去重丢弃、
-        不重复计数。窗口 deque 不持久化→留给 live 重填(15min 内逐步恢复力度)。
+        加到现有状态上。窗口 deque 不持久化→留给 live 重填(15min 内逐步恢复力度)。
+
+        注：去重改用业务键(成交时间,价,量,向)后，seen_keys 无法廉价持久化，故重启后不再恢复
+        去重集——若富途在重连瞬间回放(CACHE)了 seed 基线内已计的逐笔，会有少量重复累加(有界、
+        可接受)。正常 live 推送(新成交)与基线不相交，相加正确。
 
         只应在启动期调用一次(每股一次)；snap 须为当日(跨日的不喂)。
         """
@@ -243,7 +248,6 @@ class TickCapitalAccumulator:
         day = snap.get("trade_date")
         if not code or not day:
             return
-        seq = int(snap.get("last_seq") or 0)
         with self._lock:
             st = self._state.get(code)
             if st is None or st.date != day:
@@ -259,7 +263,6 @@ class TickCapitalAccumulator:
             cur = st.cum_main_net
             st.cum_peak = max(float(snap.get("cum_peak") or 0.0), st.cum_peak, cur)
             st.cum_trough = min(float(snap.get("cum_trough") or 0.0), st.cum_trough, cur)
-            st.last_seq = max(st.last_seq, seq)
 
     def snapshot_all(self, now: Optional[float] = None) -> Dict[str, dict]:
         with self._lock:

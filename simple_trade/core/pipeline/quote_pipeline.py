@@ -1061,7 +1061,7 @@ class QuotePipeline:
                  s['super_large_buy'], s['super_large_sell'], s['large_buy'],
                  s['large_sell'], s['big_order_buy_ratio'],
                  s['cum_peak'], s['cum_trough'], s['big_buy_count'],
-                 s['big_sell_count'], s['last_seq'])
+                 s['big_sell_count'], s.get('last_seq', 0))  # last_seq 已废(业务键去重)，列留存恒0
                 for code, s in snaps.items()
             ]
             await self._run_in_executor(self._insert_tick_capital_rows, rows)
