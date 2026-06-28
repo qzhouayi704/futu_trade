@@ -20,6 +20,7 @@ from .system.config import router as config_router
 from .system.news import router as news_router
 from .system.monitoring_routes import router as monitoring_routes_router
 from .system.global_monitoring import router as global_monitoring_router
+from .system.monitoring import router as monitoring_unified_router
 
 # market/ - 行情相关
 from .market.quote import router as quote_router
@@ -79,6 +80,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(news_router)
     app.include_router(monitoring_routes_router)
     app.include_router(global_monitoring_router)
+    app.include_router(monitoring_unified_router)  # 统一 /api/monitoring/*（旧前缀仍保留转发）
 
     # 行情相关
     app.include_router(quote_router)

@@ -42,7 +42,8 @@ async def get_monitor_stats(container=Depends(get_container)):
     )
 
 
-@router.get("/api/monitoring/link-health", response_model=APIResponse)
+# 注：本函数不再在此处注册（路径 /api/monitoring/link-health 已由统一路由 system/monitoring.py 注册），
+# 仅保留定义供统一路由导入，避免同路径双重注册。
 async def get_link_health(container=Depends(get_container)):
     """P1-2: 链路健康指标（P50/P95/P99延迟、成功率、重连频率）"""
     link_monitor = getattr(container, 'link_health_monitor', None)
