@@ -93,9 +93,15 @@ async def lifespan(app: FastAPI):
         state_manager = get_state_manager()
         state_manager.set_quotes_ttl(config.update_interval)
 
-        # [测试模式] 强制设置为港股市场
+        # 市场判断：默认走真实交易时段/周末/节假日判断。
+        # 仅当显式设置 FORCE_MARKET=HK|US 时才强制覆盖（用于测试/回放），
+        # 否则绝不强制——否则会短路 is_market_trading 的周末/时段守卫，
+        # 导致非交易时段（如周末美股段）用陈旧昨收跑出主力资金/防守等假信号。
         from .utils.market_helper import MarketTimeHelper
-        MarketTimeHelper.set_force_market('HK')
+        _force_market = os.environ.get("FORCE_MARKET", "").strip().upper()
+        if _force_market in ("HK", "US"):
+            MarketTimeHelper.set_force_market(_force_market)
+            logging.warning(f"[市场覆盖] FORCE_MARKET={_force_market} 已生效，跳过真实交易时段判断")
 
         # 初始化服务容器（异步版本，不阻塞事件循环）
         container = ServiceContainer(config, app=None)
