@@ -16,7 +16,6 @@ from typing import Dict, List, Any, Optional, Set
 
 from ...database.core.db_manager import DatabaseManager
 from ...config.config import Config
-from ...core.coordination.strategy_dispatcher import StrategyDispatcher
 from ..strategy import ScreeningEngine, ScreeningCache, ScreeningResult
 
 
@@ -35,7 +34,7 @@ class StrategyScreeningService:
 
     def __init__(self, db_manager: DatabaseManager, config: Config,
                  stock_data_service=None, kline_service=None,
-                 futu_trade_service=None, strategy_dispatcher: StrategyDispatcher = None):
+                 futu_trade_service=None, strategy_dispatcher: Any = None):  # Legacy 已停用，恒为 None
         self.db_manager = db_manager
         self.config = config
         self.stock_data_service = stock_data_service

@@ -8,7 +8,6 @@
 - ServiceResult: 标准服务返回格式
 - ServiceContainer: 服务容器
 - SystemCoordinator: 系统协调器
-- StrategyDispatcher: 策略调度器
 - DataModels: 强类型数据模型
 - SignalScorer: 信号评分器
 - RiskChecker: 风险检查器
@@ -19,7 +18,7 @@
 from .state import StateManager, get_state_manager
 from .service_result import ServiceResult, ServiceResultBuilder, success_result, error_result
 from .container import ServiceContainer
-from .coordination import SystemCoordinator, StrategyDispatcher
+from .coordination import SystemCoordinator
 from .pipeline import (
     QuotePipeline,
     Plate,
@@ -63,7 +62,6 @@ __all__ = [
     'error_result',
     'ServiceContainer',
     'SystemCoordinator',
-    'StrategyDispatcher',
     'QuotePipeline',
     # 数据模型
     'Plate',

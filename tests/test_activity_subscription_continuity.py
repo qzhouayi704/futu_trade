@@ -268,7 +268,7 @@ class TestProperty5SubscriptionContinuity:
 
     def test_subscribe_is_incremental_no_unsubscribe(self):
         """两轮订阅中，第一轮已订阅的股票不被取消"""
-        from simple_trade.api.subscription_core import SubscriptionCore
+        from simple_trade.api.subscription_manager import SubscriptionCore
 
         mock_client = MagicMock()
         mock_client.is_available.return_value = True
@@ -321,7 +321,7 @@ class TestProperty5SubscriptionContinuity:
     @settings(max_examples=50)
     def test_two_rounds_preserves_first_round(self, first_round, second_round):
         """属性测试：任意两轮订阅，第一轮集合只增不减"""
-        from simple_trade.api.subscription_core import SubscriptionCore
+        from simple_trade.api.subscription_manager import SubscriptionCore
 
         mock_client = MagicMock()
         mock_client.is_available.return_value = True

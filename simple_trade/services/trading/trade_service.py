@@ -9,14 +9,13 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from ...database.core.db_manager import DatabaseManager
 from ...config.config import Config
-from ...core.coordination.strategy_dispatcher import StrategyDispatcher
 
 
 class TradeService:
     """交易服务"""
-    
+
     def __init__(self, db_manager: DatabaseManager, config: Config, realtime_service,
-                 strategy_dispatcher: 'StrategyDispatcher' = None):
+                 strategy_dispatcher: Any = None):  # Legacy 已停用，恒为 None
         self.db_manager = db_manager
         self.config = config
         self.realtime_service = realtime_service

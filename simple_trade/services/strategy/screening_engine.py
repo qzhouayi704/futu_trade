@@ -16,7 +16,6 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 
 from ...database.core.db_manager import DatabaseManager
-from ...core.coordination.strategy_dispatcher import StrategyDispatcher
 from .position_stop_loss import PositionStopLossChecker, StopLossParams
 
 
@@ -58,7 +57,7 @@ class ScreeningEngine:
     def __init__(
         self,
         db_manager: DatabaseManager,
-        strategy_dispatcher: Optional[StrategyDispatcher],
+        strategy_dispatcher: Optional[Any],  # Legacy 已停用，恒为 None
         stop_loss_params: StopLossParams = None,
     ):
         self.db_manager = db_manager
