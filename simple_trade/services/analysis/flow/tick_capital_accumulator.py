@@ -63,8 +63,8 @@ class TickCapitalConfig:
 
     @classmethod
     def from_env(cls) -> "TickCapitalConfig":
-        raw = os.environ.get("CAPITAL_TICK_ACCUMULATOR_ENABLED", "")
-        enabled = str(raw).strip().lower() in ("1", "true", "yes", "on")
+        from ....utils import env_flag
+        enabled = env_flag("CAPITAL_TICK_ACCUMULATOR_ENABLED")
         cfg = cls(enabled=enabled)
         cfg.window_seconds = _env_int("CAPITAL_TICK_WINDOW_SEC", cfg.window_seconds)
         return cfg

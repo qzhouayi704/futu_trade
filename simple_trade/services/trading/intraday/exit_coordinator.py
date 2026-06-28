@@ -104,8 +104,8 @@ class ExitCoordinatorConfig:
 
     @classmethod
     def from_env(cls) -> "ExitCoordinatorConfig":
-        raw = os.environ.get("EXIT_COORDINATOR_ENABLED", "")
-        enabled = str(raw).strip().lower() in ("1", "true", "yes", "on")
+        from ....utils import env_flag
+        enabled = env_flag("EXIT_COORDINATOR_ENABLED")
         cfg = cls(enabled=enabled)
         cfg.observation_ttl = _env_int("EXIT_COORD_TTL", cfg.observation_ttl)
         cfg.emit_threshold = _env_int("EXIT_COORD_THRESHOLD", cfg.emit_threshold)

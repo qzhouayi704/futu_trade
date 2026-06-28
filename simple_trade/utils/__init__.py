@@ -18,6 +18,9 @@
 - response_helper: 响应帮助类（已迁移到 FastAPI）
 """
 
+# 环境变量解析
+from .env_helper import env_flag, parse_flag
+
 # 日志配置
 from .logger import setup_logging, get_logger, set_log_level
 
@@ -47,6 +50,9 @@ from .market_helper import (
 )
 
 __all__ = [
+    # 环境变量解析
+    'env_flag', 'parse_flag',
+
     # 日志
     'setup_logging', 'get_logger', 'set_log_level',
 

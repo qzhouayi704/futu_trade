@@ -14,6 +14,7 @@ import os
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 from ...utils.logger import get_flow_logger
+from ...utils import env_flag, parse_flag
 
 from .pipeline_broadcast import PipelineBroadcast
 from .signal_arbitrator import SignalArbitrator
@@ -22,11 +23,11 @@ import re as _re
 
 # 实时推送质量地板：非持仓买入若"流入不大/占日均过低/多日选股语"=低质噪声，源头不推企微
 # （仍进 DB/前端）。经环境变量 REALTIME_QUALITY_FLOOR 控制(默认 OFF=还原旧行为，可逆)。
-REALTIME_QUALITY_FLOOR = os.environ.get("REALTIME_QUALITY_FLOOR", "").strip().lower() in ("1", "true", "yes", "on")
+REALTIME_QUALITY_FLOOR = env_flag("REALTIME_QUALITY_FLOOR")
 
 # 非持仓卖出不进前端信号流/Toast（用户规则："没有仓位的卖出信号不要提醒"）。仍写 DB 供回测/查证。
 # 默认 ON；置 HIDE_NONHELD_SELL=0/false/off 可还原旧行为。
-HIDE_NONHELD_SELL = os.environ.get("HIDE_NONHELD_SELL", "1").strip().lower() in ("1", "true", "yes", "on")
+HIDE_NONHELD_SELL = env_flag("HIDE_NONHELD_SELL", default=True)
 
 _MARGINAL_OCCUPY_MAX = 1.5  # "占日均X%" 中 X 低于此值视为边际信号
 _MARGINAL_OCCUPY_RE = _re.compile(r"占日均\s*([0-9.]+)\s*%")
@@ -130,9 +131,7 @@ class QuotePipeline:
         if raw is None:
             config = getattr(container, "config", None)
             raw = getattr(config, "enable_legacy_strategy", False) if config else False
-        if isinstance(raw, bool):
-            return raw
-        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+        return parse_flag(raw)
 
     async def run_quote_cycle(self) -> List[Dict]:
         """报价获取周期 - 系统启动即运行，不依赖监控
@@ -1108,7 +1107,7 @@ class QuotePipeline:
             # 企微推送范围：默认只推"持仓的回落/拉高出货"(治"及时卖出止盈"痛点)，其余只上前端——
             # 避免市场级强信号刷屏触发企微 45009 限频、淹没持仓风险等必看告警。
             # CAPITAL_TREND_WECHAT_ALL=1 可恢复"所有强信号(含上升)/回落都推"。
-            push_all = os.environ.get("CAPITAL_TREND_WECHAT_ALL", "").strip().lower() in ("1", "true", "yes", "on")
+            push_all = env_flag("CAPITAL_TREND_WECHAT_ALL")
             emitted = []
             for q in trading:
                 code = q.get('code')
@@ -1231,7 +1230,7 @@ class QuotePipeline:
         治"日内拉高但收盘净流出、明日想离场却无预案"。默认 OFF（EOD_RECONCILE_ENABLED=1）。
         幂等：按 HK 交易日键控，次日复位。
         """
-        if os.environ.get("EOD_RECONCILE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+        if not env_flag("EOD_RECONCILE_ENABLED"):
             return
         wechat = getattr(self.container, 'wechat_alert_service', None)
         if not wechat or not getattr(wechat, 'enabled', False) or not positions:

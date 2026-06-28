@@ -59,8 +59,8 @@ class CapitalTrendConfig:
 
     @classmethod
     def from_env(cls) -> "CapitalTrendConfig":
-        raw = os.environ.get("CAPITAL_TREND_ALERT_ENABLED", "")
-        enabled = str(raw).strip().lower() in ("1", "true", "yes", "on")
+        from ....utils import env_flag
+        enabled = env_flag("CAPITAL_TREND_ALERT_ENABLED")
         cfg = cls(enabled=enabled)
         cfg.strong_mult = _env_float("CAPITAL_TREND_STRONG_MULT", cfg.strong_mult)
         cfg.mid_mult = _env_float("CAPITAL_TREND_MID_MULT", cfg.mid_mult)

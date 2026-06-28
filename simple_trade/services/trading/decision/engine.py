@@ -18,6 +18,8 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
 
+from ....utils import env_flag
+
 from .models import (
     TradeSignalEvent,
     TradeDecision,
@@ -595,7 +597,7 @@ class UnifiedTradeDecisionEngine:
             #    详见 scripts/analysis/warning_signal_backtest_report.md
 
             # 5. 因子门(阶段2, opt-in 默认关闭) —— 已验证强单因子软门
-            if os.environ.get('FACTOR_GATE_ENABLED', '').lower() in ('1', 'true', 'yes'):
+            if env_flag('FACTOR_GATE_ENABLED'):
                 block = self._check_factor_gates(stock_code)
                 if block:
                     return {'passed': False, 'reason': block}
@@ -734,7 +736,7 @@ class UnifiedTradeDecisionEngine:
                 # → 纯影子观察，绝不会下真实卖单。需 HYBRID_EXIT_ENABLED 显式开启。
                 try:
                     import os
-                    if os.environ.get('HYBRID_EXIT_ENABLED', '').lower() in ('1', 'true', 'yes'):
+                    if env_flag('HYBRID_EXIT_ENABLED'):
                         spm = getattr(self.container, 'smart_position_manager', None)
                         if spm:
                             spm.register_position(

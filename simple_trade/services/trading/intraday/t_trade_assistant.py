@@ -26,6 +26,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+from ....utils import parse_flag
+
 logger = logging.getLogger("intraday.ttrade")
 
 
@@ -86,7 +88,7 @@ class TConfig:
                 return default
 
         return cls(
-            enabled=str(os.environ.get("T_TRADE_ENABLED", "false")).lower() in ("1", "true", "yes"),
+            enabled=False,  # 总开关唯一来源=system_config: t_trade.enabled（每轮 _load_runtime_cfg 覆盖）；构造期默认关
             mode=str(os.environ.get("T_TRADE_MODE", TMode.ALERT.value)).lower(),
             max_per_day=_i("T_TRADE_MAX_PER_DAY", 2),
             trim_fraction=_f("T_TRADE_TRIM_FRACTION", 0.25),
@@ -298,7 +300,7 @@ class TTradeAssistant:
             if sq:
                 en = sq.get_system_config("t_trade.enabled")
                 if en is not None:
-                    cfg.enabled = str(en).lower() in ("1", "true", "yes", "on")
+                    cfg.enabled = parse_flag(en)
                 md = sq.get_system_config("t_trade.mode")
                 if md:
                     cfg.mode = str(md).lower()

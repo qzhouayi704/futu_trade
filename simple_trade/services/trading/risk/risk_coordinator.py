@@ -13,11 +13,12 @@
 5. ScreeningEngine - 策略趋势止损                     urgency=5
 """
 
-import os
 import time
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
+
+from ....utils import env_flag
 
 
 @dataclass
@@ -579,7 +580,7 @@ class RiskCoordinator:
                     )
                     # 实盘执行：仅当 HYBRID_EXIT_LIVE 显式开启 且 该持仓为 hybrid profile 时真卖。
                     # 与 HYBRID_EXIT_ENABLED(买入侧登记)两段开关配合: 仅登记=影子, 两者都开=实盘。
-                    if os.environ.get('HYBRID_EXIT_LIVE', '').lower() in ('1', 'true', 'yes'):
+                    if env_flag('HYBRID_EXIT_LIVE'):
                         self._execute_hybrid_sell(mgr, code, action, price)
 
         except Exception as e:

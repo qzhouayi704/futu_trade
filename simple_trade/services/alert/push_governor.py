@@ -85,8 +85,8 @@ class GovernorConfig:
 
     @classmethod
     def from_env(cls) -> "GovernorConfig":
-        raw = os.environ.get("WECHAT_GOVERNOR_ENABLED", "")
-        enabled = str(raw).strip().lower() in ("1", "true", "yes", "on")
+        from ...utils import env_flag
+        enabled = env_flag("WECHAT_GOVERNOR_ENABLED")
         cfg = cls(enabled=enabled)
         cfg.info_budget_per_window = _env_int("WECHAT_GOV_INFO_BUDGET", cfg.info_budget_per_window)
         cfg.info_window_seconds = _env_int("WECHAT_GOV_INFO_WINDOW", cfg.info_window_seconds)
