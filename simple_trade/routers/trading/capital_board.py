@@ -98,7 +98,12 @@ def _load_db_tick_snaps(db) -> dict:
     if not db:
         return {}
     try:
-        d = db.execute_query("SELECT MAX(trade_date) FROM tick_capital_flow")
+        # 只取"今天"的逐笔兜底：原 MAX(trade_date) 会在非交易日把最近一个交易日(如周五/周六)
+        # 的累积当成当前展示。看板语义是"今日主力资金",非交易日今天无行→返回空→看板自然为空。
+        from ...utils.market_helper import MarketTimeHelper
+        today = MarketTimeHelper.get_market_today('HK')
+        d = db.execute_query(
+            "SELECT MAX(trade_date) FROM tick_capital_flow WHERE trade_date = ?", (today,))
         trade_date = d[0][0] if d and d[0] else None
         if not trade_date:
             return {}

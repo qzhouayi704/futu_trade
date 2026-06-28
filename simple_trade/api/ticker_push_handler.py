@@ -135,6 +135,13 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             acc = getattr(self._container, 'tick_capital_accumulator', None)
             if not acc or not getattr(acc, 'enabled', False):
                 return
+            # 交易时段守卫：非本市场交易时段(周末/盘后/节假日/凌晨美股段)的推送不计入
+            # 当日主力资金累计——否则富途休市残留/回放推送会污染累加器,使看板/信号流在
+            # 非交易日凭散单冒出"主力流入"等假数据。
+            from ..utils.market_helper import MarketTimeHelper
+            market = MarketTimeHelper.get_market_from_code(stock_code)
+            if not MarketTimeHelper.is_market_trading(market):
+                return
             for _, row in df.iterrows():
                 price = float(row.get('price', 0) or 0)
                 volume = int(row.get('volume', 0) or 0)
