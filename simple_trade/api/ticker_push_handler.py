@@ -8,6 +8,7 @@ Ticker 推送处理器
 """
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -31,6 +32,12 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
     3. 喂给 MomentumEngine（实时信号检测）
     """
 
+    # 落库攒批参数：SDK 推送线程绝不做磁盘 I/O，只进内存缓冲；
+    # 由独立 flusher 线程周期(或攒满被唤醒)经 DatabaseWriteQueue 批量落库
+    _DB_FLUSH_INTERVAL = 3.0     # flusher 空闲唤醒周期（秒）
+    _DB_FLUSH_MAX_ROWS = 1000    # 缓冲到量立即唤醒 flusher
+    _DB_BUFFER_HARD_CAP = 50000  # DB 长时间不可写时的内存保护上限（丢最旧）
+
     def __init__(self):
         if FUTU_AVAILABLE:
             super().__init__()
@@ -38,6 +45,12 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
         self._tick_count = 0
         self._last_log_time = 0
         self._stocks_seen = set()
+        # 逐笔落库攒批缓冲（见类常量注释）
+        self._db_buffer: list = []
+        self._db_buffer_lock = threading.Lock()
+        self._db_flush_event = threading.Event()
+        self._db_flusher: Optional[threading.Thread] = None
+        self._db_write_fail_log_time = 0.0
 
     def set_container(self, container):
         """设置服务容器（延迟注入）"""
@@ -156,16 +169,15 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             logger.debug(f"[TickerPush] 喂逐笔资金累加器失败: {e}")
 
     def _persist_to_db(self, stock_code: str, df):
-        """将推送的逐笔数据异步写入 ticker_data 表"""
+        """将推送的逐笔数据攒批落库到 ticker_data 表
+
+        本方法运行在富途 SDK 推送线程上，只做行构造 + 内存缓冲（无磁盘 I/O），
+        实际写库由 `_db_flush_loop` flusher 线程经 DatabaseWriteQueue 串行执行。
+        """
         if not self._container:
             return
         try:
-            db = getattr(self._container, 'db_manager', None)
-            if not db:
-                return
-
             from datetime import datetime as _dt
-            from ..database.queries.ticker_queries import TickerQueries
 
             today_str = _dt.now().strftime('%Y-%m-%d')
             rows = []
@@ -203,8 +215,97 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                              ts_ms, today_str, sequence, trade_time))
 
             if rows:
-                queries = TickerQueries(db.conn_manager)
+                self._enqueue_rows(rows)
+        except Exception as e:
+            logger.debug(f"[TickerPush] 逐笔行构造失败: {e}")
+
+    # ---------- 落库攒批（SDK 线程只 append，flusher 线程写库） ----------
+
+    def _enqueue_rows(self, rows: list):
+        """SDK 推送线程入口：入内存缓冲并按需唤醒 flusher，绝不做磁盘 I/O。"""
+        dropped = 0
+        with self._db_buffer_lock:
+            overflow = len(self._db_buffer) + len(rows) - self._DB_BUFFER_HARD_CAP
+            if overflow > 0:
+                dropped = min(overflow, len(self._db_buffer))
+                del self._db_buffer[:dropped]
+            self._db_buffer.extend(rows)
+            buffered = len(self._db_buffer)
+        if dropped:
+            self._warn_throttled(
+                f"[TickerPush] 落库缓冲超过 {self._DB_BUFFER_HARD_CAP} 条，"
+                f"已丢弃最旧 {dropped} 条（DB 可能长时间不可写）"
+            )
+        self._ensure_flusher()
+        if buffered >= self._DB_FLUSH_MAX_ROWS:
+            self._db_flush_event.set()
+
+    def _ensure_flusher(self):
+        """懒启动 flusher 守护线程（幂等）。"""
+        if self._db_flusher is not None and self._db_flusher.is_alive():
+            return
+        with self._db_buffer_lock:
+            if self._db_flusher is not None and self._db_flusher.is_alive():
+                return
+            self._db_flusher = threading.Thread(
+                target=self._db_flush_loop, name="ticker-db-flusher", daemon=True
+            )
+            self._db_flusher.start()
+
+    def _db_flush_loop(self):
+        """flusher 线程主循环：周期或被唤醒时批量落库。"""
+        while True:
+            self._db_flush_event.wait(timeout=self._DB_FLUSH_INTERVAL)
+            self._db_flush_event.clear()
+            try:
+                self._flush_db_buffer()
+            except Exception as e:
+                self._warn_throttled(f"[TickerPush] flusher 异常: {e}")
+
+    def _flush_db_buffer(self):
+        """把缓冲中的逐笔批量写入 ticker_data（经写队列串行化）。
+
+        失败时整批塞回缓冲等待下轮重试——ticker_data 唯一键 + INSERT OR IGNORE
+        保证重试幂等；缓冲总量受 _DB_BUFFER_HARD_CAP 保护。
+        """
+        with self._db_buffer_lock:
+            if not self._db_buffer:
+                return
+            rows, self._db_buffer = self._db_buffer, []
+
+        db = getattr(self._container, 'db_manager', None) if self._container else None
+        if not db:
+            self._requeue_rows(rows)
+            return
+
+        from ..database.queries.ticker_queries import TickerQueries
+
+        try:
+            queries = TickerQueries(db.conn_manager)
+            if db.write_queue.is_running:
+                db.write_queue.submit(
+                    queries.insert_ticker_batch, rows
+                ).result(timeout=30.0)
+            else:
                 queries.insert_ticker_batch(rows)
         except Exception as e:
-            logger.debug(f"[TickerPush] 落库失败: {e}")
+            self._requeue_rows(rows)
+            self._warn_throttled(f"[TickerPush] 逐笔落库失败({len(rows)}条)，已回缓冲重试: {e}")
+
+    def _requeue_rows(self, rows: list):
+        """失败批次塞回缓冲头部（保持时间序），并执行内存上限保护。"""
+        with self._db_buffer_lock:
+            self._db_buffer[:0] = rows
+            excess = len(self._db_buffer) - self._DB_BUFFER_HARD_CAP
+            if excess > 0:
+                del self._db_buffer[:excess]
+
+    def _warn_throttled(self, msg: str):
+        """落库类异常升为 warning，60s 内重复只降级 debug 防刷屏。"""
+        now = time.time()
+        if now - self._db_write_fail_log_time >= 60:
+            self._db_write_fail_log_time = now
+            logger.warning(msg)
+        else:
+            logger.debug(msg)
 

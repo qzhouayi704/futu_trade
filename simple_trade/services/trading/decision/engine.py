@@ -820,6 +820,9 @@ class UnifiedTradeDecisionEngine:
                         f"- 原因：{decision.reason}"
                     ),
                     dedup_key=f"decision:{decision.stock_code}:{decision.direction}",
+                    category="交易信号",
+                    stock_code=decision.stock_code,
+                    price=decision.price,
                 )
         except Exception as e:
             logger.debug(f"[DecisionEngine] 微信推送失败: {e}")

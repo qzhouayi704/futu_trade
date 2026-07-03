@@ -71,12 +71,17 @@ class SubscriptionManager:
             self._max_ticker_subscription = sub_cfg.get('max_ticker_subscription', 100)
             self._max_orderbook_subscription = sub_cfg.get('max_orderbook_subscription', 100)
             self._max_rt_data_subscription = sub_cfg.get('max_rt_data_subscription', 100)
+            self._ticker_quota_reserve = min(
+                sub_cfg.get('ticker_quota_reserve', 100),
+                self._max_ticker_subscription,
+            )
         else:
             self._total_quota = 300
             self._max_quote_subscription = 300
             self._max_ticker_subscription = 100
             self._max_orderbook_subscription = 100
             self._max_rt_data_subscription = 100
+            self._ticker_quota_reserve = 100
 
         # 订阅变化回调
         self._on_change_callbacks: List[Callable] = []
@@ -628,6 +633,15 @@ class SubscriptionManager:
         total_used = (len(self._quote_subscribed) + len(self._ticker_subscribed)
                       + len(self._orderbook_subscribed) + len(self._rt_data_subscribed))
         total_available = self._total_quota - total_used
+
+        # TICKER 保底配额：非 TICKER 类型不得占用为 TICKER 预留的剩余席位——
+        # 否则 QUOTE(单类型上限=总额度) 先到先得吃满总额度后，逐笔资金/动量
+        # 所依赖的 TICKER 一只都订不上。TICKER 已订满时预留余量为 0，不影响存量行为。
+        if type_name != 'TICKER' and self._ticker_quota_reserve > 0:
+            reserve_remaining = max(
+                0, self._ticker_quota_reserve - len(self._ticker_subscribed))
+            total_available -= reserve_remaining
+
         available_quota = min(available_quota, total_available)
 
         if available_quota <= 0:

@@ -257,6 +257,8 @@ class StockDataService:
                 'name': stock_name,
                 'market': stock_info.get('market', 'Unknown'),
                 'plate_name': stock_info.get('plate_name', ''),
+                # 统一口径键：报价一律带 last_price；current_price 仅作旧消费方兼容
+                'last_price': last_price,
                 'current_price': last_price,
                 'prev_close': prev_close,
                 'change_amount': change_amount,

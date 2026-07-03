@@ -120,33 +120,31 @@ class PipelineBroadcast:
                     source = action.get('strategy_id', 'strategy')
                     ts = action.get('timestamp', datetime.now().isoformat())
 
-                    # 去重检查：10分钟内是否已有相同的 broadcast 记录
+                    # 去重+写入合并为单条原子语句（经写队列单写者串行）：
+                    # 旧实现"直连 SELECT COUNT 再走队列 INSERT"分属不同连接/时序，
+                    # 并发广播时 10 分钟窗口内仍可能写重
                     from datetime import timedelta
                     cutoff = (datetime.now() - timedelta(minutes=10)).isoformat()
-                    with db.get_connection() as conn:
-                        existing = conn.execute(
-                            '''SELECT COUNT(*) FROM signal_pipeline
-                               WHERE stock_code=? AND source=? AND direction=?
-                               AND final_action='broadcast' AND timestamp>?''',
-                            (action['stock_code'], source, direction, cutoff)
-                        ).fetchone()
-                    if existing and existing[0] > 0:
-                        continue  # 跳过重复信号
-
                     db.execute_update(
                         '''INSERT INTO signal_pipeline
                            (trade_date, timestamp, stock_code, stock_name, source,
                             direction, strength, resonance_result, guard_result,
                             final_action, final_reason, raw_detail)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                           SELECT ?,?,?,?,?,?,?,?,?,?,?,?
+                           WHERE NOT EXISTS (
+                               SELECT 1 FROM signal_pipeline
+                               WHERE stock_code=? AND source=? AND direction=?
+                               AND final_action='broadcast' AND timestamp>?
+                           )''',
                         (today, ts, action['stock_code'], action['stock_name'],
                          source, direction, 0,
                          '{}', '{}',
                          'broadcast', action.get('reason', ''),
-                         json.dumps(action, ensure_ascii=False, default=str)),
+                         json.dumps(action, ensure_ascii=False, default=str),
+                         action['stock_code'], source, direction, cutoff),
                     )
             except Exception as e:
-                logging.debug(f"策略信号持久化失败: {e}")
+                logging.warning(f"策略信号持久化失败: {e}")
 
     async def _broadcast_conditions_page(self):
         """广播数据到交易条件页面（格式与 HTTP API /quotes/conditions 一致）"""

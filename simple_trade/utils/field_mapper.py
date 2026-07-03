@@ -208,6 +208,8 @@ class FieldMapper:
             
             quote_data = {
                 'code': code,
+                # 统一口径键：报价一律带 last_price；current_price 仅作旧消费方兼容
+                'last_price': current_price,
                 'current_price': current_price,
                 'change_percent': change_percent,
                 'volume': int(cls.extract_field_value(quote_row, 'volume', 'quote', 0)),
