@@ -63,6 +63,12 @@ class CapitalTrendConfig:
     held_cooldown_sec: int = 60      # 每股推送最小间隔秒（1 分钟一次；期间新增大单攒进一条）
     held_min_outflow: float = 1.0    # 窗口净流出需 ≥ 此倍数×该股大单门槛才推（滤掉小额净流出）
     max_held_sell_per_day: int = 20  # 每股每日持仓提醒硬上限
+    # 大额主力资金流入提醒（用户口径：监控池全部=含未持仓找买入机会、窗口净流入≥N个大单门槛、
+    # 1 分钟一次）。不设 must-see——经治理器 INFO 预算/每股上限/折叠摘要限流，防全市场刷屏 45009。
+    inflow_immediate: bool = True
+    inflow_cooldown_sec: int = 60    # 每股推送最小间隔秒（1 分钟一次）
+    inflow_min_inflow: float = 1.0   # 窗口净流入需 ≥ 此倍数×该股大单门槛才推
+    max_inflow_per_day: int = 20     # 每股每日大额流入提醒硬上限
 
     @classmethod
     def from_env(cls) -> "CapitalTrendConfig":
@@ -79,6 +85,10 @@ class CapitalTrendConfig:
         cfg.held_cooldown_sec = _env_int("CAPITAL_TREND_HELD_COOLDOWN_SEC", cfg.held_cooldown_sec)
         cfg.held_min_outflow = _env_float("CAPITAL_TREND_HELD_MIN_OUTFLOW", cfg.held_min_outflow)
         cfg.max_held_sell_per_day = _env_int("CAPITAL_TREND_MAX_HELD_SELL", cfg.max_held_sell_per_day)
+        cfg.inflow_immediate = env_flag("CAPITAL_TREND_INFLOW_IMMEDIATE", True)
+        cfg.inflow_cooldown_sec = _env_int("CAPITAL_TREND_INFLOW_COOLDOWN_SEC", cfg.inflow_cooldown_sec)
+        cfg.inflow_min_inflow = _env_float("CAPITAL_TREND_INFLOW_MIN", cfg.inflow_min_inflow)
+        cfg.max_inflow_per_day = _env_int("CAPITAL_TREND_MAX_INFLOW", cfg.max_inflow_per_day)
         return cfg
 
 
@@ -102,6 +112,7 @@ class CapitalTrendAlert:
     reason: str
     is_strong_push: bool         # 是否路由企微（强信号/回落）
     is_held_outflow: bool = False  # 持仓专用·主力净流出即时提醒（每笔大单卖出即报）→ 独立类别/优先级
+    is_large_inflow: bool = False  # 大额主力资金流入提醒（监控池全部·找机会）→ 独立类别/INFO 走预算
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -121,6 +132,9 @@ class _TrendState:
     last_held_sell_ts: Optional[float] = None
     last_held_sell_count: int = 0
     held_sell_alerts: int = 0
+    last_inflow_ts: Optional[float] = None
+    last_inflow_buy_count: int = 0
+    inflow_alerts: int = 0
 
 
 class CapitalTrendDetector:
@@ -218,6 +232,35 @@ class CapitalTrendDetector:
                 big_buy_count=big_buy_count, big_sell_count=big_sell_count,
                 big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
                 is_strong_push=True, is_held_outflow=True,
+            )
+
+        # ── 大额主力资金流入提醒（用户口径：监控池全部、窗口净流入 ≥ N 个大单门槛、1 分钟一次）──
+        #   发现主力大额进场（含未持仓=买入机会）。独立类别、INFO 级——经治理器预算/每股上限/折叠
+        #   摘要限流（不设 must-see，防强势行情几十只同时触发刷屏 45009）。不看涨跌、不要求先建峰。
+        if (self.cfg.inflow_immediate and window_net > 0
+                and window_net >= self.cfg.inflow_min_inflow * thr_eff
+                and big_buy_count > st.last_inflow_buy_count
+                and st.inflow_alerts < self.cfg.max_inflow_per_day
+                and (st.last_inflow_ts is None
+                     or now - st.last_inflow_ts >= self.cfg.inflow_cooldown_sec)):
+            new_buys = big_buy_count - st.last_inflow_buy_count
+            scale_eff = scale if scale > 0 else thr_eff
+            mult = window_net / scale_eff if scale_eff > 0 else 0.0
+            tier_lbl = _TIER_LABEL[self._tier(mult)]
+            st.inflow_alerts += 1
+            st.last_inflow_ts = now
+            st.last_inflow_buy_count = big_buy_count
+            extra = f"（本轮新增{new_buys}笔）" if new_buys > 1 else ""
+            reason = ("大额主力资金流入｜窗口净流入+%.0f万 力度%.1f× 日内%+.2f%% 第%d次大单买入%s"
+                      % (window_net / 1e4, mult, chg, big_buy_count, extra))
+            return CapitalTrendAlert(
+                stock_code=code, stock_name=name, trade_date=day, timestamp=now,
+                direction="RISING", strength_tier=tier_lbl, strength_mult=round(mult, 2),
+                cum_main_net=round(cum, 2), window_main_net=round(window_net, 2),
+                pullback_amount=0.0, intraday_change_pct=round(chg, 2),
+                big_buy_count=big_buy_count, big_sell_count=big_sell_count,
+                big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
+                is_strong_push=False, is_large_inflow=True,
             )
 
         if scale <= 0:

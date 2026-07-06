@@ -63,13 +63,14 @@ def test_rising_fires():
     assert al.is_strong_push is False        # 中档不推企微
 
 
-# ---------- 2. 上升力度分档：强档推企微 ----------
-def test_rising_strong_pushes():
+# ---------- 2. 上升力度分档：窗口净流入≥大单门槛 → 大额流入分支接管（优先于旧强档上升）----------
+def test_rising_large_inflow_supersedes():
     a = _det(FakeClock())
-    s = _snap(cum=5_000_000, peak=5_000_000, window=2_500_000, bbc=1)  # mult 2.5 → 强
+    s = _snap(cum=5_000_000, peak=5_000_000, window=2_500_000, bbc=1)  # 窗口净流入 2.5M ≥ 门槛 2M
     al = a.evaluate(s, 105, 100, TIERS)
-    assert al.strength_tier == "强"
-    assert al.is_strong_push is True
+    assert al is not None and al.is_large_inflow is True
+    assert al.is_strong_push is False        # 大额流入走 INFO 预算，非 is_strong_push
+    assert al.strength_tier == "强"           # 力度仍标注（mult 2.5）
 
 
 # ---------- 3. 弱档/未创新高 不触发 ----------
@@ -231,6 +232,57 @@ def test_held_immediate_disabled_falls_back():
     a = _det(FakeClock(), held_immediate=False)
     assert a.evaluate(_snap(cum=-2_000_000, peak=0, window=-2_000_000, bsc=1),
                       99, 100, TIERS, is_held=True) is None
+
+
+# ---------- 19. 大额主力资金流入：全池（含未持仓）净流入≥门槛即报 ----------
+def test_large_inflow_fires_pool_wide():
+    a = _det(FakeClock())
+    # 窗口净流入 +2.5M ≥ 大单门槛 2M；未持仓也报（全池找机会）
+    al = a.evaluate(_snap(cum=2.5e6, peak=2.5e6, window=2_500_000, bbc=2), 105, 100, TIERS, stock_name="某股")
+    assert al is not None and al.direction == "RISING"
+    assert al.is_large_inflow is True and al.is_strong_push is False
+    assert "大额主力资金流入" in al.reason and "第2次大单买入" in al.reason
+
+
+# ---------- 20. 大额流入：小额流入（< 大单门槛）不报大额 ----------
+def test_large_inflow_skips_small():
+    a = _det(FakeClock())
+    # 窗口净流入 +1.5M < 门槛 2M；且未创新高 → 大额不报、RISING 也不报
+    assert a.evaluate(_snap(cum=4e6, peak=5e6, window=1_500_000, bbc=1), 105, 100, TIERS) is None
+
+
+# ---------- 21. 大额流入：1 分钟内不重复，跨分钟攒批 ----------
+def test_large_inflow_cooldown_batches():
+    clk = FakeClock()
+    a = _det(clk, inflow_cooldown_sec=60)
+    a1 = a.evaluate(_snap(cum=2e6, peak=2e6, window=2e6, bbc=1), 105, 100, TIERS)
+    assert a1 is not None and a1.is_large_inflow
+    clk.advance(20)   # 冷却内 → 不再出大额流入
+    a2 = a.evaluate(_snap(cum=3e6, peak=3e6, window=2.5e6, bbc=3), 106, 100, TIERS)
+    assert a2 is None or not a2.is_large_inflow
+    clk.advance(50)   # 跨过 60s → 攒批（自上次第1笔到第4笔=新增3笔）
+    a3 = a.evaluate(_snap(cum=4e6, peak=4e6, window=3e6, bbc=4), 107, 100, TIERS)
+    assert a3 is not None and a3.is_large_inflow and "本轮新增3笔" in a3.reason
+
+
+# ---------- 22. 大额流入：每日上限 ----------
+def test_large_inflow_daily_cap():
+    clk = FakeClock()
+    a = _det(clk, max_inflow_per_day=2, inflow_cooldown_sec=0)
+    fired = 0
+    for i in range(1, 6):
+        al = a.evaluate(_snap(cum=i * 2e6, peak=i * 2e6, window=2e6, bbc=i), 105, 100, TIERS)
+        if al and al.is_large_inflow:
+            fired += 1
+        clk.advance(1)
+    assert fired == 2
+
+
+# ---------- 23. 大额流入：inflow_immediate=False 时不出大额流入 ----------
+def test_large_inflow_disabled_falls_back():
+    a = _det(FakeClock(), inflow_immediate=False)
+    al = a.evaluate(_snap(cum=2.5e6, peak=2.5e6, window=2.5e6, bbc=2), 105, 100, TIERS)
+    assert al is None or not al.is_large_inflow
 
 
 # ---------- 11. flag OFF = 全短路 ----------

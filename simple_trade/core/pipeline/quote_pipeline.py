@@ -1128,6 +1128,7 @@ class QuotePipeline:
                 await self.socket_manager.emit_to_all('capital_trend_alert', alert.to_dict())
                 emitted.append(alert.to_dict())
                 should_push = ((alert.direction == "FALLING" and code in held_set)
+                               or getattr(alert, 'is_large_inflow', False)   # 大额流入·全池·经治理器限流
                                or (push_all and alert.is_strong_push))
                 if should_push and wechat and getattr(wechat, 'enabled', False):
                     task = asyncio.create_task(self._push_capital_trend_wechat(wechat, alert))
@@ -1164,14 +1165,21 @@ class QuotePipeline:
         try:
             from ...services.alert.wechat_alert import AlertLevel
             held_outflow = getattr(alert, 'is_held_outflow', False)
+            large_inflow = getattr(alert, 'is_large_inflow', False)
             rising = alert.direction == "RISING"
-            if held_outflow:
+            if large_inflow:
+                head, emoji = "大额主力资金流入", "📈"
+            elif held_outflow:
                 head, emoji = "持仓主力净流出", "📉"
             else:
                 head = "主力资金上升" if rising else "主力资金回落"
                 emoji = "📈" if rising else "📉"
-            level = AlertLevel.WARNING
-            if held_outflow:
+            # 大额流入=INFO(经治理器预算/折叠,防全池刷屏)；持仓流出/趋势=WARNING
+            level = AlertLevel.INFO if large_inflow else AlertLevel.WARNING
+            if large_inflow:
+                flow_line = (f"- 窗口净流入：**+{alert.window_main_net / 1e4:.0f}万**　"
+                             f"第 **{alert.big_buy_count}** 次大单买入")
+            elif held_outflow:
                 flow_line = (f"- 窗口净流出：**{-alert.window_main_net / 1e4:.0f}万**　"
                              f"第 **{alert.big_sell_count}** 次大单流出")
             elif rising:
@@ -1188,15 +1196,31 @@ class QuotePipeline:
                 f"- ℹ️ 仅供判断参考（你自己决定是否操作）"
             )
             # 持仓主力净流出=独立类别 + must-see 优先级(≥90)：不被每日上限折叠，"每笔即推"落地；
-            # 又能被 WECHAT_SOLO_CATEGORIES 白名单单独放行（其余推送静音时它照发）。
+            # 大额主力资金流入=独立类别 + INFO：经治理器预算/每股上限/折叠摘要限流（全池防刷屏），
+            #   故绝不设 severity=high（否则会被提到预算豁免线而绕过限流）。
+            # 三类都能被 WECHAT_SOLO_CATEGORIES 白名单单独放行。
+            if large_inflow:
+                category = "大额主力资金流入"
+                dedup_key = f"largeinflow:{alert.stock_code}:{alert.big_buy_count}"
+                prio, sev = None, None
+            elif held_outflow:
+                category = "持仓主力净流出"
+                dedup_key = f"captrend:{alert.stock_code}:{alert.direction}:{alert.big_buy_count}:{alert.big_sell_count}"
+                prio = 92
+                sev = "high" if alert.strength_tier == "强" else None
+            else:
+                category = "主力资金趋势"
+                dedup_key = f"captrend:{alert.stock_code}:{alert.direction}:{alert.big_buy_count}:{alert.big_sell_count}"
+                prio = None
+                sev = "high" if alert.strength_tier == "强" else None
             await wechat.send(
                 level, f"{emoji} {head} - {alert.stock_name}", content,
-                dedup_key=f"captrend:{alert.stock_code}:{alert.direction}:{alert.big_buy_count}:{alert.big_sell_count}",
-                category="持仓主力净流出" if held_outflow else "主力资金趋势",
+                dedup_key=dedup_key,
+                category=category,
                 stock_code=alert.stock_code,
                 price=alert.last_price or None,
-                priority=92 if held_outflow else None,
-                severity="high" if alert.strength_tier == "强" else None,
+                priority=prio,
+                severity=sev,
             )
         except Exception as e:
             logging.error(f"主力资金趋势推送失败: {e}")

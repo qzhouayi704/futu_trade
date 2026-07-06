@@ -40,6 +40,7 @@ _CAT_PRIORITY = {
     "持仓主力净流出": 92,  # 持仓被主力大单净流出：用户口径"每笔即推"→ must-see(≥90)不被每日上限折叠
     "早段突破": 90,
     "主力资金趋势": 85,  # 主力资金上升/回落趋势提醒（信息型，辅助人工判断）
+    "大额主力资金流入": 55,  # 全池找机会·INFO 级：<60 受令牌桶预算约束，超预算折叠进摘要（防刷屏）
 }
 _LEVEL_PRIORITY = {"CRITICAL": 100, "WARNING": 50, "INFO": 10}
 
@@ -81,7 +82,7 @@ class GovernorConfig:
     digest_max_items: int = 30            # 摘要缓冲上限（超出丢最旧）
     daily_cap_per_stock: Dict[str, int] = field(
         default_factory=lambda: {"交易信号": 2, "抗跌吸筹": 2, "大单": 2,
-                                 "主力资金趋势": 3, "默认": 4}
+                                 "主力资金趋势": 3, "大额主力资金流入": 3, "默认": 4}
     )
 
     @classmethod
