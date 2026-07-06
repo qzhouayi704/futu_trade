@@ -1121,7 +1121,8 @@ class QuotePipeline:
                 tiers = bs.get_capital_tiers(code) if bs else (0.0, 0.0, 0.0)
                 name = ((held.get(code) or {}).get('stock_name')
                         or q.get('name') or q.get('stock_name') or code)
-                alert = det.evaluate(snap, last_price, prev_close, tiers, stock_name=name)
+                alert = det.evaluate(snap, last_price, prev_close, tiers,
+                                     stock_name=name, is_held=code in held_set)
                 if not alert:
                     continue
                 await self.socket_manager.emit_to_all('capital_trend_alert', alert.to_dict())
@@ -1162,11 +1163,18 @@ class QuotePipeline:
         """主力资金趋势 → 企业微信（仅强信号/回落；经治理器"主力资金趋势"类别收口）。"""
         try:
             from ...services.alert.wechat_alert import AlertLevel
+            held_outflow = getattr(alert, 'is_held_outflow', False)
             rising = alert.direction == "RISING"
-            head = "主力资金上升" if rising else "主力资金回落"
-            emoji = "📈" if rising else "📉"
+            if held_outflow:
+                head, emoji = "持仓主力净流出", "📉"
+            else:
+                head = "主力资金上升" if rising else "主力资金回落"
+                emoji = "📈" if rising else "📉"
             level = AlertLevel.WARNING
-            if rising:
+            if held_outflow:
+                flow_line = (f"- 窗口净流出：**{-alert.window_main_net / 1e4:.0f}万**　"
+                             f"第 **{alert.big_sell_count}** 次大单流出")
+            elif rising:
                 flow_line = f"- 累计净流入：**+{alert.cum_main_net / 1e4:.0f}万**　第 **{alert.big_buy_count}** 次大单买入"
             elif alert.cum_main_net < 0:
                 flow_line = f"- 主力净流出：**{-alert.cum_main_net / 1e4:.0f}万**（疑似拉高出货）　第 **{alert.big_sell_count}** 次大单流出"
@@ -1179,12 +1187,15 @@ class QuotePipeline:
                 f"- 力度：**{alert.strength_mult:.1f}×**（{alert.strength_tier}）　大单门槛≈{alert.big_order_threshold / 1e4:.0f}万\n"
                 f"- ℹ️ 仅供判断参考（你自己决定是否操作）"
             )
+            # 持仓主力净流出=独立类别 + must-see 优先级(≥90)：不被每日上限折叠，"每笔即推"落地；
+            # 又能被 WECHAT_SOLO_CATEGORIES 白名单单独放行（其余推送静音时它照发）。
             await wechat.send(
                 level, f"{emoji} {head} - {alert.stock_name}", content,
                 dedup_key=f"captrend:{alert.stock_code}:{alert.direction}:{alert.big_buy_count}:{alert.big_sell_count}",
-                category="主力资金趋势",
+                category="持仓主力净流出" if held_outflow else "主力资金趋势",
                 stock_code=alert.stock_code,
                 price=alert.last_price or None,
+                priority=92 if held_outflow else None,
                 severity="high" if alert.strength_tier == "强" else None,
             )
         except Exception as e:

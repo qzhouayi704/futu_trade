@@ -165,6 +165,74 @@ def test_cross_day_reset():
     assert a.evaluate(_snap(cum=5e6, peak=5e6, window=1.5e6, bbc=1, day="2026-06-25"), 105, 100, TIERS) is not None
 
 
+# ---------- 12. 持仓净流出：讯策 9:49 场景（价平/跌+开盘砸大单+无峰）----------
+def test_held_immediate_outflow_fires_on_pure_downtrend():
+    a = _det(FakeClock())
+    # 窗口净流出 -2M ≥ 大单门槛 2M
+    s = _snap(cum=-2_000_000, peak=0, window=-2_000_000, bsc=1)
+    # 非持仓：维持旧行为——纯下跌不报（回归 test 8 语义）
+    assert a.evaluate(s, 99, 100, TIERS) is None
+    # 持仓：净流出提醒必报
+    al = a.evaluate(s, 99, 100, TIERS, is_held=True, stock_name="讯策")
+    assert al is not None and al.direction == "FALLING"
+    assert al.is_held_outflow is True and al.is_strong_push is True
+    assert "持仓主力净流出" in al.reason and "第1次大单流出" in al.reason
+
+
+# ---------- 13. 持仓净流出：小额净流出（< 大单门槛）不推 ----------
+def test_held_immediate_skips_small_outflow():
+    a = _det(FakeClock())
+    # 窗口净流出仅 -80万 < 大单门槛 200万 → 小额，不推
+    assert a.evaluate(_snap(cum=-800_000, peak=0, window=-800_000, bsc=1),
+                      99, 100, TIERS, is_held=True) is None
+
+
+# ---------- 14. 持仓净流出：1 分钟内不重复，跨分钟攒批（不漏笔数）----------
+def test_held_immediate_cooldown_batches_new_sells():
+    clk = FakeClock()
+    a = _det(clk, held_cooldown_sec=60)
+    assert a.evaluate(_snap(cum=-2e6, peak=0, window=-2e6, bsc=1), 99, 100, TIERS, is_held=True) is not None
+    clk.advance(20)  # 1 分钟内 → 即便又来大单也不报
+    assert a.evaluate(_snap(cum=-2.5e6, peak=0, window=-2.5e6, bsc=3), 98, 100, TIERS, is_held=True) is None
+    clk.advance(50)  # 跨过 60s；自上次(第1笔)以来累计新增至第4笔
+    al = a.evaluate(_snap(cum=-3e6, peak=0, window=-3e6, bsc=4), 97, 100, TIERS, is_held=True)
+    assert al is not None and "本轮新增3笔" in al.reason
+
+
+# ---------- 15. 持仓净流出：窗口仍净流入（被吸收）不报 ----------
+def test_held_immediate_no_fire_when_window_not_outflow():
+    a = _det(FakeClock())
+    assert a.evaluate(_snap(cum=2e6, peak=2e6, window=500_000, bsc=2), 101, 100, TIERS, is_held=True) is None
+
+
+# ---------- 16. 持仓净流出：每日上限 ----------
+def test_held_immediate_daily_cap():
+    clk = FakeClock()
+    a = _det(clk, max_held_sell_per_day=2, held_cooldown_sec=0)
+    fired = 0
+    for i in range(1, 6):
+        al = a.evaluate(_snap(cum=-i * 2e6, peak=0, window=-2e6, bsc=i), 99, 100, TIERS, is_held=True)
+        if al:
+            fired += 1
+        clk.advance(1)
+    assert fired == 2
+
+
+# ---------- 17. 持仓净流出：未标定(scale=0)也能报（门槛/力度基准回退）----------
+def test_held_immediate_works_uncalibrated():
+    a = _det(FakeClock())
+    al = a.evaluate(_snap(cum=-1e6, peak=0, window=-1e6, bsc=1), 99, 100,
+                    tiers=(0.0, 0.0, 0.0), is_held=True)
+    assert al is not None and al.is_held_outflow is True
+
+
+# ---------- 18. 持仓净流出：held_immediate=False 时退化为旧行为 ----------
+def test_held_immediate_disabled_falls_back():
+    a = _det(FakeClock(), held_immediate=False)
+    assert a.evaluate(_snap(cum=-2_000_000, peak=0, window=-2_000_000, bsc=1),
+                      99, 100, TIERS, is_held=True) is None
+
+
 # ---------- 11. flag OFF = 全短路 ----------
 def test_flag_off_noop():
     a = CapitalTrendDetector(CapitalTrendConfig(enabled=False), clock=FakeClock())

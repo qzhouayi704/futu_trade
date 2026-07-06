@@ -112,6 +112,16 @@ class WeChatAlertService:
         if not self.enabled:
             return False
 
+        # 「只推白名单类别」模式（治用户「其他推送先别推，只推持仓主力净流出」）：
+        # WECHAT_SOLO_CATEGORIES 设为逗号分隔类别名 → 仅这些类别放行，其余静默丢弃。
+        # 未设/空 = 不启用（历史行为）。一处收口、纯 env、可逆——不动任何推送调用点。
+        solo = os.environ.get("WECHAT_SOLO_CATEGORIES", "").strip()
+        if solo:
+            allowed = {c.strip() for c in solo.split(",") if c.strip()}
+            if category not in allowed:
+                logger.debug("[solo] 静默非白名单推送: %s / %s", category, stock_code)
+                return False
+
         # 防抖检查（既有 300s/key 去重，治理器在其之上叠加，不改它）
         cache_key = dedup_key or f"{level.name}:{title}"
         if not self._check_cooldown(cache_key):

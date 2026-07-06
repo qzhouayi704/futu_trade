@@ -56,6 +56,13 @@ class CapitalTrendConfig:
     pullback_pct: float = 0.15     # 回落判定：自峰值回落 ≥ peak×此比例（或 ≥ 一个大单门槛）
     max_rising_per_day: int = 6    # 每股每日上升提醒硬上限
     max_falling_per_day: int = 4   # 每股每日回落提醒硬上限
+    # 持仓专用·主力净流出提醒（用户口径：按 1 分钟推一次、仅大单级别净流出才推、小额不推、
+    # 不看涨跌、不要求先建峰）——治"持仓被开盘直接砸大单却零提醒"盲区（讯策 9:49）。
+    # held_cooldown_sec=60 → 每股每分钟至多一条，期间新增大单笔数攒进这一条文案（不漏）。
+    held_immediate: bool = True
+    held_cooldown_sec: int = 60      # 每股推送最小间隔秒（1 分钟一次；期间新增大单攒进一条）
+    held_min_outflow: float = 1.0    # 窗口净流出需 ≥ 此倍数×该股大单门槛才推（滤掉小额净流出）
+    max_held_sell_per_day: int = 20  # 每股每日持仓提醒硬上限
 
     @classmethod
     def from_env(cls) -> "CapitalTrendConfig":
@@ -68,6 +75,10 @@ class CapitalTrendConfig:
         cfg.pullback_pct = _env_float("CAPITAL_TREND_PULLBACK_PCT", cfg.pullback_pct)
         cfg.max_rising_per_day = _env_int("CAPITAL_TREND_MAX_RISING", cfg.max_rising_per_day)
         cfg.max_falling_per_day = _env_int("CAPITAL_TREND_MAX_FALLING", cfg.max_falling_per_day)
+        cfg.held_immediate = env_flag("CAPITAL_TREND_HELD_IMMEDIATE", True)
+        cfg.held_cooldown_sec = _env_int("CAPITAL_TREND_HELD_COOLDOWN_SEC", cfg.held_cooldown_sec)
+        cfg.held_min_outflow = _env_float("CAPITAL_TREND_HELD_MIN_OUTFLOW", cfg.held_min_outflow)
+        cfg.max_held_sell_per_day = _env_int("CAPITAL_TREND_MAX_HELD_SELL", cfg.max_held_sell_per_day)
         return cfg
 
 
@@ -90,6 +101,7 @@ class CapitalTrendAlert:
     last_price: float
     reason: str
     is_strong_push: bool         # 是否路由企微（强信号/回落）
+    is_held_outflow: bool = False  # 持仓专用·主力净流出即时提醒（每笔大单卖出即报）→ 独立类别/优先级
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -106,6 +118,9 @@ class _TrendState:
     last_falling_ts: Optional[float] = None
     last_falling_tier: int = -1
     last_pullback: float = 0.0
+    last_held_sell_ts: Optional[float] = None
+    last_held_sell_count: int = 0
+    held_sell_alerts: int = 0
 
 
 class CapitalTrendDetector:
@@ -139,10 +154,12 @@ class CapitalTrendDetector:
         tiers: Tuple[float, float, float],
         stock_name: Optional[str] = None,
         now: Optional[float] = None,
+        is_held: bool = False,
     ) -> Optional[CapitalTrendAlert]:
         """对一只股票的当前快照判断是否产出一条趋势提醒；不产出返回 None。
 
         tiers = (大单门槛, 超大单门槛, 力度基准 window_net_scale)。
+        is_held=True 时额外启用"持仓主力净流出即时提醒"（每笔大单卖出即报，见下）。
         """
         if not self.cfg.enabled or not snapshot:
             return None
@@ -159,21 +176,54 @@ class CapitalTrendDetector:
 
         large_thr = float(tiers[0]) if tiers and tiers[0] else 0.0
         scale = float(tiers[2]) if tiers and len(tiers) > 2 and tiers[2] else large_thr
-        if scale <= 0:
-            return None
 
         cum = float(snapshot.get("cum_main_net") or 0.0)
         peak = float(snapshot.get("cum_peak") or 0.0)
         window_net = float(snapshot.get("window_main_net") or 0.0)
         big_buy_count = int(snapshot.get("big_buy_count") or 0)
         big_sell_count = int(snapshot.get("big_sell_count") or 0)
-        strength_mult = abs(window_net) / scale
-        tier = self._tier(strength_mult)
         chg = 0.0
         if last_price and prev_close and prev_close > 0:
             chg = (float(last_price) - float(prev_close)) / float(prev_close) * 100.0
         name = stock_name or code
         lp = float(last_price or 0.0)
+
+        # ── 持仓专用·主力净流出提醒（用户口径：1 分钟推一次、仅大单级别净流出才推、小额不推）──
+        #   条件：持仓 + 窗口净流出 ≥ 一个大单门槛（滤小额）+ 有新的大单卖出（big_sell_count 前进）。
+        #   不看涨跌、不要求先建峰——治"持仓被开盘直接砸大单却零提醒"盲区（讯策 9:49）。
+        #   held_cooldown_sec=60 → 每股每分钟至多一条，期间的新大单笔数攒进这一条文案（不漏）。
+        #   放在 scale 守卫之前，且门槛/力度基准缺失时回退，保证未标定的持仓股也能报。
+        thr_eff = large_thr if large_thr > 0 else 100_000.0
+        if (is_held and self.cfg.held_immediate and window_net < 0
+                and abs(window_net) >= self.cfg.held_min_outflow * thr_eff
+                and big_sell_count > st.last_held_sell_count
+                and st.held_sell_alerts < self.cfg.max_held_sell_per_day
+                and (st.last_held_sell_ts is None
+                     or now - st.last_held_sell_ts >= self.cfg.held_cooldown_sec)):
+            new_sells = big_sell_count - st.last_held_sell_count
+            scale_eff = scale if scale > 0 else thr_eff
+            mult = abs(window_net) / scale_eff if scale_eff > 0 else 0.0
+            tier_lbl = _TIER_LABEL[self._tier(mult)]
+            st.held_sell_alerts += 1
+            st.last_held_sell_ts = now
+            st.last_held_sell_count = big_sell_count
+            extra = f"（本轮新增{new_sells}笔）" if new_sells > 1 else ""
+            reason = ("持仓主力净流出｜窗口净流出%.0f万 力度%.1f× 日内%+.2f%% 第%d次大单流出%s"
+                      % (abs(window_net) / 1e4, mult, chg, big_sell_count, extra))
+            return CapitalTrendAlert(
+                stock_code=code, stock_name=name, trade_date=day, timestamp=now,
+                direction="FALLING", strength_tier=tier_lbl, strength_mult=round(mult, 2),
+                cum_main_net=round(cum, 2), window_main_net=round(window_net, 2),
+                pullback_amount=0.0, intraday_change_pct=round(chg, 2),
+                big_buy_count=big_buy_count, big_sell_count=big_sell_count,
+                big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
+                is_strong_push=True, is_held_outflow=True,
+            )
+
+        if scale <= 0:
+            return None
+        strength_mult = abs(window_net) / scale
+        tier = self._tier(strength_mult)
 
         # ── 回落 / 拉高出货（优先判断；两类都属 FALLING，一律推企微）──
         #   ① retreat：主力资金从当日净流入峰值回落（先涨后撤）。
