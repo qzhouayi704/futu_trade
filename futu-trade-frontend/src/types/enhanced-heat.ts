@@ -252,6 +252,7 @@ export interface MainCapitalDetailRow {
   big_sell: number;          // 主力大卖（万）
   net: number;               // 本分钟净额（万）
   cum: number;               // 累计净额（万）
+  super_net?: number;        // 本分钟超大单净额（万）
 }
 
 /** 逐笔主力资金分钟明细 — 汇总 */
@@ -260,6 +261,13 @@ export interface MainCapitalDetailSummary {
   total_big_buy: number;
   total_big_sell: number;
   buy_ratio: number | null;
+  // 分档汇总（万元）：三档净额之和 = cum_net
+  super_net?: number;        // 超大单净额
+  super_buy?: number;
+  super_sell?: number;
+  super_buy_ratio?: number | null;
+  large_net?: number;        // 大单净额
+  mid_net?: number;          // 中单净额
 }
 
 /** 逐笔主力资金分钟明细数据 */
@@ -269,6 +277,8 @@ export interface MainCapitalDetailData {
   trade_date: string;
   prev_close: number | null;
   threshold: number;         // 大单门槛（元）
+  large_threshold?: number;  // 大单门槛（元，自适应）
+  super_threshold?: number;  // 超大单门槛（元，自适应）
   rows: MainCapitalDetailRow[];
   summary: MainCapitalDetailSummary | null;
 }
@@ -280,6 +290,7 @@ export interface MainCapitalDailyDay {
   big_sell: number;   // 大卖（万）
   net: number;        // 主力日净额（万）
   cum: number;        // 区间累计（万）
+  super_net?: number; // 当日超大单净额（万）
 }
 
 /** 近几日主力资金 — 汇总 */
@@ -287,6 +298,7 @@ export interface MainCapitalDailySummary {
   cum_net: number;
   positive_days: number;
   total_days: number;
+  super_net?: number; // 区间超大单净额（万）
 }
 
 /** 近几日主力资金流向数据 */
@@ -294,6 +306,8 @@ export interface MainCapitalDailyData {
   stock_code: string;
   stock_name: string;
   threshold: number;
+  large_threshold?: number;
+  super_threshold?: number;
   days: MainCapitalDailyDay[];
   summary: MainCapitalDailySummary | null;
 }

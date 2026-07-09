@@ -9,12 +9,13 @@ import { getMainCapitalDaily, getCapitalFlowHistory } from "@/lib/api/enhanced-h
 
 type Mode = "tick" | "futu30" | "futu90";
 
-/** 统一后的单日结构（万元）；大买/大卖仅逐笔口径有 */
+/** 统一后的单日结构（万元）；大买/大卖/超大单净 仅逐笔口径有 */
 interface UDay {
   date: string;
   net: number;
   big_buy?: number;
   big_sell?: number;
+  super_net?: number;
 }
 
 const MODES: { key: Mode; label: string }[] = [
@@ -128,7 +129,7 @@ export function MainCapitalDailyPanel({ stockCode }: { stockCode: string }) {
         if (res.success) {
           const d = res.data;
           setThreshold(d?.threshold ?? null);
-          setDays((d?.days ?? []).map((x) => ({ date: x.date, net: x.net, big_buy: x.big_buy, big_sell: x.big_sell })));
+          setDays((d?.days ?? []).map((x) => ({ date: x.date, net: x.net, big_buy: x.big_buy, big_sell: x.big_sell, super_net: x.super_net })));
           if (!d || d.days.length === 0) setError("暂无逐笔历史数据");
         }
       } else {
@@ -167,6 +168,7 @@ export function MainCapitalDailyPanel({ stockCode }: { stockCode: string }) {
 
   // 汇总
   const cumNet = days.reduce((s, d) => s + d.net, 0);
+  const cumSuper = days.reduce((s, d) => s + (d.super_net ?? 0), 0); // 区间超大单净额（仅逐笔口径）
   const posDays = days.filter((d) => d.net > 0).length;
   const tableDays = [...days].reverse(); // 最新置顶
 
@@ -232,6 +234,15 @@ export function MainCapitalDailyPanel({ stockCode }: { stockCode: string }) {
           <span className="text-muted-foreground">
             净流入天数 <span className="font-medium text-foreground">{posDays}/{days.length}</span>
           </span>
+          {!isFutu && (
+            <span className="text-muted-foreground">
+              超大单净{" "}
+              <span className={`font-semibold ${pnColor(cumSuper)}`}>
+                {cumSuper >= 0 ? "+" : ""}
+                {fmtWan(cumSuper)}
+              </span>
+            </span>
+          )}
         </div>
       )}
 
@@ -247,6 +258,7 @@ export function MainCapitalDailyPanel({ stockCode }: { stockCode: string }) {
                   <th className="py-1.5 px-2 text-left font-medium">日期</th>
                   {!isFutu && <th className="py-1.5 px-2 font-medium">大买(万)</th>}
                   {!isFutu && <th className="py-1.5 px-2 font-medium">大卖(万)</th>}
+                  {!isFutu && <th className="py-1.5 px-2 font-medium">超大单净(万)</th>}
                   <th className="py-1.5 px-2 font-medium">主力净额(万)</th>
                 </tr>
               </thead>
@@ -256,6 +268,13 @@ export function MainCapitalDailyPanel({ stockCode }: { stockCode: string }) {
                     <td className="py-1.5 px-2 text-left text-foreground">{d.date.slice(5)}</td>
                     {!isFutu && <td className="py-1.5 px-2 text-red-600">{(d.big_buy ?? 0).toFixed(0)}</td>}
                     {!isFutu && <td className="py-1.5 px-2 text-green-600">{(d.big_sell ?? 0).toFixed(0)}</td>}
+                    {!isFutu && (
+                      <td className={`py-1.5 px-2 font-medium ${pnColor(d.super_net)}`}>
+                        {d.super_net != null && d.super_net !== 0
+                          ? `${d.super_net > 0 ? "+" : ""}${d.super_net.toFixed(0)}`
+                          : "0"}
+                      </td>
+                    )}
                     <td className={`py-1.5 px-2 font-semibold ${pnColor(d.net)}`}>
                       {d.net > 0 ? "+" : ""}
                       {d.net.toFixed(0)}

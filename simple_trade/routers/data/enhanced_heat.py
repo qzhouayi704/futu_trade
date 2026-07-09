@@ -328,6 +328,22 @@ async def main_capital_detail(stock_code: str, container=Depends(get_container))
         code = stock_code.strip()
         # 大单门槛：与 tick_capital_accumulator.TickCapitalConfig.large_threshold 同值（单笔≥10万）
         thr = 100_000.0
+        # 分档门槛（按股自适应，复用 BaselineService 标定口径）：
+        #   超大单 ≥ super_thr / 大单 large_thr~super_thr / 中单 thr~large_thr
+        # 总（≥thr）数字不变，三档之和恒等于总。取不到标定则回退 large=10万、super=100万。
+        large_thr, super_thr = 100_000.0, 1_000_000.0
+        bs = getattr(container, 'baseline_service', None)
+        if bs:
+            try:
+                lg, sup, _ = bs.get_capital_tiers(code)
+                if lg and lg > 0:
+                    large_thr = float(lg)
+                if sup and sup > 0:
+                    super_thr = float(sup)
+            except Exception:
+                pass
+        large_thr = max(large_thr, thr)              # 保证 ≥ 10万 floor
+        super_thr = max(super_thr, large_thr * 1.5)  # 保证 super > large
         today_str = MarketTimeHelper.get_market_today("HK")
 
         # 昨收：优先实时报价，回退最近一根已收盘日K
@@ -355,17 +371,23 @@ async def main_capital_detail(stock_code: str, container=Depends(get_container))
             pass
 
         # 分钟聚合（CASE 做大单过滤；分钟切片沿用 flow-momentum-scan 口径）
+        # 在总（≥thr）之外再拆超大单/大单两档，中单在 Python 里由 总-超-大 反推。
         rows = db.execute_query("""
             SELECT
                 substr(datetime(timestamp/1000, 'unixepoch', '+8 hours'), 12, 5) AS minute,
                 SUM(CASE WHEN turnover >= ? AND direction='BUY'  THEN turnover ELSE 0 END) AS big_buy,
                 SUM(CASE WHEN turnover >= ? AND direction='SELL' THEN turnover ELSE 0 END) AS big_sell,
+                SUM(CASE WHEN turnover >= ? AND direction='BUY'  THEN turnover ELSE 0 END) AS super_buy,
+                SUM(CASE WHEN turnover >= ? AND direction='SELL' THEN turnover ELSE 0 END) AS super_sell,
+                SUM(CASE WHEN turnover >= ? AND turnover < ? AND direction='BUY'  THEN turnover ELSE 0 END) AS large_buy,
+                SUM(CASE WHEN turnover >= ? AND turnover < ? AND direction='SELL' THEN turnover ELSE 0 END) AS large_sell,
                 AVG(price) AS price
             FROM ticker_data
             WHERE stock_code = ? AND trade_date = ?
             GROUP BY minute
             ORDER BY minute
-        """, (thr, thr, code, today_str))
+        """, (thr, thr, super_thr, super_thr,
+              large_thr, super_thr, large_thr, super_thr, code, today_str))
 
         base = {
             "stock_code": code,
@@ -373,6 +395,8 @@ async def main_capital_detail(stock_code: str, container=Depends(get_container))
             "trade_date": today_str,
             "prev_close": round(prev_close, 3) if prev_close > 0 else None,
             "threshold": thr,
+            "large_threshold": large_thr,
+            "super_threshold": super_thr,
         }
 
         if not rows:
@@ -387,15 +411,31 @@ async def main_capital_detail(stock_code: str, container=Depends(get_container))
         cum = 0.0
         total_buy = 0.0
         total_sell = 0.0
-        for minute, big_buy, big_sell, price in rows:
+        # 分档累计（元）：超大单 / 大单 / 中单（中单=总-超-大）
+        t_super_buy = t_super_sell = 0.0
+        t_large_buy = t_large_sell = 0.0
+        t_mid_buy = t_mid_sell = 0.0
+        for minute, big_buy, big_sell, super_buy, super_sell, large_buy, large_sell, price in rows:
             if not minute or not ('09:15' <= minute <= '16:10'):
                 continue
             bb = float(big_buy or 0)
             bs = float(big_sell or 0)
+            sb = float(super_buy or 0)
+            ss = float(super_sell or 0)
+            lb = float(large_buy or 0)
+            ls = float(large_sell or 0)
+            mb = bb - sb - lb   # 中单买 = 总买 - 超大单买 - 大单买
+            ms = bs - ss - ls   # 中单卖
             net = bb - bs
             cum += net
             total_buy += bb
             total_sell += bs
+            t_super_buy += sb
+            t_super_sell += ss
+            t_large_buy += lb
+            t_large_sell += ls
+            t_mid_buy += mb
+            t_mid_sell += ms
             p = float(price or 0)
             change_pct = round((p / prev_close - 1) * 100, 2) if (prev_close > 0 and p > 0) else None
             detail.append({
@@ -406,14 +446,23 @@ async def main_capital_detail(stock_code: str, container=Depends(get_container))
                 "big_sell": round(bs / WAN, 1),
                 "net": round(net / WAN, 1),
                 "cum": round(cum / WAN, 1),
+                "super_net": round((sb - ss) / WAN, 1),   # 本分钟超大单净额（万）
             })
 
         total = total_buy + total_sell
+        super_total = t_super_buy + t_super_sell
         summary = {
             "cum_net": round(cum / WAN, 1),
             "total_big_buy": round(total_buy / WAN, 1),
             "total_big_sell": round(total_sell / WAN, 1),
             "buy_ratio": round(total_buy / total, 4) if total > 0 else None,
+            # 分档汇总（万元）：三档净额之和 = cum_net
+            "super_net": round((t_super_buy - t_super_sell) / WAN, 1),
+            "super_buy": round(t_super_buy / WAN, 1),
+            "super_sell": round(t_super_sell / WAN, 1),
+            "super_buy_ratio": round(t_super_buy / super_total, 4) if super_total > 0 else None,
+            "large_net": round((t_large_buy - t_large_sell) / WAN, 1),
+            "mid_net": round((t_mid_buy - t_mid_sell) / WAN, 1),
         }
 
         return APIResponse(
@@ -443,16 +492,33 @@ async def main_capital_daily(stock_code: str, container=Depends(get_container)):
         thr = 100_000.0       # 大单门槛，与 main-capital-detail 同值
         MIN_TICKS = 500       # 过滤非交易日/数据缺口（仅零星几笔的天）
 
+        # 分档门槛（按股自适应，与 main-capital-detail 同口径）
+        large_thr, super_thr = 100_000.0, 1_000_000.0
+        bs_svc = getattr(container, 'baseline_service', None)
+        if bs_svc:
+            try:
+                lg, sup, _ = bs_svc.get_capital_tiers(code)
+                if lg and lg > 0:
+                    large_thr = float(lg)
+                if sup and sup > 0:
+                    super_thr = float(sup)
+            except Exception:
+                pass
+        large_thr = max(large_thr, thr)
+        super_thr = max(super_thr, large_thr * 1.5)
+
         rows = db.execute_query("""
             SELECT trade_date, COUNT(*) AS n,
                 SUM(CASE WHEN turnover >= ? AND direction='BUY'  THEN turnover ELSE 0 END) AS big_buy,
-                SUM(CASE WHEN turnover >= ? AND direction='SELL' THEN turnover ELSE 0 END) AS big_sell
+                SUM(CASE WHEN turnover >= ? AND direction='SELL' THEN turnover ELSE 0 END) AS big_sell,
+                SUM(CASE WHEN turnover >= ? AND direction='BUY'  THEN turnover ELSE 0 END) AS super_buy,
+                SUM(CASE WHEN turnover >= ? AND direction='SELL' THEN turnover ELSE 0 END) AS super_sell
             FROM ticker_data
             WHERE stock_code = ?
             GROUP BY trade_date
             HAVING n >= ?
             ORDER BY trade_date
-        """, (thr, thr, code, MIN_TICKS))
+        """, (thr, thr, super_thr, super_thr, code, MIN_TICKS))
 
         stock_name = ''
         try:
@@ -462,7 +528,8 @@ async def main_capital_daily(stock_code: str, container=Depends(get_container)):
         except Exception:
             pass
 
-        base = {"stock_code": code, "stock_name": stock_name, "threshold": thr}
+        base = {"stock_code": code, "stock_name": stock_name, "threshold": thr,
+                "large_threshold": large_thr, "super_threshold": super_thr}
         if not rows:
             return APIResponse(success=True, data={**base, "days": [], "summary": None},
                                message="暂无逐笔历史数据")
@@ -471,11 +538,16 @@ async def main_capital_daily(stock_code: str, container=Depends(get_container)):
         days = []
         cum = 0.0
         pos_days = 0
-        for trade_date, _n, big_buy, big_sell in rows:
+        t_super_buy = t_super_sell = 0.0
+        for trade_date, _n, big_buy, big_sell, super_buy, super_sell in rows:
             bb = float(big_buy or 0)
             bs = float(big_sell or 0)
+            sb = float(super_buy or 0)
+            ss = float(super_sell or 0)
             net = bb - bs
             cum += net
+            t_super_buy += sb
+            t_super_sell += ss
             if net > 0:
                 pos_days += 1
             days.append({
@@ -484,12 +556,14 @@ async def main_capital_daily(stock_code: str, container=Depends(get_container)):
                 "big_sell": round(bs / WAN, 1),
                 "net": round(net / WAN, 1),
                 "cum": round(cum / WAN, 1),
+                "super_net": round((sb - ss) / WAN, 1),   # 当日超大单净额（万）
             })
 
         summary = {
             "cum_net": round(cum / WAN, 1),
             "positive_days": pos_days,
             "total_days": len(days),
+            "super_net": round((t_super_buy - t_super_sell) / WAN, 1),
         }
         return APIResponse(
             success=True,

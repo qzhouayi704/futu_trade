@@ -21,6 +21,27 @@ function pnColor(v: number | null | undefined): string {
   return v > 0 ? "text-red-600" : "text-green-600";
 }
 
+/** 带符号金额（万元）：正数补 +，负数由 fmtWan 自带 - */
+function fmtSigned(v: number | null | undefined): string {
+  if (v == null) return "-";
+  return `${v > 0 ? "+" : ""}${fmtWan(v)}`;
+}
+
+/** 门槛（元）格式化为 万/亿 */
+function fmtThr(v: number | null | undefined): string {
+  if (v == null) return "-";
+  const wan = v / 10000;
+  if (wan >= 10000) return `${(wan / 10000).toFixed(1)}亿`;
+  return `${wan.toFixed(0)}万`;
+}
+
+/** 超大单档突出边框/背景色（红涨绿跌） */
+function superBoxColor(v: number): string {
+  if (v > 0) return "border-red-300 bg-red-50";
+  if (v < 0) return "border-green-300 bg-green-50";
+  return "border-border";
+}
+
 // ==================== 累计净额曲线 ====================
 
 function CumNetChart({ rows, tradeDate, height = 360 }: { rows: MainCapitalDetailRow[]; tradeDate: string; height?: number }) {
@@ -143,6 +164,12 @@ export function MainCapitalDetailPanel({ stockCode }: { stockCode: string }) {
   const summary = data?.summary ?? null;
   // 表格最新置顶（后端按时间升序，倒序展示便于盯盘）
   const tableRows = [...rows].reverse();
+  // 背离：超大单（真机构）与总口径（含中小单）方向相反 —— "大钱 vs 小钱"打架
+  const diverge =
+    summary?.super_net != null &&
+    summary.cum_net != null &&
+    summary.super_net !== 0 &&
+    Math.sign(summary.super_net) !== Math.sign(summary.cum_net);
 
   return (
     <div className="bg-card rounded-lg shadow p-6">
@@ -154,7 +181,9 @@ export function MainCapitalDetailPanel({ stockCode }: { stockCode: string }) {
           逐笔主力资金明细
           {data && (
             <span className="text-[11px] font-normal text-muted-foreground">
-              主力大单 ≥ {(data.threshold / 10000).toFixed(0)}万/笔
+              {data.super_threshold && data.large_threshold
+                ? `超大单≥${fmtThr(data.super_threshold)} · 大单${fmtThr(data.large_threshold)}~${fmtThr(data.super_threshold)} · 中单${fmtThr(data.threshold)}~${fmtThr(data.large_threshold)}`
+                : `主力大单 ≥ ${(data.threshold / 10000).toFixed(0)}万/笔`}
             </span>
           )}
         </h3>
@@ -169,24 +198,56 @@ export function MainCapitalDetailPanel({ stockCode }: { stockCode: string }) {
 
       {/* 汇总条 */}
       {summary && (
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 mb-4 text-sm">
-          <span className="text-muted-foreground">
-            累计净额{" "}
-            <span className={`font-semibold ${pnColor(summary.cum_net)}`}>
-              {summary.cum_net >= 0 ? "+" : ""}
-              {fmtWan(summary.cum_net)}
-            </span>
-          </span>
-          <span className="text-muted-foreground">
-            大买 <span className="font-medium text-red-600">{fmtWan(summary.total_big_buy)}</span>
-          </span>
-          <span className="text-muted-foreground">
-            大卖 <span className="font-medium text-green-600">{fmtWan(summary.total_big_sell)}</span>
-          </span>
-          {summary.buy_ratio != null && (
+        <div className="mb-4 space-y-2">
+          {/* 第一排：总口径（≥10万合计，含中小单） */}
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
             <span className="text-muted-foreground">
-              买占比 <span className="font-medium text-foreground">{(summary.buy_ratio * 100).toFixed(1)}%</span>
+              累计净额{" "}
+              <span className={`font-semibold ${pnColor(summary.cum_net)}`}>
+                {summary.cum_net >= 0 ? "+" : ""}
+                {fmtWan(summary.cum_net)}
+              </span>
             </span>
+            <span className="text-muted-foreground">
+              大买 <span className="font-medium text-red-600">{fmtWan(summary.total_big_buy)}</span>
+            </span>
+            <span className="text-muted-foreground">
+              大卖 <span className="font-medium text-green-600">{fmtWan(summary.total_big_sell)}</span>
+            </span>
+            {summary.buy_ratio != null && (
+              <span className="text-muted-foreground">
+                买占比 <span className="font-medium text-foreground">{(summary.buy_ratio * 100).toFixed(1)}%</span>
+              </span>
+            )}
+          </div>
+
+          {/* 第二排：分档净额（超大单突出，一眼看清"大钱还是小钱"） */}
+          {summary.super_net != null && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-muted-foreground mr-1">分档净额</span>
+              <span className={`inline-flex items-center gap-1 rounded-md border-2 px-2 py-0.5 font-semibold ${superBoxColor(summary.super_net)}`}>
+                <span className="text-foreground">超大单</span>
+                <span className={pnColor(summary.super_net)}>{fmtSigned(summary.super_net)}</span>
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5">
+                <span className="text-muted-foreground">大单</span>
+                <span className={pnColor(summary.large_net ?? 0)}>{fmtSigned(summary.large_net)}</span>
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5">
+                <span className="text-muted-foreground">中单</span>
+                <span className={pnColor(summary.mid_net ?? 0)}>{fmtSigned(summary.mid_net)}</span>
+              </span>
+            </div>
+          )}
+
+          {/* 背离横幅：超大单（真机构）与总口径方向相反 */}
+          {diverge && summary.super_net != null && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              ⚠{" "}
+              {summary.super_net < 0
+                ? `大钱在出货、小钱在接盘：超大单净卖 ${fmtWan(Math.abs(summary.super_net))}，但 ≥10万口径净买 ${fmtWan(Math.abs(summary.cum_net))}`
+                : `大钱在进场、小钱在派发：超大单净买 ${fmtWan(Math.abs(summary.super_net))}，但 ≥10万口径净卖 ${fmtWan(Math.abs(summary.cum_net))}`}
+            </div>
           )}
         </div>
       )}
@@ -205,6 +266,7 @@ export function MainCapitalDetailPanel({ stockCode }: { stockCode: string }) {
                   <th className="py-1.5 px-2 font-medium">涨幅</th>
                   <th className="py-1.5 px-2 font-medium">大买(万)</th>
                   <th className="py-1.5 px-2 font-medium">大卖(万)</th>
+                  <th className="py-1.5 px-2 font-medium">超大单净(万)</th>
                   <th className="py-1.5 px-2 font-medium">净额(万)</th>
                   <th className="py-1.5 px-2 font-medium">累计(万)</th>
                 </tr>
@@ -219,6 +281,11 @@ export function MainCapitalDetailPanel({ stockCode }: { stockCode: string }) {
                     </td>
                     <td className="py-1 px-2 text-red-600">{r.big_buy ? r.big_buy.toFixed(0) : "0"}</td>
                     <td className="py-1 px-2 text-green-600">{r.big_sell ? r.big_sell.toFixed(0) : "0"}</td>
+                    <td className={`py-1 px-2 font-medium ${pnColor(r.super_net)}`}>
+                      {r.super_net != null && r.super_net !== 0
+                        ? `${r.super_net > 0 ? "+" : ""}${r.super_net.toFixed(0)}`
+                        : "0"}
+                    </td>
                     <td className={`py-1 px-2 font-medium ${pnColor(r.net)}`}>
                       {r.net > 0 ? "+" : ""}
                       {r.net.toFixed(0)}
