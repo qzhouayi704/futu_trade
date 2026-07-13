@@ -14,6 +14,7 @@ import os
 import sys
 import asyncio
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -253,3 +254,59 @@ class TestGetTargetStocks:
         result = pipeline._get_target_stocks()
 
         assert result == []
+
+
+# ============================================================
+# 主力资金企微提醒语义
+# ============================================================
+
+class TestCapitalTrendWechat:
+
+    @staticmethod
+    def _falling_alert(*, held_outflow: bool):
+        return SimpleNamespace(
+            stock_code="HK.00700",
+            stock_name="腾讯控股",
+            direction="FALLING",
+            strength_tier="强",
+            strength_mult=2.0,
+            cum_main_net=-5_000_000.0,
+            window_main_net=-3_000_000.0,
+            pullback_amount=0.0,
+            intraday_change_pct=-1.2,
+            big_buy_count=1,
+            big_sell_count=3,
+            big_order_threshold=2_000_000.0,
+            last_price=500.0,
+            is_held_outflow=held_outflow,
+            is_large_inflow=False,
+        )
+
+    def test_held_outflow_explicitly_prompts_sell_review(self):
+        pipeline, *_ = _make_pipeline()
+        wechat = MagicMock()
+        wechat.send = AsyncMock(return_value=True)
+
+        _run(pipeline._push_capital_trend_wechat(
+            wechat, self._falling_alert(held_outflow=True)
+        ))
+
+        args, kwargs = wechat.send.call_args
+        assert "持仓大单净流出·卖出提醒" in args[1]
+        assert "卖出提醒" in args[2]
+        assert "不会自动下单" in args[2]
+        assert kwargs["category"] == "持仓主力净流出"
+
+    def test_nonheld_falling_does_not_prompt_sell(self):
+        pipeline, *_ = _make_pipeline()
+        wechat = MagicMock()
+        wechat.send = AsyncMock(return_value=True)
+
+        _run(pipeline._push_capital_trend_wechat(
+            wechat, self._falling_alert(held_outflow=False)
+        ))
+
+        args, kwargs = wechat.send.call_args
+        assert "卖出提醒" not in args[1]
+        assert "卖出提醒" not in args[2]
+        assert kwargs["category"] == "主力资金趋势"

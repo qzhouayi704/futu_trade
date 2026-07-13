@@ -78,6 +78,7 @@ interface CapitalTrendSignal {
   reason: string;
   timestamp: number;            // epoch 秒
   is_strong_push: boolean;
+  is_held_outflow?: boolean;
   is_large_inflow?: boolean;
   is_hot_candidate?: boolean;
   market_breadth?: number;
@@ -310,6 +311,7 @@ export function UnifiedSignalFeed({
     for (const sig of capitalTrendSignals) {
       const rising = sig.direction === "RISING";
       const strong = sig.strength_tier === "强";
+      const sellReminder = !rising && sig.is_held_outflow === true;
       const inflowCandidate = rising && sig.is_large_inflow === true;
       const timeStr = sig.timestamp
         ? new Date(sig.timestamp * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
@@ -321,9 +323,9 @@ export function UnifiedSignalFeed({
         stock_code: sig.stock_code,
         stock_name: sig.stock_name,
         emoji: rising ? "📈" : "📉",
-        label: `${inflowCandidate ? "资金流入候选" : rising ? "主力流入" : "主力回落"}·${sig.strength_tier}`,
+        label: `${sellReminder ? "持仓卖出提醒" : inflowCandidate ? "资金流入候选" : rising ? "主力流入" : "主力回落"}·${sig.strength_tier}`,
         detail: sig.reason,
-        urgency: (inflowCandidate ? 72 : rising ? 88 : 89) + (strong ? 2 : 0),
+        urgency: (sellReminder ? 96 : inflowCandidate ? 72 : rising ? 88 : 89) + (strong ? 2 : 0),
         is_red: !rising,
         ...BUCKET_STYLE[inflowCandidate ? "watch" : rising ? "buy" : "risk"],
         price: sig.last_price,

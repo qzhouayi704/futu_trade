@@ -1179,7 +1179,7 @@ class QuotePipeline:
             if large_inflow:
                 head, emoji = "热门股资金流入候选", "📈"
             elif held_outflow:
-                head, emoji = "持仓主力净流出", "📉"
+                head, emoji = "持仓大单净流出·卖出提醒", "📉"
             else:
                 head = "主力资金上升" if rising else "主力资金回落"
                 emoji = "📈" if rising else "📉"
@@ -1203,12 +1203,20 @@ class QuotePipeline:
                 flow_line = f"- 主力净流出：**{-alert.cum_main_net / 1e4:.0f}万**（疑似拉高出货）　第 **{alert.big_sell_count}** 次大单流出"
             else:
                 flow_line = f"- 自峰值回落：**{alert.pullback_amount / 1e4:.0f}万**　第 **{alert.big_sell_count}** 次大单流出"
+            if large_inflow:
+                action_line = "- ℹ️ 这是热门股资金流观察候选，不是自动买入指令；请结合价格位置和止损判断"
+            elif held_outflow:
+                action_line = "- ⚠️ 卖出提醒：持仓出现大单净流出，请立即检查卖出/减仓条件；本提醒不会自动下单"
+            elif rising:
+                action_line = "- ℹ️ 资金流上升仅供观察，不是自动买入指令"
+            else:
+                action_line = "- ⚠️ 资金回落风险提醒，请结合持仓、价格位置和止损条件判断"
             content = (
                 f"- 股票：**{alert.stock_name}** ({alert.stock_code})\n"
                 f"- 现价：**{alert.last_price:.3f}**　日内：**{alert.intraday_change_pct:+.2f}%**\n"
                 f"{flow_line}\n"
                 f"- 力度：**{alert.strength_mult:.1f}×**（{alert.strength_tier}）　大单门槛≈{alert.big_order_threshold / 1e4:.0f}万\n"
-                f"- ℹ️ 这是热门股资金流观察候选，不是自动买入指令；请结合价格位置和止损判断"
+                f"{action_line}"
             )
             # 持仓主力净流出=独立类别 + must-see 优先级(≥90)：不被每日上限折叠，"每笔即推"落地；
             # 大额主力资金流入=独立类别 + INFO：经治理器预算/每股上限/折叠摘要限流，

@@ -182,7 +182,7 @@ def test_held_immediate_outflow_fires_on_pure_downtrend():
     al = a.evaluate(s, 99, 100, TIERS, is_held=True, stock_name="讯策")
     assert al is not None and al.direction == "FALLING"
     assert al.is_held_outflow is True and al.is_strong_push is True
-    assert "持仓主力净流出" in al.reason and "第1次大单流出" in al.reason
+    assert "持仓大单净流出·卖出提醒" in al.reason and "第1次大单流出" in al.reason
 
 
 # ---------- 13. 持仓净流出：小额净流出（< 大单门槛）不推 ----------

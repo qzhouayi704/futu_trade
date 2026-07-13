@@ -33,6 +33,7 @@ interface CapitalTrendSignal {
   window_big_buy?: number;
   window_big_sell?: number;
   window_buy_ratio?: number;
+  is_held_outflow?: boolean;
   is_large_inflow?: boolean;
   is_hot_candidate?: boolean;
   market_breadth?: number;
@@ -305,7 +306,7 @@ export default function CapitalSignalsPage() {
                         <span className={`font-bold text-xs ${text} truncate`}>{sig.stock_name}</span>
                         <span className="text-[10px] text-muted-foreground shrink-0">{sig.stock_code}</span>
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold shrink-0 ${badge}`}>
-                          {sig.is_large_inflow ? "资金流入候选" : rising ? "主力流入" : "主力回落"}·{sig.strength_tier}
+                          {sig.is_held_outflow ? "持仓卖出提醒" : sig.is_large_inflow ? "资金流入候选" : rising ? "主力流入" : "主力回落"}·{sig.strength_tier}
                         </span>
                         {isHeld && (
                           <span className="text-[9px] px-1 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 font-bold shrink-0">

@@ -266,7 +266,7 @@ class CapitalTrendDetector:
             st.last_held_sell_ts = now
             st.last_held_sell_count = big_sell_count
             extra = f"（本轮新增{new_sells}笔）" if new_sells > 1 else ""
-            reason = ("持仓主力净流出｜窗口净流出%.0f万 力度%.1f× 日内%+.2f%% 第%d次大单流出%s"
+            reason = ("持仓大单净流出·卖出提醒｜窗口净流出%.0f万 力度%.1f× 日内%+.2f%% 第%d次大单流出%s"
                       % (abs(window_net) / 1e4, mult, chg, big_sell_count, extra))
             return CapitalTrendAlert(
                 stock_code=code, stock_name=name, trade_date=day, timestamp=now,
