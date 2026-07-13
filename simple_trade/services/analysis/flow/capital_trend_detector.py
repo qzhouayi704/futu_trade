@@ -63,12 +63,22 @@ class CapitalTrendConfig:
     held_cooldown_sec: int = 60      # 每股推送最小间隔秒（1 分钟一次；期间新增大单攒进一条）
     held_min_outflow: float = 1.0    # 窗口净流出需 ≥ 此倍数×该股大单门槛才推（滤掉小额净流出）
     max_held_sell_per_day: int = 20  # 每股每日持仓提醒硬上限
-    # 大额主力资金流入提醒（用户口径：监控池全部=含未持仓找买入机会、窗口净流入≥N个大单门槛、
-    # 1 分钟一次）。不设 must-see——经治理器 INFO 预算/每股上限/折叠摘要限流，防全市场刷屏 45009。
+    # 大额主力资金流入候选（由调用方先做热门度和市场宽度过滤，1 分钟一次）。
+    # 不设 must-see——经治理器 INFO 预算/每股上限/折叠摘要限流，防全市场刷屏 45009。
+    #
+    # 【2026-07-13 收紧】原口径"窗口净流入≥1个大单门槛 + 有新大单买入"过松：只看净额、不看
+    # 卖方在不在抛，也不看力度——生产当日 123 条流入提醒里大量是"大单买 55 笔 / 卖 58 笔"
+    # 这种多空对砸、净额碰巧为正的噪音。用户口径：要的是**买方压倒性**那种（截图样本：
+    # 大买 1334 万 / 大卖 135 万、净 +1200 万），而非"一有流入就报"。故加三道闸：
+    #   ① 卖方强度：窗口大买额 ≥ inflow_min_buy_ratio × 窗口大卖额（对砸行情直接出局）
+    #   ② 绝对资金量：窗口净流入 ≥ inflow_min_inflow × 该股大单门槛（默认 1→3 倍）
+    #   ③ 力度：strength_mult ≥ inflow_min_mult（≥中档，原分支完全没接力度闸）
     inflow_immediate: bool = True
-    inflow_cooldown_sec: int = 60    # 每股推送最小间隔秒（1 分钟一次）
-    inflow_min_inflow: float = 1.0   # 窗口净流入需 ≥ 此倍数×该股大单门槛才推
-    max_inflow_per_day: int = 20     # 每股每日大额流入提醒硬上限
+    inflow_cooldown_sec: int = 60      # 每股推送最小间隔秒（1 分钟一次）
+    inflow_min_inflow: float = 3.0     # 窗口净流入需 ≥ 此倍数×该股大单门槛才推
+    inflow_min_buy_ratio: float = 3.0  # 窗口大买额 ≥ 此倍数×窗口大卖额（买占比 ≥75%）才推
+    inflow_min_mult: float = 1.0       # 力度倍数下限（≥中档）
+    max_inflow_per_day: int = 8        # 每股每日大额流入提醒硬上限
 
     @classmethod
     def from_env(cls) -> "CapitalTrendConfig":
@@ -88,6 +98,8 @@ class CapitalTrendConfig:
         cfg.inflow_immediate = env_flag("CAPITAL_TREND_INFLOW_IMMEDIATE", True)
         cfg.inflow_cooldown_sec = _env_int("CAPITAL_TREND_INFLOW_COOLDOWN_SEC", cfg.inflow_cooldown_sec)
         cfg.inflow_min_inflow = _env_float("CAPITAL_TREND_INFLOW_MIN", cfg.inflow_min_inflow)
+        cfg.inflow_min_buy_ratio = _env_float("CAPITAL_TREND_INFLOW_BUY_RATIO", cfg.inflow_min_buy_ratio)
+        cfg.inflow_min_mult = _env_float("CAPITAL_TREND_INFLOW_MIN_MULT", cfg.inflow_min_mult)
         cfg.max_inflow_per_day = _env_int("CAPITAL_TREND_MAX_INFLOW", cfg.max_inflow_per_day)
         return cfg
 
@@ -112,7 +124,15 @@ class CapitalTrendAlert:
     reason: str
     is_strong_push: bool         # 是否路由企微（强信号/回落）
     is_held_outflow: bool = False  # 持仓专用·主力净流出即时提醒（每笔大单卖出即报）→ 独立类别/优先级
-    is_large_inflow: bool = False  # 大额主力资金流入提醒（监控池全部·找机会）→ 独立类别/INFO 走预算
+    is_large_inflow: bool = False  # 热门股大额主力资金流入候选 → 独立类别/INFO 走预算
+    window_big_buy: float = 0.0    # 窗口内大单买入额（元）——买方强度
+    window_big_sell: float = 0.0   # 窗口内大单卖出额（元）——卖方强度
+    window_buy_ratio: float = 0.0  # 窗口买占比 = 大买 / (大买+大卖)
+    is_hot_candidate: bool = False  # 是否通过热门度+市场宽度门控
+    market_breadth: float = 0.0     # 同市场上涨股占比
+    market_universe_size: int = 0   # 宽度统计使用的报价数
+    turnover_rank_percentile: float = 0.0  # 成交额横截面排名分位，越接近1越热门
+    inflow_gate_reason: str = ""    # 门控判定说明
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -169,6 +189,7 @@ class CapitalTrendDetector:
         stock_name: Optional[str] = None,
         now: Optional[float] = None,
         is_held: bool = False,
+        inflow_context: Optional[dict] = None,
     ) -> Optional[CapitalTrendAlert]:
         """对一只股票的当前快照判断是否产出一条趋势提醒；不产出返回 None。
 
@@ -196,11 +217,34 @@ class CapitalTrendDetector:
         window_net = float(snapshot.get("window_main_net") or 0.0)
         big_buy_count = int(snapshot.get("big_buy_count") or 0)
         big_sell_count = int(snapshot.get("big_sell_count") or 0)
+        # 窗口内买卖强度分解（累加器 snapshot 提供）。老快照/持久化回填可能没有这两个字段 →
+        # 视为"卖方强度未知"，此时买卖比闸放行（量闸/力度闸仍在），不静默拦截。
+        has_bs = ("window_big_buy" in snapshot) or ("window_big_sell" in snapshot)
+        win_buy = float(snapshot.get("window_big_buy") or 0.0)
+        win_sell = float(snapshot.get("window_big_sell") or 0.0)
+        win_ratio = win_buy / (win_buy + win_sell) if (win_buy + win_sell) > 0 else 0.0
+
+        def _buy_side_dominant() -> bool:
+            """卖方在不在抛：窗口大买额须压倒大卖额（无卖方=直接通过）。"""
+            if not has_bs:
+                return True
+            if win_sell <= 0:
+                return win_buy > 0
+            return win_buy >= self.cfg.inflow_min_buy_ratio * win_sell
+
         chg = 0.0
         if last_price and prev_close and prev_close > 0:
             chg = (float(last_price) - float(prev_close)) / float(prev_close) * 100.0
         name = stock_name or code
         lp = float(last_price or 0.0)
+        inflow_allowed = (bool(inflow_context.get("eligible"))
+                          if inflow_context is not None else True)
+        is_hot_candidate = (bool(inflow_context.get("is_hot"))
+                            if inflow_context is not None else False)
+        market_breadth = float((inflow_context or {}).get("market_breadth") or 0.0)
+        market_universe_size = int((inflow_context or {}).get("market_universe_size") or 0)
+        turnover_rank = float((inflow_context or {}).get("turnover_rank_percentile") or 0.0)
+        gate_reason = str((inflow_context or {}).get("reason") or "")
 
         # ── 持仓专用·主力净流出提醒（用户口径：1 分钟推一次、仅大单级别净流出才推、小额不推）──
         #   条件：持仓 + 窗口净流出 ≥ 一个大单门槛（滤小额）+ 有新的大单卖出（big_sell_count 前进）。
@@ -232,35 +276,55 @@ class CapitalTrendDetector:
                 big_buy_count=big_buy_count, big_sell_count=big_sell_count,
                 big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
                 is_strong_push=True, is_held_outflow=True,
+                window_big_buy=round(win_buy, 2), window_big_sell=round(win_sell, 2),
+                window_buy_ratio=round(win_ratio, 4),
             )
 
-        # ── 大额主力资金流入提醒（用户口径：监控池全部、窗口净流入 ≥ N 个大单门槛、1 分钟一次）──
-        #   发现主力大额进场（含未持仓=买入机会）。独立类别、INFO 级——经治理器预算/每股上限/折叠
-        #   摘要限流（不设 must-see，防强势行情几十只同时触发刷屏 45009）。不看涨跌、不要求先建峰。
-        if (self.cfg.inflow_immediate and window_net > 0
-                and window_net >= self.cfg.inflow_min_inflow * thr_eff
+        # ── 大额主力资金流入候选（热门度和市场宽度门控后，1 分钟一次）──
+        #   发现主力**压倒性**进场。独立类别、INFO 级——经治理器预算/每股上限/折叠摘要限流
+        #   （不设 must-see，防强势行情几十只同时触发刷屏 45009）。不看涨跌、不要求先建峰。
+        #   三道闸(见 CapitalTrendConfig 注释)：卖方强度 + 绝对资金量 + 力度。
+        inflow_scale_eff = scale if scale > 0 else thr_eff
+        inflow_mult = window_net / inflow_scale_eff if inflow_scale_eff > 0 else 0.0
+        if (self.cfg.inflow_immediate and inflow_allowed and window_net > 0
+                and window_net >= self.cfg.inflow_min_inflow * thr_eff      # ② 绝对资金量
+                and _buy_side_dominant()                                    # ① 卖方强度
+                and inflow_mult >= self.cfg.inflow_min_mult                 # ③ 力度
                 and big_buy_count > st.last_inflow_buy_count
                 and st.inflow_alerts < self.cfg.max_inflow_per_day
                 and (st.last_inflow_ts is None
                      or now - st.last_inflow_ts >= self.cfg.inflow_cooldown_sec)):
             new_buys = big_buy_count - st.last_inflow_buy_count
-            scale_eff = scale if scale > 0 else thr_eff
-            mult = window_net / scale_eff if scale_eff > 0 else 0.0
-            tier_lbl = _TIER_LABEL[self._tier(mult)]
+            tier_lbl = _TIER_LABEL[self._tier(inflow_mult)]
             st.inflow_alerts += 1
             st.last_inflow_ts = now
             st.last_inflow_buy_count = big_buy_count
             extra = f"（本轮新增{new_buys}笔）" if new_buys > 1 else ""
-            reason = ("大额主力资金流入｜窗口净流入+%.0f万 力度%.1f× 日内%+.2f%% 第%d次大单买入%s"
-                      % (window_net / 1e4, mult, chg, big_buy_count, extra))
+            # 文案摊开买卖强度：让人一眼看出"买方压倒"而不是"多空对砸净额偏正"
+            bs_txt = ("(大买%.0f万/大卖%.0f万 买占比%.0f%%) " % (win_buy / 1e4, win_sell / 1e4, win_ratio * 100)
+                      if has_bs else "")
+            hot_txt = ("市场宽度%.0f%% 成交额前%.0f%% "
+                       % (market_breadth * 100, max(0.0, (1.0 - turnover_rank) * 100))
+                       if inflow_context is not None else "")
+            reason = ("热门股大额主力资金流入候选｜窗口净流入+%.0f万 %s%s力度%.1f× 日内%+.2f%% "
+                      "第%d次大单买入%s"
+                      % (window_net / 1e4, bs_txt, hot_txt, inflow_mult, chg,
+                         big_buy_count, extra))
             return CapitalTrendAlert(
                 stock_code=code, stock_name=name, trade_date=day, timestamp=now,
-                direction="RISING", strength_tier=tier_lbl, strength_mult=round(mult, 2),
+                direction="RISING", strength_tier=tier_lbl, strength_mult=round(inflow_mult, 2),
                 cum_main_net=round(cum, 2), window_main_net=round(window_net, 2),
                 pullback_amount=0.0, intraday_change_pct=round(chg, 2),
                 big_buy_count=big_buy_count, big_sell_count=big_sell_count,
                 big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
                 is_strong_push=False, is_large_inflow=True,
+                window_big_buy=round(win_buy, 2), window_big_sell=round(win_sell, 2),
+                window_buy_ratio=round(win_ratio, 4),
+                is_hot_candidate=is_hot_candidate,
+                market_breadth=round(market_breadth, 4),
+                market_universe_size=market_universe_size,
+                turnover_rank_percentile=round(turnover_rank, 4),
+                inflow_gate_reason=gate_reason,
             )
 
         if scale <= 0:
@@ -298,12 +362,16 @@ class CapitalTrendDetector:
                     big_buy_count=big_buy_count, big_sell_count=big_sell_count,
                     big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
                     is_strong_push=True,   # 回落/出货一律推企微（止盈/离场判断更要紧）
+                    window_big_buy=round(win_buy, 2), window_big_sell=round(win_sell, 2),
+                    window_buy_ratio=round(win_ratio, 4),
                 )
             return None
 
         # ── 上升（早盘建仓拉升）──
+        #   同样过"卖方强度"闸：多空对砸(买500万/卖400万)只是净额偏正，不是主力在扫货。
         at_new_high = cum > 0 and cum >= peak - 1.0    # 创当日累计净流入新高（容 1 元浮点）
-        if at_new_high and window_net > 0 and tier >= 1:
+        if (inflow_allowed and at_new_high and window_net > 0
+                and tier >= 1 and _buy_side_dominant()):
             if (st.rising_count < self.cfg.max_rising_per_day
                     and self._rising_rearm(st, now, tier, big_buy_count)):
                 st.rising_count += 1
@@ -321,6 +389,8 @@ class CapitalTrendDetector:
                     big_buy_count=big_buy_count, big_sell_count=big_sell_count,
                     big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
                     is_strong_push=(tier >= 2),   # 仅强档上升推企微
+                    window_big_buy=round(win_buy, 2), window_big_sell=round(win_sell, 2),
+                    window_buy_ratio=round(win_ratio, 4),
                 )
         return None
 

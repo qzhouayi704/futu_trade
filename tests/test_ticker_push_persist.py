@@ -69,6 +69,15 @@ class TestTickerPushPersist(unittest.TestCase):
         finally:
             conn.close()
 
+    def _trade_dates(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            return conn.execute(
+                'SELECT DISTINCT trade_date FROM ticker_data ORDER BY trade_date'
+            ).fetchall()
+        finally:
+            conn.close()
+
     def test_sdk_thread_only_buffers_no_sync_write(self):
         """推送线程入口只进缓冲，不同步写库"""
         self.handler._persist_to_db('HK.00001', _make_df(5))
@@ -81,6 +90,12 @@ class TestTickerPushPersist(unittest.TestCase):
         self.handler._flush_db_buffer()
         self.assertEqual(self._count_rows(), 5)
         self.assertEqual(len(self.handler._db_buffer), 0)
+
+    def test_trade_date_comes_from_futu_trade_time(self):
+        """缓存回放在今天收到，也必须归到真实成交日。"""
+        self.handler._persist_to_db('HK.00001', _make_df(2))
+        self.handler._flush_db_buffer()
+        self.assertEqual(self._trade_dates(), [('2026-07-03',)])
 
     def test_reflush_is_idempotent(self):
         """同批数据重复 flush 不产生重复行（唯一键 + INSERT OR IGNORE）"""

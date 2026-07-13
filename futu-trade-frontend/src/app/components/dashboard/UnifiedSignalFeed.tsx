@@ -78,6 +78,11 @@ interface CapitalTrendSignal {
   reason: string;
   timestamp: number;            // epoch 秒
   is_strong_push: boolean;
+  is_large_inflow?: boolean;
+  is_hot_candidate?: boolean;
+  market_breadth?: number;
+  market_universe_size?: number;
+  turnover_rank_percentile?: number;
 }
 
 // 统一信号项
@@ -301,10 +306,11 @@ export function UnifiedSignalFeed({
     const items: UnifiedSignal[] = [];
 
     // 0. 主力资金趋势（置于 V1 之前：urgency 88-92 高于 V1 mega 80-85）
-    //    上升=买入语义(绿)，回落=风险语义(红)；detail 已含 累计流入/力度/涨幅/第几次大单。
+    //    大额流入候选=观察语义(灰)，普通上升=机会语义(绿)，回落=风险语义(红)。
     for (const sig of capitalTrendSignals) {
       const rising = sig.direction === "RISING";
       const strong = sig.strength_tier === "强";
+      const inflowCandidate = rising && sig.is_large_inflow === true;
       const timeStr = sig.timestamp
         ? new Date(sig.timestamp * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
         : new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
@@ -315,11 +321,11 @@ export function UnifiedSignalFeed({
         stock_code: sig.stock_code,
         stock_name: sig.stock_name,
         emoji: rising ? "📈" : "📉",
-        label: `${rising ? "主力流入" : "主力回落"}·${sig.strength_tier}`,
+        label: `${inflowCandidate ? "资金流入候选" : rising ? "主力流入" : "主力回落"}·${sig.strength_tier}`,
         detail: sig.reason,
-        urgency: (rising ? 88 : 89) + (strong ? 2 : 0),
+        urgency: (inflowCandidate ? 72 : rising ? 88 : 89) + (strong ? 2 : 0),
         is_red: !rising,
-        ...BUCKET_STYLE[rising ? "buy" : "risk"],
+        ...BUCKET_STYLE[inflowCandidate ? "watch" : rising ? "buy" : "risk"],
         price: sig.last_price,
         pricePct: sig.intraday_change_pct,
       });
@@ -505,6 +511,14 @@ export function UnifiedSignalFeed({
     return { total: unifiedSignals.length, danger, opportunity, posRelated };
   }, [unifiedSignals, positionSet]);
 
+  // 底部"查看全部"目的地：跟随当前信号源，避免主力资金/V2/动量都跳到狙击中心。
+  // V2(量价预警) 与动量引擎目前没有全量页，宁可不给链接也不误导。
+  const moreLink = useMemo((): { href: string; label: string } | null => {
+    if (sourceFilter === "capital_trend") return { href: "/capital-signals", label: "查看全部主力资金信号" };
+    if (sourceFilter === "v2" || sourceFilter === "momentum" || sourceFilter === "decision") return null;
+    return { href: "/sniper-signals", label: "查看全部信号" };
+  }, [sourceFilter]);
+
   // ── 渲染 ──────────────────────────────────
 
   return (
@@ -677,21 +691,23 @@ export function UnifiedSignalFeed({
           </div>
         )}
 
-        {/* 底部：查看全部 */}
+        {/* 底部：查看全部（按当前信号源跳对应的全量页；V2/动量暂无全量页则不给链接） */}
         {unifiedSignals.length > 0 && (
           <div className="flex items-center justify-between mt-3 pt-2 border-t border-border">
             <span className="text-[10px] text-muted-foreground">
               共 {stats.total} 条信号
             </span>
-            <Link
-              href="/sniper-signals"
-              className="text-xs font-medium text-primary hover:text-primary/80 hover:bg-primary/5 px-2 py-1 rounded transition-colors flex items-center gap-1"
-            >
-              查看全部信号
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </Link>
+            {moreLink && (
+              <Link
+                href={moreLink.href}
+                className="text-xs font-medium text-primary hover:text-primary/80 hover:bg-primary/5 px-2 py-1 rounded transition-colors flex items-center gap-1"
+              >
+                {moreLink.label}
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </Link>
+            )}
           </div>
         )}
       </div>

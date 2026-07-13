@@ -177,6 +177,19 @@ def test_business_key_dedup_blocks_replay():
     assert a.snapshot("HK.00700")["cum_main_net"] == 1_000_000
 
 
+def test_prior_day_cache_replay_is_ignored():
+    """服务重启收到前一交易日 CACHE 时，不得污染今日资金累计。"""
+    clock, day = FakeClock(), FakeDay("2026-07-13")
+    a = _acc(clock, day)
+    a.on_tick("HK.00700", 500_000, "BUY",
+              trade_time="2026-07-10 15:59:59.000", price=10.0, volume=50_000)
+    assert a.snapshot("HK.00700") is None
+
+    a.on_tick("HK.00700", 300_000, "BUY",
+              trade_time="2026-07-13 09:30:01.000", price=10.0, volume=30_000)
+    assert a.snapshot("HK.00700")["cum_main_net"] == 300_000
+
+
 def test_no_trade_time_no_dedup():
     """缺 trade_time/price/volume 时退化为不去重(正常推送均带，缺失不误杀)。"""
     clock, day = FakeClock(), FakeDay()
@@ -252,6 +265,35 @@ def test_seed_noop_when_disabled_or_empty():
     a.seed(None)
     a.seed({})
     assert a.snapshot_all() == {}
+
+
+# ---------- 窗口买卖强度分解：净额相同，买方压倒 vs 多空对砸要能区分开 ----------
+def test_window_buy_sell_split():
+    clock, day = FakeClock(), FakeDay()
+    a = _acc(clock, day)
+    # 买方压倒：大买 1000万 / 大卖 100万 → 净 +900万、买占比 ~0.91
+    a.on_tick("HK.A", 10_000_000, "BUY")
+    a.on_tick("HK.A", 1_000_000, "SELL")
+    # 多空对砸：大买 1000万 / 大卖 900万 → 净额同为正但只有 +100万、买占比 ~0.53
+    a.on_tick("HK.B", 10_000_000, "BUY")
+    a.on_tick("HK.B", 9_000_000, "SELL")
+
+    sa = a.snapshot("HK.A")
+    assert sa["window_big_buy"] == 10_000_000 and sa["window_big_sell"] == 1_000_000
+    assert sa["window_main_net"] == 9_000_000            # 与买卖分解自洽
+    assert abs(sa["window_buy_ratio"] - 0.9091) < 1e-3
+
+    sb = a.snapshot("HK.B")
+    assert sb["window_big_buy"] == 10_000_000 and sb["window_big_sell"] == 9_000_000
+    assert sb["window_main_net"] == 1_000_000
+    assert abs(sb["window_buy_ratio"] - 0.5263) < 1e-3
+
+    # 滚出窗口后买卖额一并归零（不残留）
+    clock.advance(901)
+    sa2 = a.snapshot("HK.A")
+    assert sa2["window_big_buy"] == 0 and sa2["window_big_sell"] == 0
+    assert sa2["window_main_net"] == 0
+    assert sa2["cum_main_net"] == 9_000_000              # 当日累计不受窗口裁剪影响
 
 
 if __name__ == "__main__":

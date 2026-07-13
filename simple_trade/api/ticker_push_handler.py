@@ -12,6 +12,12 @@ import threading
 import time
 from typing import Optional
 
+from ..utils.trade_time import (
+    futu_trade_date,
+    futu_trade_timestamp,
+    normalize_futu_trade_time,
+)
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -127,13 +133,22 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             if not engine:
                 return
 
+            from ..utils.market_helper import MarketTimeHelper
+            market = MarketTimeHelper.get_market_from_code(stock_code)
+            market_day = MarketTimeHelper.get_market_today(market)
+
             for _, row in df.iterrows():
+                trade_time = normalize_futu_trade_time(row.get('time'))
+                trade_day = futu_trade_date(trade_time)
+                if trade_day is not None and trade_day != market_day:
+                    continue
+                trade_ts = futu_trade_timestamp(trade_time, market)
                 ticker_data = {
                     'price': row.get('price', 0),
                     'volume': row.get('volume', 0),
                     'turnover': row.get('turnover', 0),
                     'ticker_direction': row.get('ticker_direction', 'NEUTRAL'),
-                    'timestamp': int(time.time() * 1000),
+                    'timestamp': int((trade_ts or time.time()) * 1000),
                 }
                 if ticker_data['price'] and ticker_data['volume']:
                     engine.on_ticker(stock_code, ticker_data)
@@ -155,7 +170,12 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             market = MarketTimeHelper.get_market_from_code(stock_code)
             if not MarketTimeHelper.is_market_trading(market):
                 return
+            market_day = MarketTimeHelper.get_market_today(market)
             for _, row in df.iterrows():
+                trade_time = normalize_futu_trade_time(row.get('time'))
+                trade_day = futu_trade_date(trade_time)
+                if trade_day is not None and trade_day != market_day:
+                    continue
                 price = float(row.get('price', 0) or 0)
                 volume = int(row.get('volume', 0) or 0)
                 if price <= 0 or volume <= 0:
@@ -164,7 +184,8 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                 # 传业务键字段去重：同一笔成交(成交时间,价,量,向)只计一次，挡补发/回放
                 acc.on_tick(stock_code, turnover,
                             row.get('ticker_direction', 'NEUTRAL'),
-                            trade_time=row.get('time'), price=price, volume=volume)
+                            now=futu_trade_timestamp(trade_time, market),
+                            trade_time=trade_time, price=price, volume=volume)
         except Exception as e:
             logger.debug(f"[TickerPush] 喂逐笔资金累加器失败: {e}")
 
@@ -177,9 +198,10 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
         if not self._container:
             return
         try:
-            from datetime import datetime as _dt
+            from ..utils.market_helper import MarketTimeHelper
 
-            today_str = _dt.now().strftime('%Y-%m-%d')
+            market = MarketTimeHelper.get_market_from_code(stock_code)
+            fallback_day = MarketTimeHelper.get_market_today(market)
             rows = []
             for _, row in df.iterrows():
                 price = float(row.get('price', 0) or 0)
@@ -209,10 +231,11 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                 except (TypeError, ValueError):
                     seq = 0
                 sequence = seq if seq > 0 else None
-                trade_time = row.get('time') or None
+                trade_time = normalize_futu_trade_time(row.get('time'))
+                trade_date = futu_trade_date(trade_time) or fallback_day
 
                 rows.append((stock_code, price, volume, turnover, direction,
-                             ts_ms, today_str, sequence, trade_time))
+                             ts_ms, trade_date, sequence, trade_time))
 
             if rows:
                 self._enqueue_rows(rows)

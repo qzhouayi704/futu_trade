@@ -104,6 +104,8 @@ class QuotePipeline:
         self._loop_count = 0
         self.signal_tracker = None
         self._signal_arbitrator = SignalArbitrator()
+        from ...services.analysis.flow.inflow_market_gate import InflowMarketGate
+        self._capital_inflow_market_gate = InflowMarketGate()
         self.legacy_strategy_detection_enabled = self._legacy_strategy_detection_enabled(container)
         self._legacy_strategy_skipped_logged = False
         # 异步任务引用（防止 GC 回收和异常丢失）
@@ -1100,6 +1102,7 @@ class QuotePipeline:
             trading = self._filter_trading_quotes(quotes)
             if not trading:
                 return
+            inflow_contexts = self._capital_inflow_market_gate.evaluate(trading)
             bs = getattr(self.container, 'baseline_service', None)
             held = positions or {}
             held_set = set(held.keys())
@@ -1121,14 +1124,20 @@ class QuotePipeline:
                 tiers = bs.get_capital_tiers(code) if bs else (0.0, 0.0, 0.0)
                 name = ((held.get(code) or {}).get('stock_name')
                         or q.get('name') or q.get('stock_name') or code)
+                inflow_context = inflow_contexts.get(code) or {
+                    'eligible': False,
+                    'is_hot': False,
+                    'reason': '缺少有效报价，未通过热门度/市场宽度门控',
+                }
                 alert = det.evaluate(snap, last_price, prev_close, tiers,
-                                     stock_name=name, is_held=code in held_set)
+                                     stock_name=name, is_held=code in held_set,
+                                     inflow_context=inflow_context)
                 if not alert:
                     continue
                 await self.socket_manager.emit_to_all('capital_trend_alert', alert.to_dict())
                 emitted.append(alert.to_dict())
                 should_push = ((alert.direction == "FALLING" and code in held_set)
-                               or getattr(alert, 'is_large_inflow', False)   # 大额流入·全池·经治理器限流
+                               or getattr(alert, 'is_large_inflow', False)   # 热门股流入候选，经治理器限流
                                or (push_all and alert.is_strong_push))
                 if should_push and wechat and getattr(wechat, 'enabled', False):
                     task = asyncio.create_task(self._push_capital_trend_wechat(wechat, alert))
@@ -1168,17 +1177,23 @@ class QuotePipeline:
             large_inflow = getattr(alert, 'is_large_inflow', False)
             rising = alert.direction == "RISING"
             if large_inflow:
-                head, emoji = "大额主力资金流入", "📈"
+                head, emoji = "热门股资金流入候选", "📈"
             elif held_outflow:
                 head, emoji = "持仓主力净流出", "📉"
             else:
                 head = "主力资金上升" if rising else "主力资金回落"
                 emoji = "📈" if rising else "📉"
-            # 大额流入=INFO(经治理器预算/折叠,防全池刷屏)；持仓流出/趋势=WARNING
+            # 热门股流入候选=INFO（经治理器预算/折叠）；持仓流出/趋势=WARNING
             level = AlertLevel.INFO if large_inflow else AlertLevel.WARNING
             if large_inflow:
                 flow_line = (f"- 窗口净流入：**+{alert.window_main_net / 1e4:.0f}万**　"
-                             f"第 **{alert.big_buy_count}** 次大单买入")
+                             f"第 **{alert.big_buy_count}** 次大单买入\n"
+                             f"- 买卖强度：大买 **{alert.window_big_buy / 1e4:.0f}万** / "
+                             f"大卖 **{alert.window_big_sell / 1e4:.0f}万**　"
+                             f"买占比 **{alert.window_buy_ratio:.0%}**\n"
+                             f"- 热门过滤：市场宽度 **{alert.market_breadth:.0%}**"
+                             f"（{alert.market_universe_size}只）　成交额前 "
+                             f"**{max(0.0, (1.0 - alert.turnover_rank_percentile) * 100):.0f}%**")
             elif held_outflow:
                 flow_line = (f"- 窗口净流出：**{-alert.window_main_net / 1e4:.0f}万**　"
                              f"第 **{alert.big_sell_count}** 次大单流出")
@@ -1193,10 +1208,10 @@ class QuotePipeline:
                 f"- 现价：**{alert.last_price:.3f}**　日内：**{alert.intraday_change_pct:+.2f}%**\n"
                 f"{flow_line}\n"
                 f"- 力度：**{alert.strength_mult:.1f}×**（{alert.strength_tier}）　大单门槛≈{alert.big_order_threshold / 1e4:.0f}万\n"
-                f"- ℹ️ 仅供判断参考（你自己决定是否操作）"
+                f"- ℹ️ 这是热门股资金流观察候选，不是自动买入指令；请结合价格位置和止损判断"
             )
             # 持仓主力净流出=独立类别 + must-see 优先级(≥90)：不被每日上限折叠，"每笔即推"落地；
-            # 大额主力资金流入=独立类别 + INFO：经治理器预算/每股上限/折叠摘要限流（全池防刷屏），
+            # 大额主力资金流入=独立类别 + INFO：经治理器预算/每股上限/折叠摘要限流，
             #   故绝不设 severity=high（否则会被提到预算豁免线而绕过限流）。
             # 三类都能被 WECHAT_SOLO_CATEGORIES 白名单单独放行。
             if large_inflow:

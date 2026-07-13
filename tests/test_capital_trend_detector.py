@@ -40,11 +40,17 @@ TIERS = (2_000_000.0, 6_000_000.0, 1_000_000.0)   # (大单门槛, 超大单, �
 
 
 def _snap(cum=0.0, peak=None, window=0.0, bbc=0, bsc=0,
-          code="HK.00100", day="2026-06-24"):
+          code="HK.00100", day="2026-06-24", wbuy=None, wsell=None):
+    """wbuy/wsell = 窗口内大单买/卖额。缺省=按净额推成"单边"(买方压倒/卖方压倒)，
+    使既有用例只考察量与力度；卖方强度闸另由 wbuy/wsell 显式用例覆盖。"""
+    if wbuy is None and wsell is None:
+        wbuy = window if window > 0 else 0.0
+        wsell = -window if window < 0 else 0.0
     return {
         "stock_code": code, "trade_date": day,
         "cum_main_net": cum, "cum_peak": peak if peak is not None else cum,
         "window_main_net": window, "big_buy_count": bbc, "big_sell_count": bsc,
+        "window_big_buy": wbuy or 0.0, "window_big_sell": wsell or 0.0,
     }
 
 
@@ -63,14 +69,13 @@ def test_rising_fires():
     assert al.is_strong_push is False        # 中档不推企微
 
 
-# ---------- 2. 上升力度分档：窗口净流入≥大单门槛 → 大额流入分支接管（优先于旧强档上升）----------
-def test_rising_large_inflow_supersedes():
+# ---------- 2. 净流入仅 1.25 倍门槛：够不上"大额流入"(需≥3倍)，退回普通上升 ----------
+def test_moderate_inflow_is_not_large_inflow():
     a = _det(FakeClock())
-    s = _snap(cum=5_000_000, peak=5_000_000, window=2_500_000, bbc=1)  # 窗口净流入 2.5M ≥ 门槛 2M
+    s = _snap(cum=5_000_000, peak=5_000_000, window=2_500_000, bbc=1)  # 2.5M = 1.25×门槛 2M
     al = a.evaluate(s, 105, 100, TIERS)
-    assert al is not None and al.is_large_inflow is True
-    assert al.is_strong_push is False        # 大额流入走 INFO 预算，非 is_strong_push
-    assert al.strength_tier == "强"           # 力度仍标注（mult 2.5）
+    assert al is not None and al.is_large_inflow is False   # 量不够 → 不报大额流入
+    assert al.direction == "RISING" and al.strength_tier == "强"
 
 
 # ---------- 3. 弱档/未创新高 不触发 ----------
@@ -234,14 +239,66 @@ def test_held_immediate_disabled_falls_back():
                       99, 100, TIERS, is_held=True) is None
 
 
-# ---------- 19. 大额主力资金流入：全池（含未持仓）净流入≥门槛即报 ----------
-def test_large_inflow_fires_pool_wide():
+# ---------- 19. 大额主力资金流入：买方压倒 + 量够大 → 报（用户截图样本：大买1334万/大卖135万）----------
+def test_large_inflow_fires_when_buy_side_dominant():
     a = _det(FakeClock())
-    # 窗口净流入 +2.5M ≥ 大单门槛 2M；未持仓也报（全池找机会）
-    al = a.evaluate(_snap(cum=2.5e6, peak=2.5e6, window=2_500_000, bbc=2), 105, 100, TIERS, stock_name="某股")
+    # 净流入 +1200万 = 6×门槛(2M)；大买1334万 vs 大卖135万 → 买占比 91%
+    al = a.evaluate(_snap(cum=12e6, peak=12e6, window=11_990_000, bbc=2,
+                          wbuy=13_340_000, wsell=1_350_000), 105, 100, TIERS, stock_name="某股")
     assert al is not None and al.direction == "RISING"
     assert al.is_large_inflow is True and al.is_strong_push is False
     assert "大额主力资金流入" in al.reason and "第2次大单买入" in al.reason
+    assert "买占比91%" in al.reason           # 文案摊开买卖强度
+    assert al.window_big_buy == 13_340_000 and al.window_big_sell == 1_350_000
+
+
+def test_large_inflow_requires_hot_market_context_when_supplied():
+    a = _det(FakeClock())
+    snap = _snap(cum=12e6, peak=12e6, window=11_990_000, bbc=2,
+                 wbuy=13_340_000, wsell=1_350_000)
+    blocked = {
+        "eligible": False, "is_hot": True, "market_breadth": 0.54,
+        "market_universe_size": 100, "turnover_rank_percentile": 1.0,
+        "reason": "市场宽度不足",
+    }
+    assert a.evaluate(snap, 105, 100, TIERS, inflow_context=blocked) is None
+
+
+def test_large_inflow_carries_hot_market_context():
+    a = _det(FakeClock())
+    snap = _snap(cum=12e6, peak=12e6, window=11_990_000, bbc=2,
+                 wbuy=13_340_000, wsell=1_350_000)
+    allowed = {
+        "eligible": True, "is_hot": True, "market_breadth": 0.63,
+        "market_universe_size": 121, "turnover_rank_percentile": 0.92,
+        "reason": "热门股且市场宽度通过",
+    }
+    alert = a.evaluate(snap, 105, 100, TIERS, inflow_context=allowed)
+    assert alert is not None and alert.is_large_inflow
+    assert alert.is_hot_candidate is True
+    assert alert.market_breadth == 0.63
+    assert alert.market_universe_size == 121
+    assert alert.turnover_rank_percentile == 0.92
+    assert "市场宽度63%" in alert.reason
+
+
+# ---------- 19b. 大额流入：多空对砸（买卖势均力敌）不报——治"55笔买/58笔卖也报流入" ----------
+def test_large_inflow_blocked_when_sellers_strong():
+    a = _det(FakeClock())
+    # 净流入 +600万(=3×门槛，量闸过) 但大买1400万/大卖800万 → 买卖比仅 1.75 < 3.0 → 卖方在抛，不报
+    al = a.evaluate(_snap(cum=6e6, peak=6e6, window=6_000_000, bbc=55, bsc=58,
+                          wbuy=14_000_000, wsell=8_000_000), 105, 100, TIERS)
+    assert al is None or not al.is_large_inflow
+
+
+# ---------- 19c. 大额流入：力度不够（相对该股自身太弱）不报 ----------
+def test_large_inflow_blocked_when_weak_strength():
+    a = _det(FakeClock())
+    # 净流入 +600万 = 3×门槛(量闸过)、买方压倒(闸过)，但力度基准 1000万 → mult 0.6 < 1.0 → 不报
+    tiers_big_scale = (2_000_000.0, 6_000_000.0, 10_000_000.0)
+    al = a.evaluate(_snap(cum=6e6, peak=6e6, window=6_000_000, bbc=2,
+                          wbuy=6_500_000, wsell=500_000), 105, 100, tiers_big_scale)
+    assert al is None or not al.is_large_inflow
 
 
 # ---------- 20. 大额流入：小额流入（< 大单门槛）不报大额 ----------
@@ -255,13 +312,13 @@ def test_large_inflow_skips_small():
 def test_large_inflow_cooldown_batches():
     clk = FakeClock()
     a = _det(clk, inflow_cooldown_sec=60)
-    a1 = a.evaluate(_snap(cum=2e6, peak=2e6, window=2e6, bbc=1), 105, 100, TIERS)
+    a1 = a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 105, 100, TIERS)
     assert a1 is not None and a1.is_large_inflow
     clk.advance(20)   # 冷却内 → 不再出大额流入
-    a2 = a.evaluate(_snap(cum=3e6, peak=3e6, window=2.5e6, bbc=3), 106, 100, TIERS)
+    a2 = a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=3), 106, 100, TIERS)
     assert a2 is None or not a2.is_large_inflow
     clk.advance(50)   # 跨过 60s → 攒批（自上次第1笔到第4笔=新增3笔）
-    a3 = a.evaluate(_snap(cum=4e6, peak=4e6, window=3e6, bbc=4), 107, 100, TIERS)
+    a3 = a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=4), 107, 100, TIERS)
     assert a3 is not None and a3.is_large_inflow and "本轮新增3笔" in a3.reason
 
 
@@ -271,7 +328,7 @@ def test_large_inflow_daily_cap():
     a = _det(clk, max_inflow_per_day=2, inflow_cooldown_sec=0)
     fired = 0
     for i in range(1, 6):
-        al = a.evaluate(_snap(cum=i * 2e6, peak=i * 2e6, window=2e6, bbc=i), 105, 100, TIERS)
+        al = a.evaluate(_snap(cum=i * 7e6, peak=i * 7e6, window=7e6, bbc=i), 105, 100, TIERS)
         if al and al.is_large_inflow:
             fired += 1
         clk.advance(1)
@@ -281,8 +338,29 @@ def test_large_inflow_daily_cap():
 # ---------- 23. 大额流入：inflow_immediate=False 时不出大额流入 ----------
 def test_large_inflow_disabled_falls_back():
     a = _det(FakeClock(), inflow_immediate=False)
-    al = a.evaluate(_snap(cum=2.5e6, peak=2.5e6, window=2.5e6, bbc=2), 105, 100, TIERS)
+    al = a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=2), 105, 100, TIERS)
     assert al is None or not al.is_large_inflow
+
+
+# ---------- 24. 上升分支同样过卖方强度闸：多空对砸不报"主力资金上升" ----------
+def test_rising_blocked_when_sellers_strong():
+    a = _det(FakeClock())
+    # 创新高 + 力度中(1.5×)，但窗口 大买500万/大卖350万 → 买卖比 1.43 < 3.0 → 不报
+    assert a.evaluate(_snap(cum=5e6, peak=5e6, window=1_500_000, bbc=3,
+                            wbuy=5_000_000, wsell=3_500_000), 105, 100, TIERS) is None
+
+
+# ---------- 25. 老快照（无窗口买卖分解字段）：卖方强度未知 → 买卖比闸放行，不静默拦截 ----------
+def test_legacy_snapshot_without_buy_sell_split_still_works():
+    a = _det(FakeClock())
+    legacy = {
+        "stock_code": "HK.00100", "trade_date": "2026-06-24",
+        "cum_main_net": 7e6, "cum_peak": 7e6, "window_main_net": 7e6,
+        "big_buy_count": 2, "big_sell_count": 0,
+    }
+    al = a.evaluate(legacy, 105, 100, TIERS)
+    assert al is not None and al.is_large_inflow is True
+    assert "买占比" not in al.reason      # 无数据就不编造买卖强度
 
 
 # ---------- 11. flag OFF = 全短路 ----------

@@ -28,6 +28,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Deque, Dict, Optional, Tuple
 
+from ....utils.trade_time import futu_trade_date
+
 
 def _norm_dir(direction) -> Optional[str]:
     """富途逐笔方向归一化为 BUY/SELL；中性单(无主动方)不计入主力。"""
@@ -46,10 +48,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _default_today() -> str:
+def _default_today(code: Optional[str] = None) -> str:
     try:
         from ....utils.market_helper import MarketTimeHelper
-        return MarketTimeHelper.get_market_today("HK")
+        market = MarketTimeHelper.get_market_from_code(code or "HK.")
+        return MarketTimeHelper.get_market_today(market)
     except Exception:
         return time.strftime("%Y-%m-%d", time.localtime())
 
@@ -115,6 +118,13 @@ class TickCapitalAccumulator:
         self._lock = threading.Lock()
         self._state: Dict[str, _DayState] = {}
 
+    def _today_for_code(self, code: str) -> str:
+        """兼容既有无参数测试 provider，并支持默认 provider 按市场取交易日。"""
+        try:
+            return self._today(code)
+        except TypeError:
+            return self._today()
+
     @property
     def enabled(self) -> bool:
         return self.cfg.enabled
@@ -158,8 +168,11 @@ class TickCapitalAccumulator:
                 key = (str(trade_time), float(price), int(volume), d)
             except (TypeError, ValueError):
                 key = None
+        today = self._today_for_code(code)
+        trade_day = futu_trade_date(trade_time)
+        if trade_day is not None and trade_day != today:
+            return
         now = self._clock() if now is None else now
-        today = self._today()
         is_super = amt >= super_thr
         signed = amt if d == "BUY" else -amt
         cutoff = now - self.cfg.window_seconds
@@ -201,7 +214,7 @@ class TickCapitalAccumulator:
         if not self.cfg.enabled:
             return None
         now = self._clock() if now is None else now
-        today = self._today()
+        today = self._today_for_code(code)
         cutoff = now - self.cfg.window_seconds
         with self._lock:
             st = self._state.get(code)
@@ -209,7 +222,17 @@ class TickCapitalAccumulator:
                 return None
             while st.window and st.window[0][0] < cutoff:
                 st.window.popleft()
-            window_net = sum(a for _, a in st.window)
+            # 窗口内大单买/卖额分解：净额相同可能是"买1334万卖135万"(买方压倒)也可能是
+            # "买500万卖400万"(多空对砸)——只看净额会把后者误当机会，故一并给出买卖强度。
+            win_buy = 0.0
+            win_sell = 0.0
+            for _, a in st.window:
+                if a > 0:
+                    win_buy += a
+                else:
+                    win_sell -= a
+            window_net = win_buy - win_sell
+            win_ratio = win_buy / (win_buy + win_sell) if (win_buy + win_sell) > 0 else 0.0
             big_buy, big_sell = st.big_buy, st.big_sell
             ratio = big_buy / (big_buy + big_sell) if (big_buy + big_sell) > 0 else 0.0
             return {
@@ -217,6 +240,9 @@ class TickCapitalAccumulator:
                 "trade_date": st.date,
                 "cum_main_net": round(st.cum_main_net, 2),
                 "window_main_net": round(window_net, 2),
+                "window_big_buy": round(win_buy, 2),
+                "window_big_sell": round(win_sell, 2),
+                "window_buy_ratio": round(win_ratio, 4),
                 "super_large_buy": round(st.super_buy, 2),
                 "super_large_sell": round(st.super_sell, 2),
                 "large_buy": round(st.large_buy, 2),
