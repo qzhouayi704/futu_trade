@@ -281,6 +281,55 @@ def pick_events(mask):
     return ev
 
 
+# ---------------------------------------------------------------- Track C: 流入后续路径 & 做T出场
+TC_FAMS = ("IN_2", "IN3_prod")
+TC_PATH_KS = (5, 10, 15, 30, 45, 60)
+TC_FLIP_KS = (-15, -5, 5, 15, 30)
+
+
+def tc_event(d, i0, L, day, code):
+    """入场后扫描资金流翻转, 计算各出场规则收益(原始收益, 自对照)。"""
+    p, Wbig = d["p"], d["Wbig"]
+    p0 = float(p[i0])
+    last = NG - 1
+    ds = dh = None  # 首个 flip_soft(窗口≤0)/flip_hard(窗口≤-1×门槛) 距入场分钟数
+    for t in range(i0 + 1, NG):
+        w = Wbig[t]
+        if ds is None and w <= 0:
+            ds = t - i0
+        if dh is None and w <= -L:
+            dh = t - i0
+        if ds is not None and dh is not None:
+            break
+
+    def ret_at(idx):
+        v = p[min(idx, last)]
+        return float(v / p0 - 1.0) if np.isfinite(v) else None
+
+    eod = ret_at(last)
+    r = {"day": day, "code": code, "ds": ds, "dh": dh,
+         "r_hold": eod,
+         "r_soft": ret_at(i0 + ds) if ds is not None else eod,
+         "r_hard": ret_at(i0 + dh) if dh is not None else eod,
+         "r_hard1": ret_at(i0 + dh + 1) if dh is not None else eod,
+         "r_f30": ret_at(i0 + 30), "r_f60": ret_at(i0 + 60),
+         "hold_soft": ds if ds is not None else last - i0,
+         "hold_hard": dh if dh is not None else last - i0,
+         "path": {k: (ret_at(i0 + k) if i0 + k <= last else None) for k in TC_PATH_KS}}
+    if dh is not None:
+        tf = i0 + dh
+        pf = float(p[tf])
+        fa = {}
+        for k in TC_FLIP_KS:
+            idx = tf + k
+            fa[k] = (float(p[idx] / pf - 1.0)
+                     if 0 <= idx <= last and np.isfinite(p[idx]) else None)
+        fa["eod"] = float(p[last] / pf - 1.0)
+        fa["e2f"] = float(pf / p0 - 1.0)
+        r["fa"] = fa
+    return r
+
+
 def control_pool(mask, d, ret30):
     bad = np.zeros(NG, bool)
     for j in np.where(mask)[0]:
@@ -485,6 +534,7 @@ def main():
     agg = Agg()
     bagg = Agg()          # Track B, fam = 提醒类别
     bevents = defaultdict(list)  # cat -> [{day,tod,mult,smult,chg,lifts{h}}]
+    tcoll = {fam: [] for fam in TC_FAMS}  # Track C
     ll = LeadLag()
     rng = np.random.default_rng(SEED)
     day_stock_counts = []
@@ -533,10 +583,14 @@ def main():
                     continue
                 agg.vol[fam][day] += cnt
                 pool = control_pool(mask, d, d["ret"][30])
-                for i in pick_events(mask):
+                evs_idx = pick_events(mask)
+                for i in evs_idx:
                     ctrl = (rng.choice(pool, size=min(CONTROLS, len(pool)), replace=False)
                             if len(pool) else np.empty(0, int))
                     agg.add_event(fam, day, i, dr, d, ctrl, med, code)
+                if fam in TC_FAMS:
+                    for i in evs_idx:
+                        tcoll[fam].append(tc_event(d, i, d["thr"], day, code))
             if not args.no_leadlag:
                 ll.add(d)
 
@@ -567,7 +621,8 @@ def main():
         print(line)
     print()
 
-    results = {"koujing": KOUJING, "days": days, "trackA": {}, "trackB": {}, "leadlag": {}, "sweep": {}}
+    results = {"koujing": KOUJING, "days": days, "trackA": {}, "trackB": {},
+               "trackC": {}, "leadlag": {}, "sweep": {}}
 
     # ---------------- Track A 主表
     print("二、Track A 事件网格 (lift=方向×(事件前向收益−同股同日安慰剂均值); 判决闸门 N≥%d 且 天≥%d)" % (MIN_N, MIN_DAYS))
@@ -729,6 +784,82 @@ def main():
         print("      逐日EOD lift为正的天数: %d/%d; 去掉事件数最多的1只后 lift=%s" % (
             pos_days, len(by_day),
             fmt_pct(float(np.mean([x for c, v in by_code.items() if c != top[0][0] for x in v])))))
+    print()
+
+    # ---------------- Track C: 流入后续路径 & 做T出场模拟
+    print("九、Track C 流入后续路径与做T出场模拟 (入场=流入事件分钟, 收益为原始收益·自对照, 非lift)")
+    print("  (样本期整体偏涨, 短持有规则天然吃亏; 若翻转出场仍胜过持有到收盘, 结论偏保守)")
+    for fam in TC_FAMS:
+        evs = tcoll[fam]
+        if not evs:
+            continue
+        n = len(evs)
+        jfam = results["trackC"].setdefault(fam, {})
+        print("  [%s] 入场事件 N=%d (%s)" % (fam, n, FAM_DESC[fam]))
+        for tag, key in (("flip_soft(15min窗口转负)", "ds"), ("flip_hard(净流出≥1×门槛)", "dh")):
+            got = [e[key] for e in evs if e[key] is not None]
+            med_t = int(np.median(got)) if got else -1
+            def fr(cut, got=got):
+                return 100.0 * sum(1 for x in got if x <= cut) / n
+            print("    %-22s 15min内 %4.0f%% | 30min内 %4.0f%% | 60min内 %4.0f%% | 收盘前 %4.0f%% (翻转中位 %d 分钟)" % (
+                tag, fr(15), fr(30), fr(60), 100.0 * len(got) / n, med_t))
+            jfam["trans_" + key] = {"15": fr(15), "30": fr(30), "60": fr(60),
+                                    "eod": 100.0 * len(got) / n, "median": med_t}
+        print("    出场规则对比:")
+        rules = (("持有到收盘", "r_hold", None),
+                 ("窗口转负即出(soft)", "r_soft", "hold_soft"),
+                 ("净流出翻转即出(hard)", "r_hard", "hold_hard"),
+                 ("hard·出场慢1分钟", "r_hard1", "hold_hard"),
+                 ("固定+30min出", "r_f30", None),
+                 ("固定+60min出", "r_f60", None))
+        for label, key, hkey in rules:
+            arr = np.asarray([e[key] for e in evs if e[key] is not None], float)
+            if not len(arr):
+                continue
+            ci = boot_ci(arr)
+            by_day = defaultdict(list)
+            for e in evs:
+                if e[key] is not None:
+                    by_day[e["day"]].append(e[key])
+            posd = sum(1 for v in by_day.values() if np.mean(v) > 0)
+            hold = (" 均持%dmin" % np.mean([e[hkey] for e in evs])) if hkey else ""
+            print("      %-20s mean=%s hit=%4.1f%% CI=[%s,%s] 逐日为正 %2d/%d%s" % (
+                label, fmt_pct(float(arr.mean())), 100 * (arr > 0).mean(),
+                fmt_pct(ci[0]), fmt_pct(ci[1]), posd, len(by_day), hold))
+            jfam[key] = {"mean": float(arr.mean()), "hit": float((arr > 0).mean()),
+                         "ci": list(ci), "pos_days": posd, "days": len(by_day)}
+        sus = [e for e in evs if e["dh"] is None or e["dh"] > 60]
+        flp = [e for e in evs if e["dh"] is not None and e["dh"] <= 60]
+        for gname, g in (("持续组(60min内无hard翻转)", sus), ("翻转组(60min内hard翻转)", flp)):
+            if not g:
+                continue
+            def pmean(k, g=g):
+                vals = [e["path"][k] for e in g if e["path"][k] is not None]
+                return fmt_pct(float(np.mean(vals)), 2) if vals else "  n/a "
+            eodv = np.asarray([e["r_hold"] for e in g if e["r_hold"] is not None], float)
+            by_day = defaultdict(list)
+            for e in g:
+                if e["r_hold"] is not None:
+                    by_day[e["day"]].append(e["r_hold"])
+            posd = sum(1 for v in by_day.values() if np.mean(v) > 0)
+            print("    %-24s N=%-5d 入场对齐路径: +15m %s +30m %s +60m %s | EOD %s (逐日为正 %2d/%d)" % (
+                gname, len(g), pmean(15), pmean(30), pmean(60),
+                fmt_pct(float(eodv.mean())) if len(eodv) else " n/a ", posd, len(by_day)))
+            jfam["grp_" + ("sus" if g is sus else "flp")] = {
+                "n": len(g), "eod": float(eodv.mean()) if len(eodv) else None,
+                "pos_days": posd, "days": len(by_day)}
+        fas = [e["fa"] for e in evs if "fa" in e]
+        if fas:
+            def famean(k, fas=fas):
+                vals = [f[k] for f in fas if f.get(k) is not None]
+                return fmt_pct(float(np.mean(vals)), 2) if vals else "  n/a "
+            print("    hard翻转对齐(N=%d): 入场→翻转 %s | 翻转前15m %s | 翻转后 +5m %s +15m %s +30m %s | 翻转→收盘 %s" % (
+                len(fas), famean("e2f"), famean(-15), famean(5),
+                famean(15), famean(30), famean("eod")))
+            jfam["flip_aligned"] = {
+                str(k): (float(np.mean([f[k] for f in fas if f.get(k) is not None]))
+                         if any(f.get(k) is not None for f in fas) else None)
+                for k in list(TC_FLIP_KS) + ["eod", "e2f"]}
     print()
     print("跑完 %.1fs" % (time.time() - t0))
 
