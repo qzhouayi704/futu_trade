@@ -193,6 +193,9 @@ def derive(r, code, day, nxt_close):
     if p is None:
         return None
     d = {"p": p, "thr": r.get("thr")}
+    first = int(np.argmax(np.isfinite(p)))
+    d["open"] = float(p[first])
+    d["turn"] = float((r["tmb"] + r["tms"]).sum())  # 当日总成交额(主动盘), 用于热度分层
     big = r["bb"] - r["bs"]
     sup = r["sb"] - r["ss"]
     d["big_m"], d["sup_m"] = big, sup
@@ -344,6 +347,8 @@ def tc_event(d, i0, L, day, code):
     r["mae60"] = _mae(60)
     seg60 = p[i0 + 1: min(i0 + 60, last) + 1]
     r["tt60"] = int(np.nanargmax(seg60)) + 1 if len(seg60) else None  # 冲高出现在入场后第几分钟
+    r["chg0"] = float(p0 / d["open"] - 1.0) if d.get("open") else None  # 触发时日内涨幅
+    r["turn_pct"] = d.get("turn_pct")  # 当日成交额分位(全天标签, 仅用于分层)
     return r
 
 
@@ -567,6 +572,10 @@ def main():
         day_stock_counts.append(len(derived))
         if not derived:
             continue
+        # 当日成交额横截面分位(热度标签)
+        turns = sorted((dd["turn"], c) for c, dd in derived.items())
+        for rank, (_t, c) in enumerate(turns):
+            derived[c]["turn_pct"] = rank / max(len(turns) - 1, 1)
         # 当日横截面中位数(市场基准)
         med = {}
         for h in ALL_H:
@@ -893,6 +902,39 @@ def main():
             if len(vals):
                 print("      %s 60min MFE中位 %s | ≥+1%%: %2.0f%%" % (
                     gname, fmt_pct(float(np.percentile(vals, 50)), 2), 100 * (vals >= 0.01).mean()))
+        print("    热门股分层 (成交额分位为全天标签; 每行: MFE30/MFE60中位 | 30min冲高≥1%%/≥2%%占比 | 持有到收盘 | 窗口转负出):")
+        buckets = (
+            ("成交额top10%", lambda e: (e.get("turn_pct") or 0) >= 0.9),
+            ("成交额top10-30%", lambda e: 0.7 <= (e.get("turn_pct") or 0) < 0.9),
+            ("成交额后70%", lambda e: (e.get("turn_pct") or 0) < 0.7),
+            ("触发时日内涨<0%", lambda e: e.get("chg0") is not None and e["chg0"] < 0),
+            ("触发时日内0~3%", lambda e: e.get("chg0") is not None and 0 <= e["chg0"] < 0.03),
+            ("触发时日内3~6%", lambda e: e.get("chg0") is not None and 0.03 <= e["chg0"] < 0.06),
+            ("触发时日内≥6%", lambda e: e.get("chg0") is not None and e["chg0"] >= 0.06),
+            ("热门=额top20%且涨≥3%", lambda e: (e.get("turn_pct") or 0) >= 0.8
+             and (e.get("chg0") if e.get("chg0") is not None else -1) >= 0.03),
+        )
+        for bname, sel in buckets:
+            g = [e for e in evs if sel(e)]
+            m30 = np.asarray([e["mfe30"] for e in g if e.get("mfe30") is not None], float)
+            m60 = np.asarray([e["mfe60"] for e in g if e.get("mfe60") is not None], float)
+            rh = np.asarray([e["r_hold"] for e in g if e.get("r_hold") is not None], float)
+            rs = np.asarray([e["r_soft"] for e in g if e.get("r_soft") is not None], float)
+            if len(m30) < MIN_N:
+                print("      %-20s N=%d 样本不足" % (bname, len(m30)))
+                continue
+            print("      %-20s N=%-5d MFE30中位 %s / MFE60中位 %s | ≥1%%: %2.0f%% ≥2%%: %2.0f%% | 持有 %s | 转负出 %s" % (
+                bname, len(m30), fmt_pct(float(np.percentile(m30, 50)), 2),
+                fmt_pct(float(np.percentile(m60, 50)), 2) if len(m60) else "  n/a ",
+                100 * (m30 >= 0.01).mean(), 100 * (m30 >= 0.02).mean(),
+                fmt_pct(float(rh.mean()), 2) if len(rh) else "  n/a ",
+                fmt_pct(float(rs.mean()), 2) if len(rs) else "  n/a "))
+            jfam.setdefault("hot_buckets", {})[bname] = {
+                "n": int(len(m30)), "mfe30_p50": float(np.percentile(m30, 50)),
+                "mfe60_p50": float(np.percentile(m60, 50)) if len(m60) else None,
+                "ge1": float((m30 >= 0.01).mean()), "ge2": float((m30 >= 0.02).mean()),
+                "hold": float(rh.mean()) if len(rh) else None,
+                "soft": float(rs.mean()) if len(rs) else None}
         fas = [e["fa"] for e in evs if "fa" in e]
         if fas:
             def famean(k, fas=fas):
