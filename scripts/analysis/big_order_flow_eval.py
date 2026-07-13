@@ -327,6 +327,23 @@ def tc_event(d, i0, L, day, code):
         fa["eod"] = float(p[last] / pf - 1.0)
         fa["e2f"] = float(pf / p0 - 1.0)
         r["fa"] = fa
+
+    # 入场后最大冲高 MFE / 最大回撤 MAE (相对入场价, 不含入场分钟)
+    def _mfe(hi):
+        seg = p[i0 + 1: min(i0 + hi, last) + 1]
+        return float(np.nanmax(seg) / p0 - 1.0) if len(seg) else None
+
+    def _mae(hi):
+        seg = p[i0 + 1: min(i0 + hi, last) + 1]
+        return float(np.nanmin(seg) / p0 - 1.0) if len(seg) else None
+
+    r["mfe30"] = _mfe(30)
+    r["mfe60"] = _mfe(60)
+    r["mfe_eod"] = _mfe(NG)
+    r["mfe_flip"] = _mfe(dh) if dh is not None else _mfe(NG)  # 翻转前可卖到的最高点
+    r["mae60"] = _mae(60)
+    seg60 = p[i0 + 1: min(i0 + 60, last) + 1]
+    r["tt60"] = int(np.nanargmax(seg60)) + 1 if len(seg60) else None  # 冲高出现在入场后第几分钟
     return r
 
 
@@ -848,6 +865,34 @@ def main():
             jfam["grp_" + ("sus" if g is sus else "flp")] = {
                 "n": len(g), "eod": float(eodv.mean()) if len(eodv) else None,
                 "pos_days": posd, "days": len(by_day)}
+        print("    入场后能涨多少 (MFE=出场前最高冲高, 相对入场价):")
+        for label, key in (("30min内", "mfe30"), ("60min内", "mfe60"),
+                           ("到翻转前(hard)", "mfe_flip"), ("到收盘", "mfe_eod")):
+            vals = np.asarray([e[key] for e in evs if e.get(key) is not None], float)
+            if not len(vals):
+                continue
+            q25, q50, q75 = np.percentile(vals, (25, 50, 75))
+            print("      %-14s 中位 %s | 均值 %s | p25~p75 %s~%s | ≥+0.5%%: %2.0f%% ≥+1%%: %2.0f%% ≥+2%%: %2.0f%%" % (
+                label, fmt_pct(q50, 2), fmt_pct(float(vals.mean()), 2),
+                fmt_pct(q25, 2), fmt_pct(q75, 2),
+                100 * (vals >= 0.005).mean(), 100 * (vals >= 0.01).mean(),
+                100 * (vals >= 0.02).mean()))
+            jfam["dist_" + key] = {"p25": float(q25), "p50": float(q50), "p75": float(q75),
+                                   "mean": float(vals.mean()),
+                                   "ge05": float((vals >= 0.005).mean()),
+                                   "ge1": float((vals >= 0.01).mean()),
+                                   "ge2": float((vals >= 0.02).mean())}
+        tt = [e["tt60"] for e in evs if e.get("tt60") is not None]
+        mae = np.asarray([e["mae60"] for e in evs if e.get("mae60") is not None], float)
+        if tt and len(mae):
+            print("      60min内冲高出现在入场后中位 %d 分钟; 60min内最大回撤 中位 %s / p25 %s" % (
+                int(np.median(tt)), fmt_pct(float(np.percentile(mae, 50)), 2),
+                fmt_pct(float(np.percentile(mae, 25)), 2)))
+        for gname, g in (("持续组", sus), ("翻转组", flp)):
+            vals = np.asarray([e["mfe60"] for e in g if e.get("mfe60") is not None], float)
+            if len(vals):
+                print("      %s 60min MFE中位 %s | ≥+1%%: %2.0f%%" % (
+                    gname, fmt_pct(float(np.percentile(vals, 50)), 2), 100 * (vals >= 0.01).mean()))
         fas = [e["fa"] for e in evs if "fa" in e]
         if fas:
             def famean(k, fas=fas):
