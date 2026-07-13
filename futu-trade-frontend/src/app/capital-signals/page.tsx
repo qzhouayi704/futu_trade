@@ -40,6 +40,12 @@ interface CapitalTrendSignal {
   market_universe_size?: number;
   turnover_rank_percentile?: number;
   inflow_gate_reason?: string;
+  inflow_stage?: "FIRST" | "CONFIRMED" | "STRENGTHENED" | "EXPIRED" | "TRAIL_EXIT";
+  inflow_sequence_no?: number;
+  inflow_peak_price?: number;
+  price_pullback_pct?: number;
+  is_inflow_expired?: boolean;
+  is_inflow_trailing_exit?: boolean;
 }
 
 type DirFilter = "all" | "RISING" | "FALLING";
@@ -73,7 +79,7 @@ function dedupe(list: CapitalTrendSignal[]): CapitalTrendSignal[] {
   const seen = new Set<string>();
   const out: CapitalTrendSignal[] = [];
   for (const s of list) {
-    const k = `${s.stock_code}:${s.direction}:${s.big_buy_count}:${s.big_sell_count}`;
+    const k = `${s.stock_code}:${s.direction}:${s.inflow_stage ?? ""}:${s.big_buy_count}:${s.big_sell_count}`;
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(s);
@@ -279,19 +285,43 @@ export default function CapitalSignalsPage() {
               {filtered.map((sig) => {
                 const rising = sig.direction === "RISING";
                 const isHeld = positionSet.has(sig.stock_code);
-                const bg = rising
+                const trailingExit = sig.is_inflow_trailing_exit === true;
+                const expired = sig.is_inflow_expired === true;
+                const confirmed = sig.inflow_stage === "CONFIRMED";
+                const strengthened = sig.inflow_stage === "STRENGTHENED";
+                const first = sig.inflow_stage === "FIRST";
+                const risk = sig.is_held_outflow === true || trailingExit || (!rising && !expired);
+                const opportunity = confirmed || strengthened || (rising && !first && !expired);
+                const bg = risk
+                  ? "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-900/30"
+                  : opportunity
                   ? "bg-emerald-50/60 border-emerald-200/50 dark:bg-emerald-950/20 dark:border-emerald-900/30"
-                  : "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-900/30";
-                const text = rising
+                  : "bg-slate-50/60 border-slate-200/50 dark:bg-slate-900/20 dark:border-slate-800/40";
+                const text = risk
+                  ? "text-red-600 dark:text-red-400"
+                  : opportunity
                   ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-red-600 dark:text-red-400";
-                const badge = rising
+                  : "text-slate-600 dark:text-slate-400";
+                const badge = risk
+                  ? "bg-red-200/70 text-red-700 dark:bg-red-900/50 dark:text-red-300"
+                  : opportunity
                   ? "bg-emerald-200/70 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
-                  : "bg-red-200/70 text-red-700 dark:bg-red-900/50 dark:text-red-300";
+                  : "bg-slate-200/70 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300";
+                const signalLabel = sig.is_held_outflow
+                  ? "持仓卖出提醒"
+                  : trailingExit
+                    ? "峰值回撤止盈"
+                    : expired
+                      ? "流入确认失效"
+                      : strengthened
+                        ? "资金趋势加强"
+                        : confirmed
+                          ? "资金买点确认"
+                          : first ? "首次流入观察" : rising ? "主力流入" : "主力回落";
 
                 return (
                   <div
-                    key={`${sig.stock_code}-${sig.direction}-${sig.timestamp}-${sig.big_buy_count}-${sig.big_sell_count}`}
+                    key={`${sig.stock_code}-${sig.direction}-${sig.inflow_stage ?? ""}-${sig.timestamp}-${sig.big_buy_count}-${sig.big_sell_count}`}
                     className={`px-2.5 py-2 rounded-lg border transition-all hover:shadow-sm ${bg} ${
                       isHeld ? "ring-1 ring-indigo-400/40 dark:ring-indigo-500/30" : ""
                     }`}
@@ -302,11 +332,11 @@ export default function CapitalSignalsPage() {
                         <span className="text-[10px] font-mono tabular-nums text-muted-foreground shrink-0">
                           {fmtTime(sig.timestamp)}
                         </span>
-                        <span className="text-xs">{rising ? "📈" : "📉"}</span>
+                        <span className="text-xs">{risk ? "📉" : "📈"}</span>
                         <span className={`font-bold text-xs ${text} truncate`}>{sig.stock_name}</span>
                         <span className="text-[10px] text-muted-foreground shrink-0">{sig.stock_code}</span>
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold shrink-0 ${badge}`}>
-                          {sig.is_held_outflow ? "持仓卖出提醒" : sig.is_large_inflow ? "资金流入候选" : rising ? "主力流入" : "主力回落"}·{sig.strength_tier}
+                          {signalLabel}·{sig.strength_tier}
                         </span>
                         {isHeld && (
                           <span className="text-[9px] px-1 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 font-bold shrink-0">

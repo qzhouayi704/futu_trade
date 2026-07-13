@@ -10,7 +10,7 @@
 - **大单门槛** = 让"单笔主动买 ≥ 门槛"≈ TARGET_COUNT(默认20) 次/日 的那个成交额。
   实现：取该股近 CALIB_DAYS 个活跃日，每日取**第 TARGET_COUNT 大的主动买单额**，跨日中位；
   地板 ABS_FLOOR。实测得 MINIMAX≈300万 / 腾讯≈850万 / 翼菲≈15万，与生产数据吻合。
-- **力度基准 window_net_scale** = 该股 15min 滚动窗口大单净流入绝对值的中位(跨日)。
+- **力度基准 window_net_scale** = 该股 10min 滚动窗口大单净流入绝对值的中位(跨日)。
   供 detector 算"力度 = 当前窗口净流入 ÷ 该尺度 = 这波是平时的 X 倍"。
 
 写入 `market_baselines`(复用现表)，metric_key：
@@ -53,7 +53,7 @@ SUPER_MULT = _env_float("CAPITAL_SUPER_MULT", 3.0)                 # 超大单 =
 COLD_COEF = _env_float("CAPITAL_COLD_COEF", 0.0012)               # 冷启动代理: 系数 × 日均成交额
 CALIB_DAYS = _env_int("CAPITAL_CALIB_DAYS", 5)                     # 标定用近 N 个活跃日
 MIN_CALIB_DAYS = _env_int("CAPITAL_MIN_CALIB_DAYS", 3)            # 至少 N 日才信任标定值
-WINDOW_SEC = _env_int("CAPITAL_TICK_WINDOW_SEC", 900)             # 力度窗口(与累加器同口径) 15min
+WINDOW_SEC = _env_int("CAPITAL_TICK_WINDOW_SEC", 600)             # 力度窗口(与累加器同口径) 10min
 _MIN_DAY_ROWS = _env_int("CAPITAL_CALIB_MIN_DAY_ROWS", 200)        # 活跃日最少逐笔行数
 
 _BUY_SQL = "UPPER(direction) IN ('BUY','BULL')"

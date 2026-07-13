@@ -282,6 +282,22 @@ class TestCapitalTrendWechat:
             is_large_inflow=False,
         )
 
+    @staticmethod
+    def _inflow_alert(stage: str):
+        return SimpleNamespace(
+            stock_code="HK.06082", stock_name="壁仞科技", direction="RISING",
+            strength_tier="强", strength_mult=2.2, cum_main_net=12_000_000.0,
+            window_main_net=8_000_000.0, pullback_amount=0.0,
+            intraday_change_pct=-0.5, big_buy_count=3, big_sell_count=0,
+            big_order_threshold=2_000_000.0, last_price=60.0,
+            is_held_outflow=False, is_large_inflow=True,
+            is_inflow_trailing_exit=False, inflow_stage=stage,
+            inflow_sequence_no={"FIRST": 1, "CONFIRMED": 2, "STRENGTHENED": 3}[stage],
+            window_big_buy=9_000_000.0, window_big_sell=1_000_000.0,
+            window_buy_ratio=0.9, market_breadth=0.6,
+            market_universe_size=100, turnover_rank_percentile=0.9,
+        )
+
     def test_held_outflow_explicitly_prompts_sell_review(self):
         pipeline, *_ = _make_pipeline()
         wechat = MagicMock()
@@ -310,3 +326,41 @@ class TestCapitalTrendWechat:
         assert "卖出提醒" not in args[1]
         assert "卖出提醒" not in args[2]
         assert kwargs["category"] == "主力资金趋势"
+
+    def test_first_inflow_is_observation_category(self):
+        pipeline, *_ = _make_pipeline()
+        wechat = MagicMock()
+        wechat.send = AsyncMock(return_value=True)
+        _run(pipeline._push_capital_trend_wechat(wechat, self._inflow_alert("FIRST")))
+        args, kwargs = wechat.send.call_args
+        assert "首次强流入·试仓观察" in args[1]
+        assert "15分钟内" in args[2]
+        assert kwargs["category"] == "大额主力资金流入"
+
+    def test_second_inflow_is_buy_confirmation_category(self):
+        pipeline, *_ = _make_pipeline()
+        wechat = MagicMock()
+        wechat.send = AsyncMock(return_value=True)
+        _run(pipeline._push_capital_trend_wechat(wechat, self._inflow_alert("CONFIRMED")))
+        args, kwargs = wechat.send.call_args
+        assert "二次强流入·买点确认" in args[1]
+        assert "买点确认" in args[2]
+        assert kwargs["category"] == "资金流入确认"
+        assert kwargs["priority"] == 82
+
+    def test_trailing_exit_is_sell_category(self):
+        pipeline, *_ = _make_pipeline()
+        wechat = MagicMock()
+        wechat.send = AsyncMock(return_value=True)
+        alert = self._falling_alert(held_outflow=False)
+        alert.is_inflow_trailing_exit = True
+        alert.inflow_stage = "TRAIL_EXIT"
+        alert.inflow_sequence_no = 2
+        alert.inflow_peak_price = 105.0
+        alert.price_pullback_pct = 0.015
+        _run(pipeline._push_capital_trend_wechat(wechat, alert))
+        args, kwargs = wechat.send.call_args
+        assert "资金流峰值回撤·止盈提醒" in args[1]
+        assert "止盈/卖出提醒" in args[2]
+        assert kwargs["category"] == "主力资金止盈"
+        assert kwargs["priority"] == 91

@@ -12,7 +12,7 @@
 口径(用户已拍板)：
 - **大单门槛按每股自适应**(MINIMAX≈300万、翼菲≈15万)——由 CapitalThresholdCalibrator 标定，
   累加器据此分级，这里只读 snapshot 的累计/计数/峰谷。
-- **力度 = 相对自身倍数**：strength_mult = |当前15min窗口主力净流入| ÷ 该股力度基准
+- **力度 = 相对自身倍数**：strength_mult = |当前10min窗口主力净流入| ÷ 该股力度基准
   (window_net_scale)，表达"这波是平时的 X 倍"；分 强(≥2.0)/中(≥1.0)/弱。
 
 设计取舍(与 push_governor/累加器一致)：
@@ -63,7 +63,7 @@ class CapitalTrendConfig:
     held_cooldown_sec: int = 60      # 每股推送最小间隔秒（1 分钟一次；期间新增大单攒进一条）
     held_min_outflow: float = 1.0    # 窗口净流出需 ≥ 此倍数×该股大单门槛才推（滤掉小额净流出）
     max_held_sell_per_day: int = 20  # 每股每日持仓提醒硬上限
-    # 大额主力资金流入候选（由调用方先做热门度和市场宽度过滤，1 分钟一次）。
+    # 大额主力资金流入状态机（由调用方先做热门度和市场宽度过滤）。
     # 不设 must-see——经治理器 INFO 预算/每股上限/折叠摘要限流，防全市场刷屏 45009。
     #
     # 【2026-07-13 收紧】原口径"窗口净流入≥1个大单门槛 + 有新大单买入"过松：只看净额、不看
@@ -74,11 +74,15 @@ class CapitalTrendConfig:
     #   ② 绝对资金量：窗口净流入 ≥ inflow_min_inflow × 该股大单门槛（默认 1→3 倍）
     #   ③ 力度：strength_mult ≥ inflow_min_mult（≥中档，原分支完全没接力度闸）
     inflow_immediate: bool = True
-    inflow_cooldown_sec: int = 60      # 每股推送最小间隔秒（1 分钟一次）
+    inflow_cooldown_sec: int = 300     # 两次独立强流入确认至少间隔5分钟
+    inflow_confirm_window_sec: int = 900  # 首次后15分钟内出现第二次才确认
+    inflow_sequence_window_sec: int = 3600  # 第三次趋势加强仅统计首次后60分钟
+    inflow_reentry_block_sec: int = 3600  # 本轮退出后60分钟不重新提示买入
+    inflow_trail_pullback_pct: float = 0.015  # 确认后较峰值回撤1.5%提示止盈
     inflow_min_inflow: float = 3.0     # 窗口净流入需 ≥ 此倍数×该股大单门槛才推
     inflow_min_buy_ratio: float = 3.0  # 窗口大买额 ≥ 此倍数×窗口大卖额（买占比 ≥75%）才推
     inflow_min_mult: float = 1.0       # 力度倍数下限（≥中档）
-    max_inflow_per_day: int = 8        # 每股每日大额流入提醒硬上限
+    max_inflow_per_day: int = 6        # 最多容纳两轮首次/确认/加强；推送治理器另做每类限流
 
     @classmethod
     def from_env(cls) -> "CapitalTrendConfig":
@@ -97,6 +101,18 @@ class CapitalTrendConfig:
         cfg.max_held_sell_per_day = _env_int("CAPITAL_TREND_MAX_HELD_SELL", cfg.max_held_sell_per_day)
         cfg.inflow_immediate = env_flag("CAPITAL_TREND_INFLOW_IMMEDIATE", True)
         cfg.inflow_cooldown_sec = _env_int("CAPITAL_TREND_INFLOW_COOLDOWN_SEC", cfg.inflow_cooldown_sec)
+        cfg.inflow_confirm_window_sec = _env_int(
+            "CAPITAL_TREND_INFLOW_CONFIRM_SEC", cfg.inflow_confirm_window_sec
+        )
+        cfg.inflow_sequence_window_sec = _env_int(
+            "CAPITAL_TREND_INFLOW_SEQUENCE_SEC", cfg.inflow_sequence_window_sec
+        )
+        cfg.inflow_reentry_block_sec = _env_int(
+            "CAPITAL_TREND_INFLOW_REENTRY_BLOCK_SEC", cfg.inflow_reentry_block_sec
+        )
+        cfg.inflow_trail_pullback_pct = _env_float(
+            "CAPITAL_TREND_INFLOW_TRAIL_PCT", cfg.inflow_trail_pullback_pct
+        )
         cfg.inflow_min_inflow = _env_float("CAPITAL_TREND_INFLOW_MIN", cfg.inflow_min_inflow)
         cfg.inflow_min_buy_ratio = _env_float("CAPITAL_TREND_INFLOW_BUY_RATIO", cfg.inflow_min_buy_ratio)
         cfg.inflow_min_mult = _env_float("CAPITAL_TREND_INFLOW_MIN_MULT", cfg.inflow_min_mult)
@@ -114,7 +130,7 @@ class CapitalTrendAlert:
     strength_tier: str           # "强" | "中" | "弱"
     strength_mult: float         # 力度倍数（相对自身）
     cum_main_net: float          # 当日累计主力净流入（元）
-    window_main_net: float       # 当前 15min 窗口主力净流入（元）
+    window_main_net: float       # 当前 10min 窗口主力净流入（元）
     pullback_amount: float       # 自峰值回落额（元，FALLING 用；RISING=0）
     intraday_change_pct: float   # 日内涨幅 %
     big_buy_count: int           # 当日第几次大单买入
@@ -133,6 +149,13 @@ class CapitalTrendAlert:
     market_universe_size: int = 0   # 宽度统计使用的报价数
     turnover_rank_percentile: float = 0.0  # 成交额横截面排名分位，越接近1越热门
     inflow_gate_reason: str = ""    # 门控判定说明
+    inflow_stage: str = ""          # FIRST / CONFIRMED / STRENGTHENED / EXPIRED / TRAIL_EXIT
+    inflow_sequence_no: int = 0      # 本轮第几次独立强流入
+    inflow_first_price: float = 0.0
+    inflow_peak_price: float = 0.0
+    price_pullback_pct: float = 0.0
+    is_inflow_expired: bool = False
+    is_inflow_trailing_exit: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -154,7 +177,15 @@ class _TrendState:
     held_sell_alerts: int = 0
     last_inflow_ts: Optional[float] = None
     last_inflow_buy_count: int = 0
+    last_seen_buy_count: int = 0
     inflow_alerts: int = 0
+    inflow_stage: str = ""
+    inflow_first_ts: Optional[float] = None
+    inflow_first_price: float = 0.0
+    inflow_confirmed_ts: Optional[float] = None
+    inflow_peak_price: float = 0.0
+    inflow_sequence_no: int = 0
+    inflow_block_until: Optional[float] = None
 
 
 class CapitalTrendDetector:
@@ -245,6 +276,11 @@ class CapitalTrendDetector:
         market_universe_size = int((inflow_context or {}).get("market_universe_size") or 0)
         turnover_rank = float((inflow_context or {}).get("turnover_rank_percentile") or 0.0)
         gate_reason = str((inflow_context or {}).get("reason") or "")
+        new_big_buy = big_buy_count > st.last_seen_buy_count
+        st.last_seen_buy_count = max(st.last_seen_buy_count, big_buy_count)
+
+        if st.inflow_stage == "CONFIRMED" and lp > 0:
+            st.inflow_peak_price = max(st.inflow_peak_price, lp)
 
         # ── 持仓专用·主力净流出提醒（用户口径：1 分钟推一次、仅大单级别净流出才推、小额不推）──
         #   条件：持仓 + 窗口净流出 ≥ 一个大单门槛（滤小额）+ 有新的大单卖出（big_sell_count 前进）。
@@ -265,6 +301,9 @@ class CapitalTrendDetector:
             st.held_sell_alerts += 1
             st.last_held_sell_ts = now
             st.last_held_sell_count = big_sell_count
+            if st.inflow_stage == "CONFIRMED":
+                st.inflow_stage = "TRAIL_EXIT"
+                st.inflow_block_until = now + self.cfg.inflow_reentry_block_sec
             extra = f"（本轮新增{new_sells}笔）" if new_sells > 1 else ""
             reason = ("持仓大单净流出·卖出提醒｜窗口净流出%.0f万 力度%.1f× 日内%+.2f%% 第%d次大单流出%s"
                       % (abs(window_net) / 1e4, mult, chg, big_sell_count, extra))
@@ -280,36 +319,133 @@ class CapitalTrendDetector:
                 window_buy_ratio=round(win_ratio, 4),
             )
 
-        # ── 大额主力资金流入候选（热门度和市场宽度门控后，1 分钟一次）──
-        #   发现主力**压倒性**进场。独立类别、INFO 级——经治理器预算/每股上限/折叠摘要限流
-        #   （不设 must-see，防强势行情几十只同时触发刷屏 45009）。不看涨跌、不要求先建峰。
-        #   三道闸(见 CapitalTrendConfig 注释)：卖方强度 + 绝对资金量 + 力度。
+        # ── 已确认后的价格峰值回撤止盈 ──
+        if (st.inflow_stage == "CONFIRMED" and st.inflow_peak_price > 0 and lp > 0):
+            price_pullback = (st.inflow_peak_price - lp) / st.inflow_peak_price
+            if price_pullback >= self.cfg.inflow_trail_pullback_pct:
+                st.inflow_stage = "TRAIL_EXIT"
+                st.inflow_block_until = now + self.cfg.inflow_reentry_block_sec
+                reason = (
+                    "资金流买点确认后峰值回撤%.1f%%·止盈/卖出提醒｜首次价%.3f "
+                    "峰值%.3f 现价%.3f 日内%+.2f%%"
+                    % (price_pullback * 100, st.inflow_first_price,
+                       st.inflow_peak_price, lp, chg)
+                )
+                return CapitalTrendAlert(
+                    stock_code=code, stock_name=name, trade_date=day, timestamp=now,
+                    direction="FALLING", strength_tier="强", strength_mult=round(price_pullback * 100, 2),
+                    cum_main_net=round(cum, 2), window_main_net=round(window_net, 2),
+                    pullback_amount=0.0, intraday_change_pct=round(chg, 2),
+                    big_buy_count=big_buy_count, big_sell_count=big_sell_count,
+                    big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
+                    is_strong_push=True,
+                    window_big_buy=round(win_buy, 2), window_big_sell=round(win_sell, 2),
+                    window_buy_ratio=round(win_ratio, 4),
+                    inflow_stage="TRAIL_EXIT", inflow_sequence_no=st.inflow_sequence_no,
+                    inflow_first_price=round(st.inflow_first_price, 4),
+                    inflow_peak_price=round(st.inflow_peak_price, 4),
+                    price_pullback_pct=round(price_pullback, 4),
+                    is_inflow_trailing_exit=True,
+                )
+
+        # ── 强流入状态机：首次观察 → 15分钟内二次确认 → 第三次趋势加强 ──
+        # 每次确认都必须发生新的大单买入，且相邻确认至少间隔5分钟。
         inflow_scale_eff = scale if scale > 0 else thr_eff
         inflow_mult = window_net / inflow_scale_eff if inflow_scale_eff > 0 else 0.0
-        if (self.cfg.inflow_immediate and inflow_allowed and window_net > 0
-                and window_net >= self.cfg.inflow_min_inflow * thr_eff      # ② 绝对资金量
-                and _buy_side_dominant()                                    # ① 卖方强度
-                and inflow_mult >= self.cfg.inflow_min_mult                 # ③ 力度
-                and big_buy_count > st.last_inflow_buy_count
-                and st.inflow_alerts < self.cfg.max_inflow_per_day
-                and (st.last_inflow_ts is None
-                     or now - st.last_inflow_ts >= self.cfg.inflow_cooldown_sec)):
+        strong_inflow = (
+            self.cfg.inflow_immediate
+            and inflow_allowed
+            and window_net >= self.cfg.inflow_min_inflow * thr_eff
+            and _buy_side_dominant()
+            and inflow_mult >= self.cfg.inflow_min_mult
+            and new_big_buy
+        )
+
+        if (st.inflow_stage == "WATCH" and st.inflow_first_ts is not None
+                and now - st.inflow_first_ts > self.cfg.inflow_confirm_window_sec):
+            if not strong_inflow:
+                first_price = st.inflow_first_price
+                st.inflow_stage = ""
+                st.inflow_first_ts = None
+                st.inflow_sequence_no = 0
+                reason = (
+                    "首次强流入15分钟内未获二次确认·观察失效｜首次价%.3f 现价%.3f 日内%+.2f%%"
+                    % (first_price, lp, chg)
+                )
+                return CapitalTrendAlert(
+                    stock_code=code, stock_name=name, trade_date=day, timestamp=now,
+                    direction="RISING", strength_tier="弱", strength_mult=round(max(inflow_mult, 0.0), 2),
+                    cum_main_net=round(cum, 2), window_main_net=round(window_net, 2),
+                    pullback_amount=0.0, intraday_change_pct=round(chg, 2),
+                    big_buy_count=big_buy_count, big_sell_count=big_sell_count,
+                    big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
+                    is_strong_push=False,
+                    window_big_buy=round(win_buy, 2), window_big_sell=round(win_sell, 2),
+                    window_buy_ratio=round(win_ratio, 4),
+                    inflow_stage="EXPIRED", inflow_first_price=round(first_price, 4),
+                    is_inflow_expired=True,
+                )
+            st.inflow_stage = ""
+            st.inflow_first_ts = None
+            st.inflow_sequence_no = 0
+
+        reentry_blocked = st.inflow_block_until is not None and now < st.inflow_block_until
+        independent = st.last_inflow_ts is None or now - st.last_inflow_ts >= self.cfg.inflow_cooldown_sec
+        sequence_saturated = (
+            st.inflow_stage == "CONFIRMED"
+            and (
+                st.inflow_sequence_no >= 3
+                or st.inflow_first_ts is None
+                or now - st.inflow_first_ts > self.cfg.inflow_sequence_window_sec
+            )
+        )
+        if (strong_inflow and independent and not reentry_blocked
+                and not sequence_saturated
+                and st.inflow_alerts < self.cfg.max_inflow_per_day):
             new_buys = big_buy_count - st.last_inflow_buy_count
             tier_lbl = _TIER_LABEL[self._tier(inflow_mult)]
             st.inflow_alerts += 1
             st.last_inflow_ts = now
             st.last_inflow_buy_count = big_buy_count
             extra = f"（本轮新增{new_buys}笔）" if new_buys > 1 else ""
-            # 文案摊开买卖强度：让人一眼看出"买方压倒"而不是"多空对砸净额偏正"
             bs_txt = ("(大买%.0f万/大卖%.0f万 买占比%.0f%%) " % (win_buy / 1e4, win_sell / 1e4, win_ratio * 100)
                       if has_bs else "")
             hot_txt = ("市场宽度%.0f%% 成交额前%.0f%% "
                        % (market_breadth * 100, max(0.0, (1.0 - turnover_rank) * 100))
                        if inflow_context is not None else "")
-            reason = ("热门股大额主力资金流入候选｜窗口净流入+%.0f万 %s%s力度%.1f× 日内%+.2f%% "
-                      "第%d次大单买入%s"
-                      % (window_net / 1e4, bs_txt, hot_txt, inflow_mult, chg,
-                         big_buy_count, extra))
+
+            if st.inflow_stage == "WATCH":
+                stage = "CONFIRMED"
+                st.inflow_stage = stage
+                st.inflow_confirmed_ts = now
+                st.inflow_peak_price = lp
+                st.inflow_sequence_no = 2
+                reason = ("15分钟内第二次强流入·买点确认/继续持有｜窗口净流入+%.0f万 "
+                          "%s%s力度%.1f× 日内%+.2f%% 第%d次大单买入%s"
+                          % (window_net / 1e4, bs_txt, hot_txt, inflow_mult, chg,
+                             big_buy_count, extra))
+            elif (st.inflow_stage == "CONFIRMED" and st.inflow_first_ts is not None
+                  and st.inflow_sequence_no == 2
+                  and now - st.inflow_first_ts <= self.cfg.inflow_sequence_window_sec):
+                stage = "STRENGTHENED"
+                st.inflow_sequence_no = 3
+                reason = ("60分钟内第三次强流入·趋势加强/继续持有｜窗口净流入+%.0f万 "
+                          "%s%s力度%.1f× 日内%+.2f%% 第%d次大单买入%s"
+                          % (window_net / 1e4, bs_txt, hot_txt, inflow_mult, chg,
+                             big_buy_count, extra))
+            else:
+                stage = "FIRST"
+                st.inflow_stage = "WATCH"
+                st.inflow_first_ts = now
+                st.inflow_first_price = lp
+                st.inflow_confirmed_ts = None
+                st.inflow_peak_price = 0.0
+                st.inflow_sequence_no = 1
+                reason = ("首次强流入·试仓观察（等待15分钟二次确认）｜窗口净流入+%.0f万 "
+                          "%s%s力度%.1f× 日内%+.2f%% 第%d次大单买入%s"
+                          % (window_net / 1e4, bs_txt, hot_txt, inflow_mult, chg,
+                             big_buy_count, extra))
+
             return CapitalTrendAlert(
                 stock_code=code, stock_name=name, trade_date=day, timestamp=now,
                 direction="RISING", strength_tier=tier_lbl, strength_mult=round(inflow_mult, 2),
@@ -317,7 +453,7 @@ class CapitalTrendDetector:
                 pullback_amount=0.0, intraday_change_pct=round(chg, 2),
                 big_buy_count=big_buy_count, big_sell_count=big_sell_count,
                 big_order_threshold=round(large_thr, 2), last_price=lp, reason=reason,
-                is_strong_push=False, is_large_inflow=True,
+                is_strong_push=(stage in {"CONFIRMED", "STRENGTHENED"}), is_large_inflow=True,
                 window_big_buy=round(win_buy, 2), window_big_sell=round(win_sell, 2),
                 window_buy_ratio=round(win_ratio, 4),
                 is_hot_candidate=is_hot_candidate,
@@ -325,6 +461,10 @@ class CapitalTrendDetector:
                 market_universe_size=market_universe_size,
                 turnover_rank_percentile=round(turnover_rank, 4),
                 inflow_gate_reason=gate_reason,
+                inflow_stage=stage,
+                inflow_sequence_no=st.inflow_sequence_no,
+                inflow_first_price=round(st.inflow_first_price, 4),
+                inflow_peak_price=round(st.inflow_peak_price, 4),
             )
 
         if scale <= 0:
@@ -370,7 +510,8 @@ class CapitalTrendDetector:
         # ── 上升（早盘建仓拉升）──
         #   同样过"卖方强度"闸：多空对砸(买500万/卖400万)只是净额偏正，不是主力在扫货。
         at_new_high = cum > 0 and cum >= peak - 1.0    # 创当日累计净流入新高（容 1 元浮点）
-        if (inflow_allowed and at_new_high and window_net > 0
+        if (inflow_allowed and st.inflow_stage not in {"WATCH", "CONFIRMED"}
+                and at_new_high and window_net > 0
                 and tier >= 1 and _buy_side_dominant()):
             if (st.rising_count < self.cfg.max_rising_per_day
                     and self._rising_rearm(st, now, tier, big_buy_count)):

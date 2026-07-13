@@ -1138,6 +1138,7 @@ class QuotePipeline:
                 emitted.append(alert.to_dict())
                 should_push = ((alert.direction == "FALLING" and code in held_set)
                                or getattr(alert, 'is_large_inflow', False)   # 热门股流入候选，经治理器限流
+                               or getattr(alert, 'is_inflow_trailing_exit', False)
                                or (push_all and alert.is_strong_push))
                 if should_push and wechat and getattr(wechat, 'enabled', False):
                     task = asyncio.create_task(self._push_capital_trend_wechat(wechat, alert))
@@ -1175,18 +1176,38 @@ class QuotePipeline:
             from ...services.alert.wechat_alert import AlertLevel
             held_outflow = getattr(alert, 'is_held_outflow', False)
             large_inflow = getattr(alert, 'is_large_inflow', False)
+            inflow_stage = getattr(alert, 'inflow_stage', '')
+            trailing_exit = getattr(alert, 'is_inflow_trailing_exit', False)
             rising = alert.direction == "RISING"
-            if large_inflow:
-                head, emoji = "热门股资金流入候选", "📈"
-            elif held_outflow:
+            if held_outflow:
                 head, emoji = "持仓大单净流出·卖出提醒", "📉"
+            elif trailing_exit:
+                head, emoji = "资金流峰值回撤·止盈提醒", "📉"
+            elif large_inflow:
+                head = {
+                    "FIRST": "首次强流入·试仓观察",
+                    "CONFIRMED": "二次强流入·买点确认",
+                    "STRENGTHENED": "三次强流入·趋势加强",
+                }.get(inflow_stage, "热门股资金流入候选")
+                emoji = "📈"
             else:
                 head = "主力资金上升" if rising else "主力资金回落"
                 emoji = "📈" if rising else "📉"
-            # 热门股流入候选=INFO（经治理器预算/折叠）；持仓流出/趋势=WARNING
-            level = AlertLevel.INFO if large_inflow else AlertLevel.WARNING
-            if large_inflow:
+            # 首次观察走 INFO 预算；确认/加强和卖出风险用 WARNING。
+            level = (AlertLevel.INFO
+                     if large_inflow and inflow_stage == "FIRST"
+                     else AlertLevel.WARNING)
+            if held_outflow:
+                flow_line = (f"- 窗口净流出：**{-alert.window_main_net / 1e4:.0f}万**　"
+                             f"第 **{alert.big_sell_count}** 次大单流出")
+            elif trailing_exit:
+                flow_line = (f"- 确认后峰值：**{getattr(alert, 'inflow_peak_price', 0.0):.3f}**　"
+                             f"现价 **{alert.last_price:.3f}**\n"
+                             f"- 峰值回撤：**{getattr(alert, 'price_pullback_pct', 0.0):.2%}**"
+                             f"（阈值 1.5%）")
+            elif large_inflow:
                 flow_line = (f"- 窗口净流入：**+{alert.window_main_net / 1e4:.0f}万**　"
+                             f"本轮第 **{getattr(alert, 'inflow_sequence_no', 1)}** 次确认　"
                              f"第 **{alert.big_buy_count}** 次大单买入\n"
                              f"- 买卖强度：大买 **{alert.window_big_buy / 1e4:.0f}万** / "
                              f"大卖 **{alert.window_big_sell / 1e4:.0f}万**　"
@@ -1194,43 +1215,58 @@ class QuotePipeline:
                              f"- 热门过滤：市场宽度 **{alert.market_breadth:.0%}**"
                              f"（{alert.market_universe_size}只）　成交额前 "
                              f"**{max(0.0, (1.0 - alert.turnover_rank_percentile) * 100):.0f}%**")
-            elif held_outflow:
-                flow_line = (f"- 窗口净流出：**{-alert.window_main_net / 1e4:.0f}万**　"
-                             f"第 **{alert.big_sell_count}** 次大单流出")
             elif rising:
                 flow_line = f"- 累计净流入：**+{alert.cum_main_net / 1e4:.0f}万**　第 **{alert.big_buy_count}** 次大单买入"
             elif alert.cum_main_net < 0:
                 flow_line = f"- 主力净流出：**{-alert.cum_main_net / 1e4:.0f}万**（疑似拉高出货）　第 **{alert.big_sell_count}** 次大单流出"
             else:
                 flow_line = f"- 自峰值回落：**{alert.pullback_amount / 1e4:.0f}万**　第 **{alert.big_sell_count}** 次大单流出"
-            if large_inflow:
-                action_line = "- ℹ️ 这是热门股资金流观察候选，不是自动买入指令；请结合价格位置和止损判断"
-            elif held_outflow:
+            if held_outflow:
                 action_line = "- ⚠️ 卖出提醒：持仓出现大单净流出，请立即检查卖出/减仓条件；本提醒不会自动下单"
+            elif trailing_exit:
+                action_line = "- ⚠️ 止盈/卖出提醒：二次流入确认后已从峰值回撤1.5%，本轮买点确认结束"
+            elif large_inflow and inflow_stage == "FIRST":
+                action_line = "- ℹ️ 首次信号仅供小仓试入/观察；15分钟内没有第二次强流入将自动失效"
+            elif large_inflow and inflow_stage == "CONFIRMED":
+                action_line = "- ✅ 买点确认：已有仓位继续持有；未持仓只宜小仓确认，不建议追高重仓"
+            elif large_inflow and inflow_stage == "STRENGTHENED":
+                action_line = "- ✅ 趋势加强：继续持有并跟踪峰值回撤，不因第三次确认追高加仓"
+            elif large_inflow:
+                action_line = "- ℹ️ 热门股资金流观察提醒，不是自动买入指令"
             elif rising:
                 action_line = "- ℹ️ 资金流上升仅供观察，不是自动买入指令"
             else:
                 action_line = "- ⚠️ 资金回落风险提醒，请结合持仓、价格位置和止损条件判断"
+            strength_line = (
+                f"- 价格止盈线：峰值回撤 **{getattr(alert, 'price_pullback_pct', 0.0):.2%}**"
+                if trailing_exit else
+                f"- 力度：**{alert.strength_mult:.1f}×**（{alert.strength_tier}）　大单门槛≈{alert.big_order_threshold / 1e4:.0f}万"
+            )
             content = (
                 f"- 股票：**{alert.stock_name}** ({alert.stock_code})\n"
                 f"- 现价：**{alert.last_price:.3f}**　日内：**{alert.intraday_change_pct:+.2f}%**\n"
                 f"{flow_line}\n"
-                f"- 力度：**{alert.strength_mult:.1f}×**（{alert.strength_tier}）　大单门槛≈{alert.big_order_threshold / 1e4:.0f}万\n"
+                f"{strength_line}\n"
                 f"{action_line}"
             )
             # 持仓主力净流出=独立类别 + must-see 优先级(≥90)：不被每日上限折叠，"每笔即推"落地；
             # 大额主力资金流入=独立类别 + INFO：经治理器预算/每股上限/折叠摘要限流，
             #   故绝不设 severity=high（否则会被提到预算豁免线而绕过限流）。
             # 三类都能被 WECHAT_SOLO_CATEGORIES 白名单单独放行。
-            if large_inflow:
-                category = "大额主力资金流入"
-                dedup_key = f"largeinflow:{alert.stock_code}:{alert.big_buy_count}"
-                prio, sev = None, None
-            elif held_outflow:
+            if held_outflow:
                 category = "持仓主力净流出"
                 dedup_key = f"captrend:{alert.stock_code}:{alert.direction}:{alert.big_buy_count}:{alert.big_sell_count}"
                 prio = 92
                 sev = "high" if alert.strength_tier == "强" else None
+            elif trailing_exit:
+                category = "主力资金止盈"
+                dedup_key = f"capitaltrail:{alert.stock_code}:{alert.inflow_sequence_no}"
+                prio, sev = 91, "high"
+            elif large_inflow:
+                category = ("大额主力资金流入" if inflow_stage == "FIRST" else "资金流入确认")
+                dedup_key = f"largeinflow:{alert.stock_code}:{inflow_stage}:{alert.big_buy_count}"
+                prio = None if inflow_stage == "FIRST" else 82
+                sev = None
             else:
                 category = "主力资金趋势"
                 dedup_key = f"captrend:{alert.stock_code}:{alert.direction}:{alert.big_buy_count}:{alert.big_sell_count}"

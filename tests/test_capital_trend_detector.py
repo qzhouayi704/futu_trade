@@ -247,7 +247,8 @@ def test_large_inflow_fires_when_buy_side_dominant():
                           wbuy=13_340_000, wsell=1_350_000), 105, 100, TIERS, stock_name="某股")
     assert al is not None and al.direction == "RISING"
     assert al.is_large_inflow is True and al.is_strong_push is False
-    assert "大额主力资金流入" in al.reason and "第2次大单买入" in al.reason
+    assert al.inflow_stage == "FIRST" and al.inflow_sequence_no == 1
+    assert "首次强流入" in al.reason and "第2次大单买入" in al.reason
     assert "买占比91%" in al.reason           # 文案摊开买卖强度
     assert al.window_big_buy == 13_340_000 and al.window_big_sell == 1_350_000
 
@@ -275,6 +276,7 @@ def test_large_inflow_carries_hot_market_context():
     }
     alert = a.evaluate(snap, 105, 100, TIERS, inflow_context=allowed)
     assert alert is not None and alert.is_large_inflow
+    assert alert.inflow_stage == "FIRST"
     assert alert.is_hot_candidate is True
     assert alert.market_breadth == 0.63
     assert alert.market_universe_size == 121
@@ -308,18 +310,83 @@ def test_large_inflow_skips_small():
     assert a.evaluate(_snap(cum=4e6, peak=5e6, window=1_500_000, bbc=1), 105, 100, TIERS) is None
 
 
-# ---------- 21. 大额流入：1 分钟内不重复，跨分钟攒批 ----------
+# ---------- 21. 大额流入：相邻独立确认至少5分钟，且必须有当前新增大单 ----------
 def test_large_inflow_cooldown_batches():
     clk = FakeClock()
-    a = _det(clk, inflow_cooldown_sec=60)
+    a = _det(clk, inflow_cooldown_sec=300)
     a1 = a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 105, 100, TIERS)
-    assert a1 is not None and a1.is_large_inflow
-    clk.advance(20)   # 冷却内 → 不再出大额流入
+    assert a1 is not None and a1.inflow_stage == "FIRST"
+    clk.advance(20)   # 5分钟内的新大单只标记已看见，不能留到冷却后冒充确认
     a2 = a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=3), 106, 100, TIERS)
     assert a2 is None or not a2.is_large_inflow
-    clk.advance(50)   # 跨过 60s → 攒批（自上次第1笔到第4笔=新增3笔）
+    clk.advance(280)
+    assert a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=3), 106, 100, TIERS) is None
+    # 冷却到期后必须再来一笔新大单，才构成二次确认。
     a3 = a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=4), 107, 100, TIERS)
-    assert a3 is not None and a3.is_large_inflow and "本轮新增3笔" in a3.reason
+    assert a3 is not None and a3.inflow_stage == "CONFIRMED"
+    assert "本轮新增3笔" in a3.reason
+
+
+def test_second_inflow_within_15_minutes_confirms_buy_point():
+    clk = FakeClock()
+    a = _det(clk)
+    first = a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    assert first is not None and first.inflow_stage == "FIRST"
+    clk.advance(300)
+    second = a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=2), 101, 100, TIERS)
+    assert second is not None and second.inflow_stage == "CONFIRMED"
+    assert second.inflow_sequence_no == 2
+    assert "买点确认/继续持有" in second.reason
+
+
+def test_first_inflow_expires_without_second_confirmation():
+    clk = FakeClock()
+    a = _det(clk)
+    a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    clk.advance(901)
+    expired = a.evaluate(_snap(cum=5e6, peak=7e6, window=1e6, bbc=1), 99, 100, TIERS)
+    assert expired is not None and expired.is_inflow_expired
+    assert expired.inflow_stage == "EXPIRED"
+    assert "观察失效" in expired.reason
+
+
+def test_late_second_inflow_starts_a_new_first_observation():
+    clk = FakeClock()
+    a = _det(clk)
+    a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    clk.advance(901)
+    restarted = a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=2), 101, 100, TIERS)
+    assert restarted is not None and restarted.inflow_stage == "FIRST"
+    assert restarted.inflow_sequence_no == 1
+
+
+def test_third_inflow_strengthens_once_without_further_spam():
+    clk = FakeClock()
+    a = _det(clk, inflow_cooldown_sec=300)
+    a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    clk.advance(300)
+    a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=2), 101, 100, TIERS)
+    clk.advance(300)
+    third = a.evaluate(_snap(cum=11e6, peak=11e6, window=9e6, bbc=3), 102, 100, TIERS)
+    assert third is not None and third.inflow_stage == "STRENGTHENED"
+    clk.advance(300)
+    assert a.evaluate(_snap(cum=13e6, peak=13e6, window=9e6, bbc=4), 103, 100, TIERS) is None
+
+
+def test_confirmed_inflow_trails_peak_by_1_5_percent():
+    clk = FakeClock()
+    a = _det(clk, inflow_cooldown_sec=300)
+    a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    clk.advance(300)
+    a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=2), 102, 100, TIERS)
+    clk.advance(60)
+    assert a.evaluate(_snap(cum=9e6, peak=9e6, window=8e6, bbc=2), 104, 100, TIERS) is None
+    clk.advance(60)
+    trailing = a.evaluate(_snap(cum=8e6, peak=9e6, window=5e6, bbc=2), 102.4, 100, TIERS)
+    assert trailing is not None and trailing.is_inflow_trailing_exit
+    assert trailing.inflow_stage == "TRAIL_EXIT"
+    assert trailing.price_pullback_pct >= 0.015
+    assert "止盈/卖出提醒" in trailing.reason
 
 
 # ---------- 22. 大额流入：每日上限 ----------

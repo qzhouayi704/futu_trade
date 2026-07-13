@@ -25,7 +25,6 @@ def _gate(**overrides):
     cfg = InflowMarketGateConfig(
         enabled=True,
         hot_turnover_percentile=0.80,
-        hot_min_change_pct=3.0,
         min_market_breadth=0.55,
         min_universe_size=20,
     )
@@ -52,6 +51,14 @@ def test_breadth_below_55_blocks_even_hottest_stock():
     assert top["is_hot"] is True
     assert top["eligible"] is False
     assert "市场宽度不足" in top["reason"]
+
+
+def test_hot_stock_does_not_need_to_be_up_3_percent():
+    quotes = _quotes(up_count=60)
+    quotes[0]["change_percent"] = -2.0
+    top = _gate().evaluate(quotes)["HK.00000"]
+    assert top["is_hot"] is True
+    assert top["eligible"] is True
 
 
 def test_market_breadth_is_calculated_independently():

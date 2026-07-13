@@ -84,6 +84,12 @@ interface CapitalTrendSignal {
   market_breadth?: number;
   market_universe_size?: number;
   turnover_rank_percentile?: number;
+  inflow_stage?: "FIRST" | "CONFIRMED" | "STRENGTHENED" | "EXPIRED" | "TRAIL_EXIT";
+  inflow_sequence_no?: number;
+  inflow_peak_price?: number;
+  price_pullback_pct?: number;
+  is_inflow_expired?: boolean;
+  is_inflow_trailing_exit?: boolean;
 }
 
 // 统一信号项
@@ -205,7 +211,7 @@ export function UnifiedSignalFeed({
           const seen = new Set<string>();
           const out: CapitalTrendSignal[] = [];
           for (const s of merged) {
-            const k = `${s.stock_code}:${s.direction}:${s.big_buy_count}:${s.big_sell_count}`;
+            const k = `${s.stock_code}:${s.direction}:${s.inflow_stage ?? ""}:${s.big_buy_count}:${s.big_sell_count}`;
             if (seen.has(k)) continue;
             seen.add(k);
             out.push(s);
@@ -278,7 +284,7 @@ export function UnifiedSignalFeed({
         const seen = new Set<string>();
         return updated.filter(s => {
           // 同股同方向同"第几次大单"折叠，保留最新
-          const key = `${s.stock_code}:${s.direction}:${s.big_buy_count}:${s.big_sell_count}`;
+          const key = `${s.stock_code}:${s.direction}:${s.inflow_stage ?? ""}:${s.big_buy_count}:${s.big_sell_count}`;
           if (seen.has(key)) return false;
           seen.add(key);
           return true;
@@ -312,7 +318,27 @@ export function UnifiedSignalFeed({
       const rising = sig.direction === "RISING";
       const strong = sig.strength_tier === "强";
       const sellReminder = !rising && sig.is_held_outflow === true;
+      const trailingExit = sig.is_inflow_trailing_exit === true;
+      const expired = sig.is_inflow_expired === true;
       const inflowCandidate = rising && sig.is_large_inflow === true;
+      const confirmed = sig.inflow_stage === "CONFIRMED";
+      const strengthened = sig.inflow_stage === "STRENGTHENED";
+      const label = sellReminder
+        ? "持仓卖出提醒"
+        : trailingExit
+          ? "峰值回撤止盈"
+          : expired
+            ? "流入确认失效"
+            : strengthened
+              ? "资金趋势加强"
+              : confirmed
+                ? "资金买点确认"
+                : inflowCandidate
+                  ? "首次流入观察"
+                  : rising ? "主力流入" : "主力回落";
+      const bucket: SignalBucket = (sellReminder || trailingExit || (!rising && !expired))
+        ? "risk"
+        : (confirmed || strengthened || (rising && !inflowCandidate && !expired)) ? "buy" : "watch";
       const timeStr = sig.timestamp
         ? new Date(sig.timestamp * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
         : new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
@@ -322,12 +348,12 @@ export function UnifiedSignalFeed({
         time: timeStr,
         stock_code: sig.stock_code,
         stock_name: sig.stock_name,
-        emoji: rising ? "📈" : "📉",
-        label: `${sellReminder ? "持仓卖出提醒" : inflowCandidate ? "资金流入候选" : rising ? "主力流入" : "主力回落"}·${sig.strength_tier}`,
+        emoji: bucket === "risk" ? "📉" : "📈",
+        label: `${label}·${sig.strength_tier}`,
         detail: sig.reason,
-        urgency: (sellReminder ? 96 : inflowCandidate ? 72 : rising ? 88 : 89) + (strong ? 2 : 0),
-        is_red: !rising,
-        ...BUCKET_STYLE[inflowCandidate ? "watch" : rising ? "buy" : "risk"],
+        urgency: (sellReminder ? 96 : trailingExit ? 94 : strengthened ? 92 : confirmed ? 90 : expired ? 50 : inflowCandidate ? 72 : rising ? 88 : 89) + (strong ? 2 : 0),
+        is_red: bucket === "risk",
+        ...BUCKET_STYLE[bucket],
         price: sig.last_price,
         pricePct: sig.intraday_change_pct,
       });

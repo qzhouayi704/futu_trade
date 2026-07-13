@@ -47,7 +47,6 @@ def _change_pct(quote: dict) -> Optional[float]:
 class InflowMarketGateConfig:
     enabled: bool = True
     hot_turnover_percentile: float = 0.80
-    hot_min_change_pct: float = 3.0
     min_market_breadth: float = 0.55
     min_universe_size: int = 20
 
@@ -59,9 +58,6 @@ class InflowMarketGateConfig:
             enabled=env_flag("CAPITAL_INFLOW_HOT_GATE_ENABLED", True),
             hot_turnover_percentile=_env_float(
                 "CAPITAL_INFLOW_HOT_TURNOVER_PCT", cls.hot_turnover_percentile
-            ),
-            hot_min_change_pct=_env_float(
-                "CAPITAL_INFLOW_HOT_MIN_CHANGE", cls.hot_min_change_pct
             ),
             min_market_breadth=_env_float(
                 "CAPITAL_INFLOW_MIN_BREADTH", cls.min_market_breadth
@@ -128,7 +124,8 @@ class InflowMarketGate:
             for row in rows:
                 code = row["code"]
                 rank_pct = rank_by_code.get(code, 0.0)
-                is_hot = code in hot_codes and row["change"] >= self.cfg.hot_min_change_pct
+                # 热门只按成交额定义，不要求股价先涨3%；低位启动也应进入资金确认流程。
+                is_hot = code in hot_codes
                 enough_quotes = universe_size >= self.cfg.min_universe_size
                 breadth_ok = breadth >= self.cfg.min_market_breadth
                 eligible = (not self.cfg.enabled) or (enough_quotes and breadth_ok and is_hot)
@@ -140,9 +137,6 @@ class InflowMarketGate:
                 elif not breadth_ok:
                     reason = (f"市场宽度不足({breadth:.0%}"
                               f"<{self.cfg.min_market_breadth:.0%})")
-                elif row["change"] < self.cfg.hot_min_change_pct:
-                    reason = (f"日内涨幅不足({row['change']:+.2f}%"
-                              f"<{self.cfg.hot_min_change_pct:.2f}%)")
                 elif code not in hot_codes:
                     top_pct = max(0.0, (1.0 - self.cfg.hot_turnover_percentile) * 100)
                     reason = f"成交额未进入市场前{top_pct:.0f}%"

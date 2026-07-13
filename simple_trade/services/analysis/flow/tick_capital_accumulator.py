@@ -62,7 +62,7 @@ class TickCapitalConfig:
     enabled: bool = False
     large_threshold: float = 100_000.0      # 单笔成交额 ≥ 此值 = 大单
     super_threshold: float = 1_000_000.0     # ≥ 此值 = 超大单
-    window_seconds: int = 900                # 滚动窗口 15min
+    window_seconds: int = 600                # 滚动窗口 10min（资金流确认回测口径）
 
     @classmethod
     def from_env(cls) -> "TickCapitalConfig":
