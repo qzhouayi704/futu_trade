@@ -110,19 +110,24 @@ def full_days(conn):
 
 
 def load_kline(conn, codes_hint_days):
-    """(code -> [(date, close), ...升序]) 用于次日收益。"""
+    """kline 三张映射: 次日close / 昨收 / 昨日涨幅。"""
     kmap = defaultdict(list)
     for code, tk, close in conn.execute(
         "SELECT stock_code, substr(time_key,1,10), close_price FROM kline_data "
-        "WHERE time_key >= '2026-06-01' ORDER BY stock_code, time_key"
+        "WHERE time_key >= '2026-05-25' ORDER BY stock_code, time_key"
     ):
         if close:
             kmap[code].append((tk, float(close)))
-    nxt = {}
+    nxt, prevclose, prevret = {}, {}, {}
     for code, rows in kmap.items():
-        for j in range(len(rows) - 1):
-            nxt[(code, rows[j][0])] = rows[j + 1][1]
-    return nxt  # (code, date) -> 次一交易日 close
+        for j in range(len(rows)):
+            if j + 1 < len(rows):
+                nxt[(code, rows[j][0])] = rows[j + 1][1]
+            if j >= 1:
+                prevclose[(code, rows[j][0])] = rows[j - 1][1]
+            if j >= 2 and rows[j - 2][1] > 0:
+                prevret[(code, rows[j][0])] = rows[j - 1][1] / rows[j - 2][1] - 1.0
+    return nxt, prevclose, prevret
 
 
 _FIELDS = ("tmb", "tms", "bb", "bs", "sb", "ss", "cb", "cs")
@@ -199,6 +204,7 @@ def derive(r, code, day, nxt_close):
     big = r["bb"] - r["bs"]
     sup = r["sb"] - r["ss"]
     d["big_m"], d["sup_m"] = big, sup
+    d["cum"] = np.cumsum(big)  # 当日累计大单净额
     d["ms_m"] = (r["tmb"] - r["tms"]) - big
     d["Wbig"], d["Wsup"] = _roll(big), _roll(sup)
     d["Wpl"] = d["Wbig"] - d["Wsup"]
@@ -349,6 +355,26 @@ def tc_event(d, i0, L, day, code):
     r["tt60"] = int(np.nanargmax(seg60)) + 1 if len(seg60) else None  # 冲高出现在入场后第几分钟
     r["chg0"] = float(p0 / d["open"] - 1.0) if d.get("open") else None  # 触发时日内涨幅
     r["turn_pct"] = d.get("turn_pct")  # 当日成交额分位(全天标签, 仅用于分层)
+
+    # --- 尾部(抓大肉)特征与出场 ---
+    r["wmult"] = float(Wbig[i0] / L) if L else None          # 触发时窗口净额倍数
+    r["sup_w"] = float(d["Wsup"][i0])                        # 触发时窗口超大单净额
+    r["sup_thr"] = SUPER_MULT * L if L else None
+    cum = d["cum"]
+    r["cum_hi"] = bool(cum[i0] >= cum[: i0 + 1].max() - 1e-9)  # 当日累计净额创新高
+    r["i0"] = int(i0)
+    seg = p[i0 + 1: last + 1]
+    if len(seg):
+        hit5 = np.where(seg >= p0 * 1.05)[0]
+        r["tt5"] = int(hit5[0]) + 1 if len(hit5) else None   # 到达+5%用时(分钟)
+        peaks = np.maximum.accumulate(np.maximum(seg, p0))
+        for x, key in ((0.015, "r_trail15"), (0.025, "r_trail25")):
+            hit = np.where(seg <= peaks * (1 - x))[0]
+            r[key] = (float(seg[hit[0]] / p0 - 1.0) if len(hit)
+                      else float(seg[-1] / p0 - 1.0))        # 跟踪止损出场收益
+    else:
+        r["tt5"], r["r_trail15"], r["r_trail25"] = None, None, None
+    r["flip_before5"] = (dh is not None and r["tt5"] is not None and dh < r["tt5"])
     return r
 
 
@@ -550,8 +576,9 @@ def main():
     for d, why in dropped:
         print("  剔除 %s (%s)" % (d, why))
 
-    nxt_close = load_kline(conn, days)
+    nxt_close, prev_close, prev_ret = load_kline(conn, days)
     alerts_by_day, n_bad_alerts = load_alerts(conn, days)
+    tc_seq = defaultdict(int)  # (fam, day, code) -> 当日第几次流入事件
 
     agg = Agg()
     bagg = Agg()          # Track B, fam = 提醒类别
@@ -616,7 +643,13 @@ def main():
                     agg.add_event(fam, day, i, dr, d, ctrl, med, code)
                 if fam in TC_FAMS:
                     for i in evs_idx:
-                        tcoll[fam].append(tc_event(d, i, d["thr"], day, code))
+                        ev = tc_event(d, i, d["thr"], day, code)
+                        tc_seq[(fam, day, code)] += 1
+                        ev["seq"] = tc_seq[(fam, day, code)]
+                        pc = prev_close.get((code, day))
+                        ev["chgpc"] = (float(d["p"][i] / pc - 1.0) if pc else None)
+                        ev["prev_ret"] = prev_ret.get((code, day))
+                        tcoll[fam].append(ev)
             if not args.no_leadlag:
                 ll.add(d)
 
@@ -947,6 +980,90 @@ def main():
                 str(k): (float(np.mean([f[k] for f in fas if f.get(k) is not None]))
                          if any(f.get(k) is not None for f in fas) else None)
                 for k in list(TC_FLIP_KS) + ["eod", "e2f"]}
+    print()
+
+    # ---------------- 尾部: 抓大肉(≥5%)
+    print("十、抓大肉: 流入后冲到 ≥3%/5%/8% 的尾部分析 (MFE=触发后到收盘最高冲高)")
+    for fam in TC_FAMS:
+        evs = tcoll[fam]
+        if not evs:
+            continue
+        jfam = results["trackC"].setdefault(fam, {})
+        mfe_all = np.asarray([e["mfe_eod"] for e in evs if e.get("mfe_eod") is not None], float)
+        n = len(mfe_all)
+        if not n:
+            continue
+        base5 = float((mfe_all >= 0.05).mean())
+        print("  [%s] N=%d 基率: ≥2%%: %.1f%% | ≥3%%: %.1f%% | ≥5%%: %.1f%% | ≥8%%: %.1f%%" % (
+            fam, n, 100 * (mfe_all >= 0.02).mean(), 100 * (mfe_all >= 0.03).mean(),
+            100 * base5, 100 * (mfe_all >= 0.08).mean()))
+        jfam["tail_base"] = {"n": n, "ge3": float((mfe_all >= 0.03).mean()), "ge5": base5,
+                             "ge8": float((mfe_all >= 0.08).mean())}
+        tt = [e["tt5"] for e in evs if e.get("tt5") is not None]
+        fb = [e["flip_before5"] for e in evs if e.get("tt5") is not None]
+        if tt:
+            print("    达到+5%%者用时中位 %d 分钟; 其中 %.0f%% 在到达前已出现hard翻转(翻转出场会提前下车)" % (
+                int(np.median(tt)), 100 * np.mean(fb)))
+        print("    特征增益(桶内 ≥5%% 概率, 基率 %.1f%%):" % (100 * base5))
+        feats = (
+            ("早盘触发(≤10:30)", lambda e: e["i0"] <= TOD_SPLIT1),
+            ("上午盘中", lambda e: TOD_SPLIT1 < e["i0"] < LUNCH_OPEN),
+            ("午后触发", lambda e: e["i0"] >= LUNCH_OPEN),
+            ("日内涨<0(低位)", lambda e: e.get("chg0") is not None and e["chg0"] < 0),
+            ("日内0~3%", lambda e: e.get("chg0") is not None and 0 <= e["chg0"] < 0.03),
+            ("日内3~6%", lambda e: e.get("chg0") is not None and 0.03 <= e["chg0"] < 0.06),
+            ("日内≥6%", lambda e: e.get("chg0") is not None and e["chg0"] >= 0.06),
+            ("成交额top20%", lambda e: (e.get("turn_pct") or 0) >= 0.8),
+            ("流入强度≥5×", lambda e: (e.get("wmult") or 0) >= 5),
+            ("超大单同向(>0)", lambda e: (e.get("sup_w") or 0) > 0),
+            ("超大≥1×超大门槛", lambda e: e.get("sup_thr") and (e.get("sup_w") or 0) >= e["sup_thr"]),
+            ("累计净额创新高", lambda e: bool(e.get("cum_hi"))),
+            ("当天第1次流入", lambda e: e.get("seq") == 1),
+            ("当天第≥3次流入", lambda e: (e.get("seq") or 0) >= 3),
+            ("昨日涨≥3%", lambda e: (e.get("prev_ret") or 0) >= 0.03),
+        )
+        for fname, sel in feats:
+            g = [e["mfe_eod"] for e in evs if sel(e) and e.get("mfe_eod") is not None]
+            if len(g) < MIN_N:
+                continue
+            arr = np.asarray(g, float)
+            r5 = float((arr >= 0.05).mean())
+            print("      %-18s N=%-5d ≥5%%: %5.1f%% (×%.1f) | ≥3%%: %5.1f%%" % (
+                fname, len(g), 100 * r5, r5 / base5 if base5 else 0,
+                100 * (arr >= 0.03).mean()))
+        ndays = len({e["day"] for e in evs})
+        print("    组合候选(探索性·多重比较风险·N<30不判) + 抓跑者出场对比(≥4%捕获率=真拿到手≥4个点的比例):")
+        combos = (
+            ("早盘+日内<6%+超大同向", lambda e: e["i0"] <= TOD_SPLIT1
+             and (e.get("chg0") is not None and e["chg0"] < 0.06) and (e.get("sup_w") or 0) > 0),
+            ("早盘+额top20%", lambda e: e["i0"] <= TOD_SPLIT1 and (e.get("turn_pct") or 0) >= 0.8),
+            ("早盘+昨日涨≥3%", lambda e: e["i0"] <= TOD_SPLIT1 and (e.get("prev_ret") or 0) >= 0.03),
+            ("额top20%+涨3~6%+创新高", lambda e: (e.get("turn_pct") or 0) >= 0.8
+             and e.get("chg0") is not None and 0.03 <= e["chg0"] < 0.06 and bool(e.get("cum_hi"))),
+        )
+        for cname, sel in combos:
+            g = [e for e in evs if sel(e) and e.get("mfe_eod") is not None]
+            if len(g) < MIN_N:
+                print("      %-24s N=%d 样本不足" % (cname, len(g)))
+                continue
+            arr = np.asarray([e["mfe_eod"] for e in g], float)
+            r5 = float((arr >= 0.05).mean())
+            line = "      %-24s N=%-4d (%.0f/天) ≥5%%: %5.1f%% (×%.1f)" % (
+                cname, len(g), len(g) / ndays, 100 * r5, r5 / base5 if base5 else 0)
+            for label, key in (("持收", "r_hold"), ("转负出", "r_soft"),
+                               ("1.5%跟踪", "r_trail15"), ("2.5%跟踪", "r_trail25")):
+                a = np.asarray([e[key] for e in g if e.get(key) is not None], float)
+                if len(a):
+                    line += " | %s %s(≥4%%:%.0f%%)" % (
+                        label, fmt_pct(float(a.mean()), 2), 100 * (a >= 0.04).mean())
+            print(line)
+            jfam.setdefault("tail_combos", {})[cname] = {
+                "n": len(g), "per_day": len(g) / ndays, "ge5": r5}
+        for label, key in (("1.5%跟踪止损(全体)", "r_trail15"), ("2.5%跟踪止损(全体)", "r_trail25")):
+            a = np.asarray([e[key] for e in evs if e.get(key) is not None], float)
+            if len(a):
+                print("    %-20s mean=%s hit=%4.1f%% | ≥4%%捕获率 %.1f%%" % (
+                    label, fmt_pct(float(a.mean())), 100 * (a > 0).mean(), 100 * (a >= 0.04).mean()))
     print()
     print("跑完 %.1fs" % (time.time() - t0))
 
