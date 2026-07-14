@@ -40,12 +40,19 @@ interface CapitalTrendSignal {
   market_universe_size?: number;
   turnover_rank_percentile?: number;
   inflow_gate_reason?: string;
-  inflow_stage?: "FIRST" | "CONFIRMED" | "STRENGTHENED" | "EXPIRED" | "TRAIL_EXIT";
+  inflow_stage?: "FIRST" | "SECOND_WATCH" | "CONFIRMED" | "STRENGTHENED" | "EXPIRED" | "REJECTED" | "INVALIDATED" | "WATCH_TRAIL_EXIT" | "TRAIL_EXIT";
   inflow_sequence_no?: number;
+  inflow_risk_mode?: "NORMAL" | "WEAK" | "EXTREME";
+  plate_name?: string;
+  plate_breadth?: number;
+  relative_strength_pct?: number;
   inflow_peak_price?: number;
   price_pullback_pct?: number;
   is_inflow_expired?: boolean;
   is_inflow_trailing_exit?: boolean;
+  is_watch_trailing_exit?: boolean;
+  is_profit_exit?: boolean;
+  is_held_outflow_recovery?: boolean;
 }
 
 type DirFilter = "all" | "RISING" | "FALLING";
@@ -286,12 +293,16 @@ export default function CapitalSignalsPage() {
                 const rising = sig.direction === "RISING";
                 const isHeld = positionSet.has(sig.stock_code);
                 const trailingExit = sig.is_inflow_trailing_exit === true;
+                const outflowRecovery = sig.is_held_outflow_recovery === true;
                 const expired = sig.is_inflow_expired === true;
                 const confirmed = sig.inflow_stage === "CONFIRMED";
                 const strengthened = sig.inflow_stage === "STRENGTHENED";
                 const first = sig.inflow_stage === "FIRST";
-                const risk = sig.is_held_outflow === true || trailingExit || (!rising && !expired);
-                const opportunity = confirmed || strengthened || (rising && !first && !expired);
+                const secondWatch = sig.inflow_stage === "SECOND_WATCH";
+                const rejected = sig.inflow_stage === "REJECTED";
+                const invalidated = sig.inflow_stage === "INVALIDATED";
+                const risk = sig.is_held_outflow === true || trailingExit || rejected || invalidated || (!rising && !expired && !outflowRecovery);
+                const opportunity = confirmed || strengthened || (rising && !first && !secondWatch && !expired && !outflowRecovery);
                 const bg = risk
                   ? "bg-red-50/60 border-red-200/50 dark:bg-red-950/20 dark:border-red-900/30"
                   : opportunity
@@ -309,15 +320,25 @@ export default function CapitalSignalsPage() {
                   : "bg-slate-200/70 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300";
                 const signalLabel = sig.is_held_outflow
                   ? "持仓卖出提醒"
+                  : outflowRecovery
+                    ? "流出被承接"
                   : trailingExit
-                    ? "峰值回撤止盈"
+                    ? sig.is_watch_trailing_exit ? "试仓回撤退出" : sig.is_profit_exit ? "峰值回撤止盈" : "确认回撤退出"
+                    : rejected
+                      ? "价格确认失败"
+                      : invalidated
+                        ? "资金确认失效"
                     : expired
                       ? "流入确认失效"
                       : strengthened
                         ? "资金趋势加强"
                         : confirmed
                           ? "资金买点确认"
-                          : first ? "首次流入观察" : rising ? "主力流入" : "主力回落";
+                          : secondWatch
+                            ? "二次流入观察"
+                            : first
+                              ? sig.inflow_risk_mode === "WEAK" ? "弱市逆势观察" : "首次流入观察"
+                              : rising ? "主力流入" : "主力回落";
 
                 return (
                   <div
@@ -376,6 +397,12 @@ export default function CapitalSignalsPage() {
                           {sig.turnover_rank_percentile !== undefined
                             ? ` 成交额前${Math.max(0, (1 - sig.turnover_rank_percentile) * 100).toFixed(0)}%`
                             : ""}
+                        </span>
+                      )}
+                      {sig.plate_name && sig.plate_breadth !== undefined && (
+                        <span className="text-[8px] px-1 py-0.5 rounded bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 border border-cyan-500/20 shrink-0 font-mono">
+                          {sig.inflow_risk_mode ?? "NORMAL"} {sig.plate_name}宽度 {(sig.plate_breadth * 100).toFixed(0)}%
+                          {sig.relative_strength_pct !== undefined ? ` 相对+${sig.relative_strength_pct.toFixed(1)}点` : ""}
                         </span>
                       )}
                       <span className="text-[8px] px-1 py-0.5 rounded bg-slate-500/10 text-slate-600 dark:text-slate-300 border border-slate-500/20 shrink-0 font-mono">

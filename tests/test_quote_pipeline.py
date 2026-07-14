@@ -358,9 +358,10 @@ class TestCapitalTrendWechat:
         alert.inflow_sequence_no = 2
         alert.inflow_peak_price = 105.0
         alert.price_pullback_pct = 0.015
+        alert.is_profit_exit = True
         _run(pipeline._push_capital_trend_wechat(wechat, alert))
         args, kwargs = wechat.send.call_args
         assert "资金流峰值回撤·止盈提醒" in args[1]
-        assert "止盈/卖出提醒" in args[2]
+        assert "止盈提醒" in args[2]
         assert kwargs["category"] == "主力资金止盈"
         assert kwargs["priority"] == 91

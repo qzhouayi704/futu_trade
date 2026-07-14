@@ -182,7 +182,7 @@ def test_held_immediate_outflow_fires_on_pure_downtrend():
     al = a.evaluate(s, 99, 100, TIERS, is_held=True, stock_name="讯策")
     assert al is not None and al.direction == "FALLING"
     assert al.is_held_outflow is True and al.is_strong_push is True
-    assert "持仓大单净流出·卖出提醒" in al.reason and "第1次大单流出" in al.reason
+    assert "持仓大单净流出·首次风险" in al.reason and "第1次大单流出" in al.reason
 
 
 # ---------- 13. 持仓净流出：小额净流出（< 大单门槛）不推 ----------
@@ -202,7 +202,8 @@ def test_held_immediate_cooldown_batches_new_sells():
     assert a.evaluate(_snap(cum=-2.5e6, peak=0, window=-2.5e6, bsc=3), 98, 100, TIERS, is_held=True) is None
     clk.advance(50)  # 跨过 60s；自上次(第1笔)以来累计新增至第4笔
     al = a.evaluate(_snap(cum=-3e6, peak=0, window=-3e6, bsc=4), 97, 100, TIERS, is_held=True)
-    assert al is not None and "本轮新增3笔" in al.reason
+    assert al is not None and "新增3笔" in al.reason
+    assert al.held_outflow_level == "STRENGTHENED"
 
 
 # ---------- 15. 持仓净流出：窗口仍净流入（被吸收）不报 ----------
@@ -217,7 +218,8 @@ def test_held_immediate_daily_cap():
     a = _det(clk, max_held_sell_per_day=2, held_cooldown_sec=0)
     fired = 0
     for i in range(1, 6):
-        al = a.evaluate(_snap(cum=-i * 2e6, peak=0, window=-2e6, bsc=i), 99, 100, TIERS, is_held=True)
+        window = -2e6 * (1.6 ** (i - 1))
+        al = a.evaluate(_snap(cum=window, peak=0, window=window, bsc=i), 99, 100, TIERS, is_held=True)
         if al:
             fired += 1
         clk.advance(1)
@@ -310,11 +312,21 @@ def test_large_inflow_skips_small():
     assert a.evaluate(_snap(cum=4e6, peak=5e6, window=1_500_000, bbc=1), 105, 100, TIERS) is None
 
 
+def test_normal_market_large_inflow_requires_four_thresholds():
+    a = _det(FakeClock())
+    alert = a.evaluate(
+        _snap(cum=7.9e6, peak=7.9e6, window=7.9e6, bbc=1,
+              wbuy=8.5e6, wsell=0.6e6),
+        105, 100, TIERS,
+    )
+    assert alert is None or not alert.is_large_inflow
+
+
 # ---------- 21. 大额流入：相邻独立确认至少5分钟，且必须有当前新增大单 ----------
 def test_large_inflow_cooldown_batches():
     clk = FakeClock()
     a = _det(clk, inflow_cooldown_sec=300)
-    a1 = a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 105, 100, TIERS)
+    a1 = a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=1), 105, 100, TIERS)
     assert a1 is not None and a1.inflow_stage == "FIRST"
     clk.advance(20)   # 5分钟内的新大单只标记已看见，不能留到冷却后冒充确认
     a2 = a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=3), 106, 100, TIERS)
@@ -330,7 +342,7 @@ def test_large_inflow_cooldown_batches():
 def test_second_inflow_within_15_minutes_confirms_buy_point():
     clk = FakeClock()
     a = _det(clk)
-    first = a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    first = a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=1), 100, 100, TIERS)
     assert first is not None and first.inflow_stage == "FIRST"
     clk.advance(300)
     second = a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=2), 101, 100, TIERS)
@@ -342,7 +354,7 @@ def test_second_inflow_within_15_minutes_confirms_buy_point():
 def test_first_inflow_expires_without_second_confirmation():
     clk = FakeClock()
     a = _det(clk)
-    a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=1), 100, 100, TIERS)
     clk.advance(901)
     expired = a.evaluate(_snap(cum=5e6, peak=7e6, window=1e6, bbc=1), 99, 100, TIERS)
     assert expired is not None and expired.is_inflow_expired
@@ -353,7 +365,7 @@ def test_first_inflow_expires_without_second_confirmation():
 def test_late_second_inflow_starts_a_new_first_observation():
     clk = FakeClock()
     a = _det(clk)
-    a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=1), 100, 100, TIERS)
     clk.advance(901)
     restarted = a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=2), 101, 100, TIERS)
     assert restarted is not None and restarted.inflow_stage == "FIRST"
@@ -363,7 +375,7 @@ def test_late_second_inflow_starts_a_new_first_observation():
 def test_third_inflow_strengthens_once_without_further_spam():
     clk = FakeClock()
     a = _det(clk, inflow_cooldown_sec=300)
-    a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=1), 100, 100, TIERS)
     clk.advance(300)
     a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=2), 101, 100, TIERS)
     clk.advance(300)
@@ -376,7 +388,7 @@ def test_third_inflow_strengthens_once_without_further_spam():
 def test_confirmed_inflow_trails_peak_by_1_5_percent():
     clk = FakeClock()
     a = _det(clk, inflow_cooldown_sec=300)
-    a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=1), 100, 100, TIERS)
+    a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=1), 100, 100, TIERS)
     clk.advance(300)
     a.evaluate(_snap(cum=9e6, peak=9e6, window=9e6, bbc=2), 102, 100, TIERS)
     clk.advance(60)
@@ -386,7 +398,171 @@ def test_confirmed_inflow_trails_peak_by_1_5_percent():
     assert trailing is not None and trailing.is_inflow_trailing_exit
     assert trailing.inflow_stage == "TRAIL_EXIT"
     assert trailing.price_pullback_pct >= 0.015
-    assert "止盈/卖出提醒" in trailing.reason
+    assert "止盈提醒" in trailing.reason
+    assert trailing.is_profit_exit is True
+
+
+def test_held_outflow_requires_sell_side_structure():
+    a = _det(FakeClock())
+    # 净额虽为-200万，但大买800万/大卖1000万，属于对敲而非卖方压倒。
+    alert = a.evaluate(
+        _snap(cum=-2e6, peak=0, window=-2e6, bsc=2,
+              wbuy=8e6, wsell=10e6),
+        99, 100, TIERS, is_held=True,
+    )
+    assert alert is None
+    # 即使股价上涨，也不能绕到“拉高出货”通用分支重复报风险。
+    rising_alert = a.evaluate(
+        _snap(cum=-3e6, peak=0, window=-2e6, bsc=3,
+              wbuy=8e6, wsell=10e6),
+        102, 100, TIERS, is_held=True,
+    )
+    assert rising_alert is None
+
+
+def test_held_outflow_does_not_repeat_until_risk_worsens():
+    clk = FakeClock()
+    a = _det(clk, held_cooldown_sec=60)
+    first = a.evaluate(
+        _snap(cum=-2e6, peak=0, window=-2e6, bsc=1),
+        100, 100, TIERS, is_held=True,
+    )
+    assert first is not None
+    clk.advance(120)
+    assert a.evaluate(
+        _snap(cum=-2.5e6, peak=0, window=-2.5e6, bsc=2),
+        99.5, 100, TIERS, is_held=True,
+    ) is None
+    price_break = a.evaluate(
+        _snap(cum=-2.5e6, peak=0, window=-2.5e6, bsc=2),
+        98.4, 100, TIERS, is_held=True,
+    )
+    assert price_break is not None
+    assert price_break.held_outflow_level == "PRICE_BREAK"
+
+
+def test_held_outflow_does_not_fall_through_to_generic_retreat():
+    clk = FakeClock()
+    a = _det(clk, held_cooldown_sec=60)
+    first = a.evaluate(
+        _snap(cum=6e6, peak=10e6, window=-2e6, bsc=1),
+        102, 100, TIERS, is_held=True,
+    )
+    assert first is not None and first.is_held_outflow
+    clk.advance(10)
+    repeated = a.evaluate(
+        _snap(cum=5e6, peak=10e6, window=-2.5e6, bsc=2),
+        101.5, 100, TIERS, is_held=True,
+    )
+    assert repeated is None
+
+
+def test_held_outflow_recovery_alerts_once_when_buyers_absorb():
+    clk = FakeClock()
+    a = _det(clk)
+    a.evaluate(
+        _snap(cum=-2e6, peak=0, window=-2e6, bsc=1),
+        99, 100, TIERS, is_held=True,
+    )
+    clk.advance(60)
+    recovered = a.evaluate(
+        _snap(cum=0, peak=0, window=2e6, bbc=1, bsc=1,
+              wbuy=3e6, wsell=1e6),
+        99.5, 100, TIERS, is_held=True,
+    )
+    assert recovered is not None and recovered.is_held_outflow_recovery
+    assert "流出被承接" in recovered.reason
+    clk.advance(60)
+    follow_up = a.evaluate(
+        _snap(cum=1e6, peak=1e6, window=2e6, bbc=2, bsc=1,
+              wbuy=3e6, wsell=1e6),
+        100, 100, TIERS, is_held=True,
+    )
+    assert follow_up is None or not follow_up.is_held_outflow_recovery
+
+
+def test_extreme_market_requires_three_independent_inflows():
+    clk = FakeClock()
+    a = _det(clk)
+    context = {
+        "eligible": True, "is_hot": True, "market_breadth": 0.30,
+        "market_universe_size": 100, "turnover_rank_percentile": 0.99,
+        "risk_mode": "EXTREME", "plate_name": "半导体",
+        "plate_breadth": 0.80, "plate_universe_size": 10,
+        "plate_median_change_pct": 1.0, "relative_strength_pct": 3.0,
+        "required_confirmations": 3, "reason": "极弱市强板块逆势候选通过",
+    }
+    first = a.evaluate(
+        _snap(cum=11e6, peak=11e6, window=10e6, bbc=1,
+              wbuy=12e6, wsell=2e6),
+        100, 100, TIERS, inflow_context=context,
+    )
+    assert first is not None and first.inflow_stage == "FIRST"
+    assert first.wechat_suppressed is True
+    clk.advance(300)
+    second = a.evaluate(
+        _snap(cum=21e6, peak=21e6, window=10e6, bbc=2,
+              wbuy=12e6, wsell=2e6),
+        101, 100, TIERS, inflow_context=context,
+    )
+    assert second is not None and second.inflow_stage == "SECOND_WATCH"
+    assert second.wechat_suppressed is True
+    clk.advance(300)
+    third = a.evaluate(
+        _snap(cum=31e6, peak=31e6, window=10e6, bbc=3,
+              wbuy=12e6, wsell=2e6),
+        102, 100, TIERS, inflow_context=context,
+    )
+    assert third is not None and third.inflow_stage == "CONFIRMED"
+    assert third.inflow_sequence_no == 3
+    assert third.wechat_suppressed is False
+
+
+def test_second_inflow_rejected_when_price_is_below_first_price():
+    clk = FakeClock()
+    a = _det(clk)
+    a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=1), 100, 100, TIERS)
+    clk.advance(120)
+    assert a.evaluate(
+        _snap(cum=8e6, peak=8e6, window=0, bbc=1), 100.8, 100, TIERS
+    ) is None
+    clk.advance(180)
+    rejected = a.evaluate(
+        _snap(cum=9e6, peak=9e6, window=9e6, bbc=2), 99.9, 100, TIERS
+    )
+    assert rejected is not None and rejected.inflow_stage == "REJECTED"
+    assert rejected.wechat_suppressed is True
+    assert "价格确认失败" in rejected.reason
+
+
+def test_watch_is_invalidated_by_large_outflow_before_confirmation():
+    clk = FakeClock()
+    a = _det(clk)
+    a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=1), 100, 100, TIERS)
+    clk.advance(60)
+    invalidated = a.evaluate(
+        _snap(cum=5e6, peak=8e6, window=-2e6, bbc=1, bsc=1),
+        99.5, 100, TIERS,
+    )
+    assert invalidated is not None
+    assert invalidated.inflow_stage == "INVALIDATED"
+    assert invalidated.wechat_suppressed is True
+
+
+def test_first_watch_uses_1_5_gain_and_1_percent_trailing_exit():
+    clk = FakeClock()
+    a = _det(clk)
+    a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=1), 100, 100, TIERS)
+    clk.advance(60)
+    assert a.evaluate(
+        _snap(cum=8e6, peak=8e6, window=0, bbc=1), 102, 100, TIERS
+    ) is None
+    clk.advance(60)
+    trailing = a.evaluate(
+        _snap(cum=8e6, peak=8e6, window=0, bbc=1), 100.9, 100, TIERS
+    )
+    assert trailing is not None and trailing.is_watch_trailing_exit
+    assert trailing.inflow_stage == "WATCH_TRAIL_EXIT"
 
 
 # ---------- 22. 大额流入：每日上限 ----------
@@ -395,7 +571,7 @@ def test_large_inflow_daily_cap():
     a = _det(clk, max_inflow_per_day=2, inflow_cooldown_sec=0)
     fired = 0
     for i in range(1, 6):
-        al = a.evaluate(_snap(cum=i * 7e6, peak=i * 7e6, window=7e6, bbc=i), 105, 100, TIERS)
+        al = a.evaluate(_snap(cum=i * 8e6, peak=i * 8e6, window=8e6, bbc=i), 105, 100, TIERS)
         if al and al.is_large_inflow:
             fired += 1
         clk.advance(1)
@@ -405,7 +581,7 @@ def test_large_inflow_daily_cap():
 # ---------- 23. 大额流入：inflow_immediate=False 时不出大额流入 ----------
 def test_large_inflow_disabled_falls_back():
     a = _det(FakeClock(), inflow_immediate=False)
-    al = a.evaluate(_snap(cum=7e6, peak=7e6, window=7e6, bbc=2), 105, 100, TIERS)
+    al = a.evaluate(_snap(cum=8e6, peak=8e6, window=8e6, bbc=2), 105, 100, TIERS)
     assert al is None or not al.is_large_inflow
 
 
@@ -422,7 +598,7 @@ def test_legacy_snapshot_without_buy_sell_split_still_works():
     a = _det(FakeClock())
     legacy = {
         "stock_code": "HK.00100", "trade_date": "2026-06-24",
-        "cum_main_net": 7e6, "cum_peak": 7e6, "window_main_net": 7e6,
+        "cum_main_net": 8e6, "cum_peak": 8e6, "window_main_net": 8e6,
         "big_buy_count": 2, "big_sell_count": 0,
     }
     al = a.evaluate(legacy, 105, 100, TIERS)

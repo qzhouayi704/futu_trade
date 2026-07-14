@@ -1136,10 +1136,16 @@ class QuotePipeline:
                     continue
                 await self.socket_manager.emit_to_all('capital_trend_alert', alert.to_dict())
                 emitted.append(alert.to_dict())
-                should_push = ((alert.direction == "FALLING" and code in held_set)
-                               or getattr(alert, 'is_large_inflow', False)   # 热门股流入候选，经治理器限流
-                               or getattr(alert, 'is_inflow_trailing_exit', False)
-                               or (push_all and alert.is_strong_push))
+                should_push = (
+                    not getattr(alert, 'wechat_suppressed', False)
+                    and (
+                        (alert.direction == "FALLING" and code in held_set)
+                        or getattr(alert, 'is_large_inflow', False)
+                        or getattr(alert, 'is_inflow_trailing_exit', False)
+                        or getattr(alert, 'is_held_outflow_recovery', False)
+                        or (push_all and alert.is_strong_push)
+                    )
+                )
                 if should_push and wechat and getattr(wechat, 'enabled', False):
                     task = asyncio.create_task(self._push_capital_trend_wechat(wechat, alert))
                     self._pending_tasks.add(task)
@@ -1175,18 +1181,34 @@ class QuotePipeline:
         try:
             from ...services.alert.wechat_alert import AlertLevel
             held_outflow = getattr(alert, 'is_held_outflow', False)
+            held_recovery = getattr(alert, 'is_held_outflow_recovery', False)
             large_inflow = getattr(alert, 'is_large_inflow', False)
             inflow_stage = getattr(alert, 'inflow_stage', '')
             trailing_exit = getattr(alert, 'is_inflow_trailing_exit', False)
+            watch_trailing_exit = getattr(alert, 'is_watch_trailing_exit', False)
+            profit_exit = getattr(alert, 'is_profit_exit', False)
+            risk_mode = getattr(alert, 'inflow_risk_mode', 'NORMAL')
             rising = alert.direction == "RISING"
             if held_outflow:
                 head, emoji = "持仓大单净流出·卖出提醒", "📉"
+            elif held_recovery:
+                head, emoji = "持仓流出被承接·风险降级", "📈"
             elif trailing_exit:
-                head, emoji = "资金流峰值回撤·止盈提醒", "📉"
+                if watch_trailing_exit:
+                    head = "资金流试仓·回撤退出"
+                elif profit_exit:
+                    head = "资金流峰值回撤·止盈提醒"
+                else:
+                    head = "资金流确认失败·回撤退出"
+                emoji = "📉"
             elif large_inflow:
                 head = {
-                    "FIRST": "首次强流入·试仓观察",
-                    "CONFIRMED": "二次强流入·买点确认",
+                    "FIRST": ("首次强流入·弱市逆势观察"
+                              if risk_mode == "WEAK" else "首次强流入·试仓观察"),
+                    "SECOND_WATCH": "极弱市二次流入·继续观察",
+                    "CONFIRMED": ("三次强流入·极弱市逆势确认"
+                                  if getattr(alert, 'inflow_sequence_no', 0) >= 3
+                                  else "二次强流入·买点确认"),
                     "STRENGTHENED": "三次强流入·趋势加强",
                 }.get(inflow_stage, "热门股资金流入候选")
                 emoji = "📈"
@@ -1199,12 +1221,19 @@ class QuotePipeline:
                      else AlertLevel.WARNING)
             if held_outflow:
                 flow_line = (f"- 窗口净流出：**{-alert.window_main_net / 1e4:.0f}万**　"
-                             f"第 **{alert.big_sell_count}** 次大单流出")
+                             f"第 **{alert.big_sell_count}** 次大单流出\n"
+                             f"- 买卖结构：大买 **{getattr(alert, 'window_big_buy', 0.0) / 1e4:.0f}万** / "
+                             f"大卖 **{getattr(alert, 'window_big_sell', 0.0) / 1e4:.0f}万**　"
+                             f"大卖占比 **{1.0 - getattr(alert, 'window_buy_ratio', 0.0):.0%}**")
+            elif held_recovery:
+                flow_line = (f"- 窗口净流入：**+{alert.window_main_net / 1e4:.0f}万**\n"
+                             f"- 买卖结构：大买 **{alert.window_big_buy / 1e4:.0f}万** / "
+                             f"大卖 **{alert.window_big_sell / 1e4:.0f}万**")
             elif trailing_exit:
-                flow_line = (f"- 确认后峰值：**{getattr(alert, 'inflow_peak_price', 0.0):.3f}**　"
+                stage_label = "观察后峰值" if watch_trailing_exit else "确认后峰值"
+                flow_line = (f"- {stage_label}：**{getattr(alert, 'inflow_peak_price', 0.0):.3f}**　"
                              f"现价 **{alert.last_price:.3f}**\n"
-                             f"- 峰值回撤：**{getattr(alert, 'price_pullback_pct', 0.0):.2%}**"
-                             f"（阈值 1.5%）")
+                             f"- 峰值回撤：**{getattr(alert, 'price_pullback_pct', 0.0):.2%}**")
             elif large_inflow:
                 flow_line = (f"- 窗口净流入：**+{alert.window_main_net / 1e4:.0f}万**　"
                              f"本轮第 **{getattr(alert, 'inflow_sequence_no', 1)}** 次确认　"
@@ -1214,7 +1243,10 @@ class QuotePipeline:
                              f"买占比 **{alert.window_buy_ratio:.0%}**\n"
                              f"- 热门过滤：市场宽度 **{alert.market_breadth:.0%}**"
                              f"（{alert.market_universe_size}只）　成交额前 "
-                             f"**{max(0.0, (1.0 - alert.turnover_rank_percentile) * 100):.0f}%**")
+                             f"**{max(0.0, (1.0 - alert.turnover_rank_percentile) * 100):.0f}%**\n"
+                             f"- 市场模式：**{risk_mode}**　板块 **{getattr(alert, 'plate_name', '') or '未知'}** "
+                             f"宽度 **{getattr(alert, 'plate_breadth', 0.0):.0%}**　"
+                             f"相对板块 **{getattr(alert, 'relative_strength_pct', 0.0):+.1f}点**")
             elif rising:
                 flow_line = f"- 累计净流入：**+{alert.cum_main_net / 1e4:.0f}万**　第 **{alert.big_buy_count}** 次大单买入"
             elif alert.cum_main_net < 0:
@@ -1223,8 +1255,15 @@ class QuotePipeline:
                 flow_line = f"- 自峰值回落：**{alert.pullback_amount / 1e4:.0f}万**　第 **{alert.big_sell_count}** 次大单流出"
             if held_outflow:
                 action_line = "- ⚠️ 卖出提醒：持仓出现大单净流出，请立即检查卖出/减仓条件；本提醒不会自动下单"
+            elif held_recovery:
+                action_line = "- ℹ️ 流出已被新大单买入承接，风险降级；不等于反向买入信号"
             elif trailing_exit:
-                action_line = "- ⚠️ 止盈/卖出提醒：二次流入确认后已从峰值回撤1.5%，本轮买点确认结束"
+                if watch_trailing_exit:
+                    action_line = "- ⚠️ 试仓保护：观察后曾上涨至少1.5%，现从峰值回撤1%，建议退出试仓"
+                elif profit_exit:
+                    action_line = "- ⚠️ 止盈提醒：确认后已从峰值回撤1.5%，本轮买点确认结束"
+                else:
+                    action_line = "- ⚠️ 确认失败：现价不高于确认价且峰值回撤1.5%，建议退出"
             elif large_inflow and inflow_stage == "FIRST":
                 action_line = "- ℹ️ 首次信号仅供小仓试入/观察；15分钟内没有第二次强流入将自动失效"
             elif large_inflow and inflow_stage == "CONFIRMED":
@@ -1258,6 +1297,10 @@ class QuotePipeline:
                 dedup_key = f"captrend:{alert.stock_code}:{alert.direction}:{alert.big_buy_count}:{alert.big_sell_count}"
                 prio = 92
                 sev = "high" if alert.strength_tier == "强" else None
+            elif held_recovery:
+                category = "持仓主力净流出"
+                dedup_key = f"captrend-recovered:{alert.stock_code}:{alert.big_buy_count}"
+                prio, sev = 90, None
             elif trailing_exit:
                 category = "主力资金止盈"
                 dedup_key = f"capitaltrail:{alert.stock_code}:{alert.inflow_sequence_no}"

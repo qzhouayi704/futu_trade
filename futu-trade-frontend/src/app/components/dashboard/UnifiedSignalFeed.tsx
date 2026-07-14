@@ -84,12 +84,19 @@ interface CapitalTrendSignal {
   market_breadth?: number;
   market_universe_size?: number;
   turnover_rank_percentile?: number;
-  inflow_stage?: "FIRST" | "CONFIRMED" | "STRENGTHENED" | "EXPIRED" | "TRAIL_EXIT";
+  inflow_stage?: "FIRST" | "SECOND_WATCH" | "CONFIRMED" | "STRENGTHENED" | "EXPIRED" | "REJECTED" | "INVALIDATED" | "WATCH_TRAIL_EXIT" | "TRAIL_EXIT";
   inflow_sequence_no?: number;
+  inflow_risk_mode?: "NORMAL" | "WEAK" | "EXTREME";
+  plate_name?: string;
+  plate_breadth?: number;
+  relative_strength_pct?: number;
   inflow_peak_price?: number;
   price_pullback_pct?: number;
   is_inflow_expired?: boolean;
   is_inflow_trailing_exit?: boolean;
+  is_watch_trailing_exit?: boolean;
+  is_profit_exit?: boolean;
+  is_held_outflow_recovery?: boolean;
 }
 
 // 统一信号项
@@ -318,25 +325,37 @@ export function UnifiedSignalFeed({
       const rising = sig.direction === "RISING";
       const strong = sig.strength_tier === "强";
       const sellReminder = !rising && sig.is_held_outflow === true;
+      const outflowRecovery = sig.is_held_outflow_recovery === true;
       const trailingExit = sig.is_inflow_trailing_exit === true;
       const expired = sig.is_inflow_expired === true;
       const inflowCandidate = rising && sig.is_large_inflow === true;
       const confirmed = sig.inflow_stage === "CONFIRMED";
       const strengthened = sig.inflow_stage === "STRENGTHENED";
+      const secondWatch = sig.inflow_stage === "SECOND_WATCH";
+      const rejected = sig.inflow_stage === "REJECTED";
+      const invalidated = sig.inflow_stage === "INVALIDATED";
       const label = sellReminder
         ? "持仓卖出提醒"
+        : outflowRecovery
+          ? "流出被承接"
         : trailingExit
-          ? "峰值回撤止盈"
+          ? sig.is_watch_trailing_exit ? "试仓回撤退出" : sig.is_profit_exit ? "峰值回撤止盈" : "确认回撤退出"
+          : rejected
+            ? "价格确认失败"
+            : invalidated
+              ? "资金确认失效"
           : expired
             ? "流入确认失效"
             : strengthened
               ? "资金趋势加强"
               : confirmed
                 ? "资金买点确认"
+                : secondWatch
+                  ? "二次流入观察"
                 : inflowCandidate
-                  ? "首次流入观察"
+                  ? sig.inflow_risk_mode === "WEAK" ? "弱市逆势观察" : "首次流入观察"
                   : rising ? "主力流入" : "主力回落";
-      const bucket: SignalBucket = (sellReminder || trailingExit || (!rising && !expired))
+      const bucket: SignalBucket = (sellReminder || trailingExit || rejected || invalidated || (!rising && !expired && !outflowRecovery))
         ? "risk"
         : (confirmed || strengthened || (rising && !inflowCandidate && !expired)) ? "buy" : "watch";
       const timeStr = sig.timestamp
@@ -351,7 +370,7 @@ export function UnifiedSignalFeed({
         emoji: bucket === "risk" ? "📉" : "📈",
         label: `${label}·${sig.strength_tier}`,
         detail: sig.reason,
-        urgency: (sellReminder ? 96 : trailingExit ? 94 : strengthened ? 92 : confirmed ? 90 : expired ? 50 : inflowCandidate ? 72 : rising ? 88 : 89) + (strong ? 2 : 0),
+        urgency: (sellReminder ? 96 : trailingExit ? 94 : invalidated ? 91 : rejected ? 84 : strengthened ? 92 : confirmed ? 90 : outflowRecovery ? 70 : expired ? 50 : inflowCandidate ? 72 : rising ? 88 : 89) + (strong ? 2 : 0),
         is_red: bucket === "risk",
         ...BUCKET_STYLE[bucket],
         price: sig.last_price,
