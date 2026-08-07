@@ -15,6 +15,7 @@
 
 import asyncio
 import logging
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
 
 logger = logging.getLogger("ticker_minute_archiver")
@@ -22,6 +23,7 @@ logger = logging.getLogger("ticker_minute_archiver")
 # ticker_minute 自身保留天数由 db_manager._auto_cleanup_old_data 控制(180天)。
 _LOOP_INTERVAL_SEC = 3600  # 每小时巡检一次(幂等，只补缺失日 + 收盘后归档当日)
 _ARCHIVE_VERSION = 2       # v2: 按真实 trade_time 归档，并跨错误 trade_date 去重
+_WRITE_TIMEOUT_SEC = 60
 
 
 class TickerMinuteArchiver:
@@ -73,20 +75,34 @@ class TickerMinuteArchiver:
                 trade_date TEXT PRIMARY KEY,
                 ticker_version INTEGER NOT NULL DEFAULT 0,
                 capital_version INTEGER NOT NULL DEFAULT 0,
+                ticker_source_max_id INTEGER NOT NULL DEFAULT 0,
+                capital_source_max_id INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT
             )
         """)
+        columns = {
+            row[1] for row in conn.execute(
+                "PRAGMA table_info(ticker_minute_archive_meta)"
+            ).fetchall()
+        }
+        if "ticker_source_max_id" not in columns:
+            conn.execute(
+                "ALTER TABLE ticker_minute_archive_meta "
+                "ADD COLUMN ticker_source_max_id INTEGER NOT NULL DEFAULT 0"
+            )
+        if "capital_source_max_id" not in columns:
+            conn.execute(
+                "ALTER TABLE ticker_minute_archive_meta "
+                "ADD COLUMN capital_source_max_id INTEGER NOT NULL DEFAULT 0"
+            )
 
     # ---------- 归档 ----------
 
     @staticmethod
-    def _archive_date(conn, D: str) -> int:
-        """按真实成交日重算分钟聚合；跨错误 ``trade_date`` 的回放副本只计一次。"""
-        conn.execute("DELETE FROM ticker_minute WHERE trade_date = ?", (D,))
-        cur = conn.execute(
+    def _aggregate_date(conn, D: str) -> list[tuple]:
+        """只读计算分钟聚合，不在耗时窗口查询期间持有主库写锁。"""
+        return conn.execute(
             """
-            INSERT INTO ticker_minute
-                (stock_code, trade_date, minute, price, high, low, buy_amt, sell_amt, volume)
             WITH ranked AS (
                 SELECT id, stock_code, price, volume, turnover, direction,
                        CASE WHEN datetime(trade_time) IS NOT NULL
@@ -115,24 +131,42 @@ class TickerMinuteArchiver:
             HAVING m BETWEEN '09:15' AND '16:10'
             """,
             (D, D, D, D),
-        )
-        return cur.rowcount or 0
+        ).fetchall()
 
-    def _archive_capital_minute(self, conn, D: str) -> int:
-        """重算并写入某交易日的「大单口径」分钟归档(每股门槛过滤)。先删后插，幂等。返回行数。
+    @staticmethod
+    def _replace_ticker_rows(conn, D: str, rows: list[tuple]) -> int:
+        """用已经聚合好的结果短事务替换指定日期。"""
+        conn.execute("DELETE FROM ticker_minute WHERE trade_date = ?", (D,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO ticker_minute "
+                "(stock_code, trade_date, minute, price, high, low, "
+                "buy_amt, sell_amt, volume) VALUES (?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
+        return len(rows)
+
+    @staticmethod
+    def _archive_date(conn, D: str) -> int:
+        """同步兼容入口；生产调度会把聚合与短写事务分开。"""
+        rows = TickerMinuteArchiver._aggregate_date(conn, D)
+        return TickerMinuteArchiver._replace_ticker_rows(conn, D, rows)
+
+    def _aggregate_capital_minute(self, conn, D: str) -> list[tuple]:
+        """只读计算某交易日的「大单口径」分钟聚合。
 
         门槛按每股取 BaselineService.get_capital_tiers(冷启动有回退);写临时表后一条 JOIN 大查询，
         不逐股慢查询。direction 用 'BUY'/'SELL'(与 _archive_date 一致)。
         """
         bs = getattr(self._container, 'baseline_service', None)
         if bs is None:
-            return 0
+            return []
         codes = [r[0] for r in conn.execute(
             "SELECT DISTINCT stock_code FROM ticker_data "
             "WHERE date(trade_time)=? OR (date(trade_time) IS NULL AND trade_date=?)",
             (D, D)).fetchall() if r[0]]
         if not codes:
-            return 0
+            return []
         conn.execute("DROP TABLE IF EXISTS _cf_thr")
         conn.execute("CREATE TEMP TABLE _cf_thr (stock_code TEXT PRIMARY KEY, large REAL, sup REAL)")
         for code in codes:
@@ -143,12 +177,8 @@ class TickerMinuteArchiver:
             if large and large > 0:
                 conn.execute("INSERT OR REPLACE INTO _cf_thr VALUES (?,?,?)",
                              (code, float(large), float(sup or large)))
-        conn.execute("DELETE FROM capital_flow_minute WHERE trade_date = ?", (D,))
-        cur = conn.execute(
+        rows = conn.execute(
             """
-            INSERT INTO capital_flow_minute
-                (stock_code, trade_date, minute, big_buy_amt, big_sell_amt,
-                 super_buy_amt, super_sell_amt, big_buy_count, big_sell_count, big_order_threshold)
             WITH ranked AS (
                 SELECT t.id, t.stock_code, t.price, t.volume, t.turnover, t.direction,
                        CASE WHEN datetime(t.trade_time) IS NOT NULL
@@ -180,9 +210,140 @@ class TickerMinuteArchiver:
             HAVING t.m BETWEEN '09:15' AND '16:10'
             """,
             (D, D, D, D),
-        )
+        ).fetchall()
         conn.execute("DROP TABLE IF EXISTS _cf_thr")
-        return cur.rowcount or 0
+        conn.commit()  # 结束 TEMP 表事务；未写入主库。
+        return rows
+
+    @staticmethod
+    def _replace_capital_rows(conn, D: str, rows: list[tuple]) -> int:
+        """用已经聚合好的大单结果短事务替换指定日期。"""
+        conn.execute("DELETE FROM capital_flow_minute WHERE trade_date = ?", (D,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO capital_flow_minute "
+                "(stock_code, trade_date, minute, big_buy_amt, big_sell_amt, "
+                "super_buy_amt, super_sell_amt, big_buy_count, big_sell_count, "
+                "big_order_threshold) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
+        return len(rows)
+
+    def _archive_capital_minute(self, conn, D: str) -> int:
+        """同步兼容入口；生产调度会把聚合与短写事务分开。"""
+        rows = self._aggregate_capital_minute(conn, D)
+        return self._replace_capital_rows(conn, D, rows)
+
+    @staticmethod
+    def _write_transaction(db, operation):
+        """在 DatabaseManager 事务内执行短写；保留轻量测试替身兼容。"""
+        transaction = getattr(db, "transaction", None)
+        if callable(transaction):
+            with transaction() as cursor:
+                return operation(cursor)
+
+        with db.get_connection() as conn:
+            try:
+                result = operation(conn)
+                conn.commit()
+                return result
+            except Exception:
+                conn.rollback()
+                raise
+
+    def _run_serialized_write(self, db, operation, label: str):
+        """把归档替换放入全局写队列，超时只取消排队任务，绝不并发直写。"""
+        write_queue = getattr(db, "write_queue", None)
+        if write_queue is None or not write_queue.is_running:
+            return self._write_transaction(db, operation)
+
+        future = write_queue.submit(self._write_transaction, db, operation)
+        try:
+            return future.result(timeout=_WRITE_TIMEOUT_SEC)
+        except FutureTimeoutError:
+            cancelled = future.cancel()
+            logger.warning(
+                "%s 等待写队列超时: cancelled=%s pending=%s",
+                label, cancelled, write_queue.pending_count,
+            )
+            raise
+
+    def _ensure_archive_tables(self, db):
+        self._run_serialized_write(
+            db,
+            lambda conn: self._ensure_table(conn),
+            "分钟归档建表",
+        )
+
+    def _persist_ticker_archive(
+        self, db, D: str, rows: list[tuple], source_max_id: int,
+    ) -> int:
+        def _persist(conn):
+            written = self._replace_ticker_rows(conn, D, rows)
+            conn.execute(
+                "INSERT OR IGNORE INTO ticker_minute_archive_meta "
+                "(trade_date, ticker_version, capital_version, "
+                "ticker_source_max_id, capital_source_max_id) VALUES (?,0,0,0,0)",
+                (D,),
+            )
+            conn.execute(
+                "UPDATE ticker_minute_archive_meta SET ticker_version=?, "
+                "ticker_source_max_id=?, updated_at=? WHERE trade_date=?",
+                (_ARCHIVE_VERSION, source_max_id, datetime.now().isoformat(), D),
+            )
+            return written
+
+        return self._run_serialized_write(db, _persist, f"ticker_minute[{D}]")
+
+    def _persist_capital_archive(
+        self, db, D: str, rows: list[tuple], source_max_id: int,
+    ) -> int:
+        def _persist(conn):
+            written = self._replace_capital_rows(conn, D, rows)
+            conn.execute(
+                "INSERT OR IGNORE INTO ticker_minute_archive_meta "
+                "(trade_date, ticker_version, capital_version, "
+                "ticker_source_max_id, capital_source_max_id) VALUES (?,0,0,0,0)",
+                (D,),
+            )
+            conn.execute(
+                "UPDATE ticker_minute_archive_meta SET capital_version=?, "
+                "capital_source_max_id=?, updated_at=? WHERE trade_date=?",
+                (_ARCHIVE_VERSION, source_max_id, datetime.now().isoformat(), D),
+            )
+            return written
+
+        return self._run_serialized_write(db, _persist, f"capital_flow_minute[{D}]")
+
+    def _persist_legacy_watermarks(
+        self,
+        db,
+        D: str,
+        source_max_id: int,
+        ticker: bool,
+        capital: bool,
+    ) -> None:
+        assignments = []
+        params = []
+        if ticker:
+            assignments.append("ticker_source_max_id=?")
+            params.append(source_max_id)
+        if capital:
+            assignments.append("capital_source_max_id=?")
+            params.append(source_max_id)
+        if not assignments:
+            return
+        assignments.append("updated_at=?")
+        params.extend((datetime.now().isoformat(), D))
+
+        def _persist(conn):
+            conn.execute(
+                f"UPDATE ticker_minute_archive_meta SET {', '.join(assignments)} "
+                "WHERE trade_date=?",
+                tuple(params),
+            )
+
+        self._run_serialized_write(db, _persist, f"archive_watermark[{D}]")
 
     def archive_present(self) -> dict:
         """把 ticker_data 里现存的、尚未归档的交易日补进 ticker_minute + capital_flow_minute。
@@ -197,46 +358,78 @@ class TickerMinuteArchiver:
         try:
             hhmm = datetime.now().strftime("%H:%M")  # 服务器=CST=HK
             today = datetime.now().strftime("%Y-%m-%d")
+            self._ensure_archive_tables(db)
             with db.get_connection() as conn:
-                self._ensure_table(conn)
-                src_dates = [r[0] for r in conn.execute(
-                    "SELECT DISTINCT actual_date FROM ("
-                    " SELECT CASE WHEN date(trade_time) IS NOT NULL THEN date(trade_time)"
-                    "             ELSE trade_date END AS actual_date FROM ticker_data"
-                    ") WHERE actual_date IS NOT NULL ORDER BY actual_date").fetchall() if r[0]]
+                source_rows = conn.execute(
+                    "SELECT actual_date, MAX(id) FROM ("
+                    " SELECT id, CASE WHEN date(trade_time) IS NOT NULL THEN date(trade_time)"
+                    "                 ELSE trade_date END AS actual_date FROM ticker_data"
+                    ") WHERE actual_date IS NOT NULL GROUP BY actual_date ORDER BY actual_date"
+                ).fetchall()
+                source_dates = [(r[0], int(r[1] or 0)) for r in source_rows if r[0]]
                 done = {r[0] for r in conn.execute(
                     "SELECT DISTINCT trade_date FROM ticker_minute").fetchall()}
                 done_cf = {r[0] for r in conn.execute(
                     "SELECT DISTINCT trade_date FROM capital_flow_minute").fetchall()}
-                versions = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in conn.execute(
-                    "SELECT trade_date, ticker_version, capital_version "
+                versions = {r[0]: tuple(int(v or 0) for v in r[1:]) for r in conn.execute(
+                    "SELECT trade_date, ticker_version, capital_version, "
+                    "ticker_source_max_id, capital_source_max_id "
                     "FROM ticker_minute_archive_meta").fetchall()}
-                out_cf = {}
-                for D in src_dates:
+
+            out_cf = {}
+            baseline_enabled = getattr(self._container, 'baseline_service', None) is not None
+            for D, source_max_id in source_dates:
+                try:
                     is_today = (D == today)
                     if is_today and hhmm <= "16:10":
                         continue  # 当日盘中不归档(数据还在长)
-                    ticker_ver, capital_ver = versions.get(D, (0, 0))
-                    if is_today or D not in done or ticker_ver < _ARCHIVE_VERSION:
-                        out[D] = self._archive_date(conn, D)
-                        conn.execute(
-                            "INSERT OR IGNORE INTO ticker_minute_archive_meta "
-                            "(trade_date, ticker_version, capital_version) VALUES (?,0,0)", (D,))
-                        conn.execute(
-                            "UPDATE ticker_minute_archive_meta "
-                            "SET ticker_version=?, updated_at=? WHERE trade_date=?",
-                            (_ARCHIVE_VERSION, datetime.now().isoformat(), D))
-                    if (getattr(self._container, 'baseline_service', None) is not None
-                            and (is_today or D not in done_cf or capital_ver < _ARCHIVE_VERSION)):
-                        out_cf[D] = self._archive_capital_minute(conn, D)
-                        conn.execute(
-                            "INSERT OR IGNORE INTO ticker_minute_archive_meta "
-                            "(trade_date, ticker_version, capital_version) VALUES (?,0,0)", (D,))
-                        conn.execute(
-                            "UPDATE ticker_minute_archive_meta "
-                            "SET capital_version=?, updated_at=? WHERE trade_date=?",
-                            (_ARCHIVE_VERSION, datetime.now().isoformat(), D))
-                conn.commit()
+                    ticker_ver, capital_ver, ticker_source, capital_source = versions.get(
+                        D, (0, 0, 0, 0)
+                    )
+
+                    # 部署新增水位列时，历史交易日已经按当前版本完成且不会再增长，
+                    # 只补水位，避免无意义地重扫 7 天逐笔数据。
+                    legacy_ticker = (
+                        not is_today and D in done
+                        and ticker_ver >= _ARCHIVE_VERSION and ticker_source == 0
+                    )
+                    legacy_capital = (
+                        not is_today and D in done_cf
+                        and capital_ver >= _ARCHIVE_VERSION and capital_source == 0
+                    )
+                    if legacy_ticker or (baseline_enabled and legacy_capital):
+                        self._persist_legacy_watermarks(
+                            db, D, source_max_id, legacy_ticker,
+                            baseline_enabled and legacy_capital,
+                        )
+                        if legacy_ticker:
+                            ticker_source = source_max_id
+                        if legacy_capital:
+                            capital_source = source_max_id
+
+                    need_ticker = (
+                        D not in done or ticker_ver < _ARCHIVE_VERSION
+                        or ticker_source != source_max_id
+                    )
+                    if need_ticker:
+                        with db.get_connection() as conn:
+                            ticker_rows = self._aggregate_date(conn, D)
+                        out[D] = self._persist_ticker_archive(
+                            db, D, ticker_rows, source_max_id,
+                        )
+
+                    need_capital = baseline_enabled and (
+                        D not in done_cf or capital_ver < _ARCHIVE_VERSION
+                        or capital_source != source_max_id
+                    )
+                    if need_capital:
+                        with db.get_connection() as conn:
+                            capital_rows = self._aggregate_capital_minute(conn, D)
+                        out_cf[D] = self._persist_capital_archive(
+                            db, D, capital_rows, source_max_id,
+                        )
+                except Exception as e:  # 单日失败不阻断其他待归档日期
+                    logger.warning(f"分钟归档 {D} 失败: {e}")
             if out:
                 logger.info("ticker_minute 归档完成: " +
                             ", ".join(f"{d}={n}" for d, n in out.items()))

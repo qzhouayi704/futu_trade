@@ -15,7 +15,6 @@ import asyncio
 import logging
 import pickle
 import psutil
-import sqlite3
 import time
 import zlib
 from collections import OrderedDict
@@ -191,16 +190,14 @@ class UnifiedDataCache:
         if not self._db_manager:
             return
         try:
-            with self._db_manager.get_connection() as conn:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS cache_entries (
-                        key TEXT PRIMARY KEY,
-                        value BLOB,
-                        expire_at INTEGER,
-                        updated_at INTEGER
-                    )
-                """)
-                conn.commit()
+            self._db_manager.execute_update("""
+                CREATE TABLE IF NOT EXISTS cache_entries (
+                    key TEXT PRIMARY KEY,
+                    value BLOB,
+                    expire_at INTEGER,
+                    updated_at INTEGER
+                )
+            """)
         except Exception as e:
             logger.warning(f"L2缓存表创建失败: {e}")
 
@@ -209,6 +206,7 @@ class UnifiedDataCache:
         if not self._db_manager:
             return None
         try:
+            expired = False
             with self._db_manager.get_connection() as conn:
                 # L2 is an opaque cache layer only. Domain data such as quotes,
                 # subscriptions and trade signals must continue to use their
@@ -220,10 +218,15 @@ class UnifiedDataCache:
                 if row:
                     blob, expire_at = row
                     if expire_at and expire_at < int(time.time()):
-                        conn.execute("DELETE FROM cache_entries WHERE key=?", (key,))
-                        conn.commit()
-                        return None
-                    return pickle.loads(zlib.decompress(blob))
+                        expired = True
+                    else:
+                        return pickle.loads(zlib.decompress(blob))
+            if expired:
+                await asyncio.to_thread(
+                    self._db_manager.execute_update,
+                    "DELETE FROM cache_entries WHERE key=?",
+                    (key,),
+                )
         except Exception as e:
             logger.debug(f"L2读取失败 {key}: {e}")
         return None
@@ -237,13 +240,12 @@ class UnifiedDataCache:
             # query cache_entries directly for business semantics.
             blob = zlib.compress(pickle.dumps(data))
             now = int(time.time())
-            with self._db_manager.get_connection() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO cache_entries (key, value, expire_at, updated_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (key, blob, now + int(ttl), now)
-                )
-                conn.commit()
+            await asyncio.to_thread(
+                self._db_manager.execute_update,
+                "INSERT OR REPLACE INTO cache_entries "
+                "(key, value, expire_at, updated_at) VALUES (?, ?, ?, ?)",
+                (key, blob, now + int(ttl), now),
+            )
         except Exception as e:
             logger.debug(f"L2写入失败 {key}: {e}")
 
@@ -252,9 +254,11 @@ class UnifiedDataCache:
         if not self._db_manager:
             return
         try:
-            with self._db_manager.get_connection() as conn:
-                conn.execute("DELETE FROM cache_entries WHERE key=?", (key,))
-                conn.commit()
+            await asyncio.to_thread(
+                self._db_manager.execute_update,
+                "DELETE FROM cache_entries WHERE key=?",
+                (key,),
+            )
         except Exception as e:
             logger.debug(f"L2删除失败 {key}: {e}")
 

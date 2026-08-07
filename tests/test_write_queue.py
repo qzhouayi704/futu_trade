@@ -10,11 +10,65 @@ import os
 import threading
 import time
 import tempfile
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 # 解决 protobuf 版本冲突
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+
+
+def test_running_write_cannot_be_cancelled():
+    """Worker 必须先把 Future 标成 RUNNING，防止调用方误取消在途提交。"""
+    from simple_trade.database.core.write_queue import DatabaseWriteQueue
+
+    started = threading.Event()
+    release = threading.Event()
+    write_queue = DatabaseWriteQueue()
+    write_queue.start()
+
+    def _write():
+        started.set()
+        release.wait(timeout=5)
+        return 7
+
+    future = write_queue.submit(_write)
+    assert started.wait(timeout=2)
+    assert future.cancel() is False
+    release.set()
+    assert future.result(timeout=2) == 7
+    write_queue.shutdown()
+
+
+def test_manager_timeout_never_falls_back_to_direct_write():
+    """排队超时只取消任务，不能再创建第二个 SQLite writer。"""
+    from simple_trade.database.core.db_manager import DatabaseManager
+
+    class _TimedOutFuture:
+        cancelled = False
+
+        def result(self, timeout=None):
+            raise FutureTimeoutError()
+
+        def cancel(self):
+            self.cancelled = True
+            return True
+
+    future = _TimedOutFuture()
+    write_fn = Mock()
+    db = DatabaseManager.__new__(DatabaseManager)
+    db.write_queue = SimpleNamespace(
+        is_running=True,
+        pending_count=3,
+        submit=lambda *_args, **_kwargs: future,
+    )
+    db.system_queries = SimpleNamespace(execute_update=write_fn)
+
+    assert db.execute_update("UPDATE test_data SET value=1") == -1
+    assert future.cancelled is True
+    write_fn.assert_not_called()
 
 
 def test_concurrent_writes():

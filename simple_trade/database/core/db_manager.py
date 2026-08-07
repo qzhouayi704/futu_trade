@@ -8,6 +8,7 @@
 import os
 import sqlite3
 import logging
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Dict, Any, List, Generator
 from contextlib import contextmanager
 
@@ -373,40 +374,70 @@ class DatabaseManager:
     def execute_update(self, query: str, params: tuple = None) -> int:
         """执行更新语句，通过 write_queue 序列化，返回影响行数（失败返回-1）"""
         if self.write_queue.is_running:
+            future = self.write_queue.submit(
+                self.system_queries.execute_update, query, params
+            )
             try:
-                future = self.write_queue.submit(
-                    self.system_queries.execute_update, query, params
-                )
                 return future.result(timeout=15.0)
+            except FutureTimeoutError:
+                cancelled = future.cancel()
+                logging.error(
+                    "写队列execute_update超时，禁止并发直写: cancelled=%s pending=%s SQL=%s",
+                    cancelled, self.write_queue.pending_count, query[:80],
+                )
+                return -1
             except Exception as e:
-                logging.error(f"写队列execute_update超时({type(e).__name__}), 降级直写: {query[:80]}")
-                return self.system_queries.execute_update(query, params)
+                logging.error(
+                    "写队列execute_update失败(%s)，不重复直写: %s",
+                    type(e).__name__, query[:80],
+                )
+                return -1
         return self.system_queries.execute_update(query, params)
 
     def execute_insert(self, query: str, params: tuple = None) -> int:
         """执行插入语句，通过 write_queue 序列化，返回新记录ID"""
         if self.write_queue.is_running:
+            future = self.write_queue.submit(
+                self.trade_queries.execute_insert, query, params
+            )
             try:
-                future = self.write_queue.submit(
-                    self.trade_queries.execute_insert, query, params
-                )
                 return future.result(timeout=15.0)
+            except FutureTimeoutError:
+                cancelled = future.cancel()
+                logging.error(
+                    "写队列execute_insert超时，禁止并发直写: cancelled=%s pending=%s SQL=%s",
+                    cancelled, self.write_queue.pending_count, query[:80],
+                )
+                return -1
             except Exception as e:
-                logging.error(f"写队列execute_insert超时({type(e).__name__}), 降级直写: {query[:80]}")
-                return self.trade_queries.execute_insert(query, params)
+                logging.error(
+                    "写队列execute_insert失败(%s)，不重复直写: %s",
+                    type(e).__name__, query[:80],
+                )
+                return -1
         return self.trade_queries.execute_insert(query, params)
 
     def execute_many(self, query: str, params_list: List[tuple]) -> int:
         """批量执行语句，通过 write_queue 序列化，返回成功记录数（失败返回-1）"""
         if self.write_queue.is_running:
+            future = self.write_queue.submit(
+                self.system_queries.execute_many, query, params_list
+            )
             try:
-                future = self.write_queue.submit(
-                    self.system_queries.execute_many, query, params_list
-                )
                 return future.result(timeout=30.0)
+            except FutureTimeoutError:
+                cancelled = future.cancel()
+                logging.error(
+                    "写队列execute_many超时，禁止并发直写: cancelled=%s pending=%s rows=%s SQL=%s",
+                    cancelled, self.write_queue.pending_count, len(params_list), query[:80],
+                )
+                return -1
             except Exception as e:
-                logging.error(f"写队列execute_many超时({type(e).__name__}, {len(params_list)}条), 降级直写: {query[:80]}")
-                return self.system_queries.execute_many(query, params_list)
+                logging.error(
+                    "写队列execute_many失败(%s)，不重复直写: rows=%s SQL=%s",
+                    type(e).__name__, len(params_list), query[:80],
+                )
+                return -1
         return self.system_queries.execute_many(query, params_list)
 
     # ==================== 异步查询方法 ====================

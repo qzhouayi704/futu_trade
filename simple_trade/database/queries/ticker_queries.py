@@ -190,13 +190,16 @@ class TickerQueries:
         )
         _CHUNK_SIZE = 500
         total_written = 0
-        with self.conn_manager.get_connection() as conn:
-            cursor = conn.cursor()
-            for i in range(0, len(records), _CHUNK_SIZE):
-                chunk = records[i: i + _CHUNK_SIZE]
-                cursor.executemany(sql, chunk)
-                total_written += cursor.rowcount
-            conn.commit()
+        # 该方法除写队列外仍有历史直调入口，必须与所有 BaseQueries 写入
+        # 共用同一把进程锁，避免逐笔 flusher 成为第二个 SQLite writer。
+        with self.conn_manager.lock:
+            with self.conn_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                for i in range(0, len(records), _CHUNK_SIZE):
+                    chunk = records[i: i + _CHUNK_SIZE]
+                    cursor.executemany(sql, chunk)
+                    total_written += cursor.rowcount
+                conn.commit()
         return total_written
 
     def cleanup_old_data(self, keep_days: int = 7) -> int:
@@ -210,13 +213,14 @@ class TickerQueries:
         """
         cutoff_date = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
 
-        with self.conn_manager.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM ticker_data WHERE trade_date < ?",
-                (cutoff_date,)
-            )
-            deleted_count = cursor.rowcount
-            conn.commit()
-            logger.info(f"清理了 {deleted_count} 条逐笔数据（{keep_days} 天前）")
-            return deleted_count
+        with self.conn_manager.lock:
+            with self.conn_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM ticker_data WHERE trade_date < ?",
+                    (cutoff_date,)
+                )
+                deleted_count = cursor.rowcount
+                conn.commit()
+                logger.info(f"清理了 {deleted_count} 条逐笔数据（{keep_days} 天前）")
+                return deleted_count

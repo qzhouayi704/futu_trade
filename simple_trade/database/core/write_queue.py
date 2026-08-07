@@ -93,8 +93,9 @@ class DatabaseWriteQueue:
 
                 fn, args, kwargs, future = item
 
-                # 如果 Future 已被取消，跳过执行
-                if future.cancelled():
+                # 原子地从 PENDING 切到 RUNNING。这样调用方超时后只能取消
+                # 尚未开始的任务，不会把正在提交的写入误判为已取消后再次写入。
+                if not future.set_running_or_notify_cancel():
                     continue
 
                 try:

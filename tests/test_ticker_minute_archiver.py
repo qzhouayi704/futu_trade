@@ -80,7 +80,10 @@ def test_archive_meta_table_starts_unversioned():
         cols = {r[1] for r in conn.execute(
             "PRAGMA table_info(ticker_minute_archive_meta)"
         ).fetchall()}
-        assert {"trade_date", "ticker_version", "capital_version", "updated_at"} <= cols
+        assert {
+            "trade_date", "ticker_version", "capital_version",
+            "ticker_source_max_id", "capital_source_max_id", "updated_at",
+        } <= cols
         assert _ARCHIVE_VERSION >= 2
     finally:
         conn.close()
@@ -123,5 +126,75 @@ def test_archive_present_rebuilds_existing_unversioned_archive(tmp_path):
             "SELECT ticker_version FROM ticker_minute_archive_meta "
             "WHERE trade_date='2020-01-02'"
         ).fetchone()[0] == _ARCHIVE_VERSION
+    finally:
+        conn.close()
+
+
+def test_archive_present_skips_unchanged_source_watermark(tmp_path):
+    db_path = tmp_path / "watermark.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(BusinessTables.TICKER_DATA_TABLE)
+    TickerMinuteArchiver._ensure_table(conn)
+    _tick(conn, "2020-01-02", "2020-01-02 10:05:00.100", "BUY", 500_000, 1)
+    conn.commit()
+    conn.close()
+
+    class _DB:
+        @contextmanager
+        def get_connection(self):
+            db_conn = sqlite3.connect(db_path)
+            try:
+                yield db_conn
+            finally:
+                db_conn.close()
+
+    archiver = TickerMinuteArchiver(SimpleNamespace(
+        db_manager=_DB(), baseline_service=None
+    ))
+    assert archiver.archive_present() == {"2020-01-02": 1}
+
+    def _unexpected_rebuild(_conn, _date):
+        raise AssertionError("unchanged archive must not be rebuilt")
+
+    archiver._aggregate_date = _unexpected_rebuild
+    assert archiver.archive_present() == {}
+
+
+def test_archive_present_rebuilds_only_after_source_grows(tmp_path):
+    db_path = tmp_path / "watermark-growth.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(BusinessTables.TICKER_DATA_TABLE)
+    TickerMinuteArchiver._ensure_table(conn)
+    _tick(conn, "2020-01-02", "2020-01-02 10:05:00.100", "BUY", 500_000, 1)
+    conn.commit()
+    conn.close()
+
+    class _DB:
+        @contextmanager
+        def get_connection(self):
+            db_conn = sqlite3.connect(db_path)
+            try:
+                yield db_conn
+            finally:
+                db_conn.close()
+
+    archiver = TickerMinuteArchiver(SimpleNamespace(
+        db_manager=_DB(), baseline_service=None
+    ))
+    assert archiver.archive_present() == {"2020-01-02": 1}
+
+    conn = sqlite3.connect(db_path)
+    _tick(conn, "2020-01-02", "2020-01-02 10:05:30.200", "SELL", 200_000, 2)
+    conn.commit()
+    conn.close()
+
+    assert archiver.archive_present() == {"2020-01-02": 1}
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT buy_amt,sell_amt FROM ticker_minute "
+            "WHERE stock_code='HK.00001' AND trade_date='2020-01-02'"
+        ).fetchone()
+        assert row == (500_000.0, 200_000.0)
     finally:
         conn.close()
