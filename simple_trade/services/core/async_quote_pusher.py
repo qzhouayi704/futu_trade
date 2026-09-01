@@ -486,7 +486,7 @@ class AsyncQuotePusher:
 
             # 推送评分预警到前端
             if scored_alerts:
-                await self.socket_manager.emit('anomaly_scored', {
+                await self.socket_manager.emit_to_all('anomaly_scored', {
                     'alerts': scored_alerts,
                     'count': len(scored_alerts),
                     'scan_time': time.strftime('%H:%M:%S'),
@@ -531,7 +531,7 @@ class AsyncQuotePusher:
                 'detail': a.detail,
             } for a in anomalies]
 
-            await self.socket_manager.emit('pool_anomaly', {
+            await self.socket_manager.emit_to_all('pool_anomaly', {
                 'anomalies': data,
                 'count': len(data),
                 'scan_time': time.strftime('%H:%M:%S'),
