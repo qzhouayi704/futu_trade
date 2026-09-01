@@ -17,6 +17,11 @@ from .connection_manager import ConnectionManager
 from .async_connection_manager import AsyncConnectionManager
 from .async_base_queries import AsyncBaseQueries
 from .write_queue import DatabaseWriteQueue
+from .schema_recovery import (
+    create_indexes_best_effort,
+    index_name,
+    migrate_ticker_data_schema,
+)
 from ..queries.stock_queries import StockQueries
 from ..queries.stock_activity_queries import StockActivityQueries
 from ..queries.plate_queries import PlateQueries
@@ -98,16 +103,9 @@ class DatabaseManager:
             # 2. 执行自动迁移（添加缺失的列）- 必须在创建索引之前
             self._run_auto_migrations()
 
-            # 3. 创建索引（此时所有需要的列已存在）
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                for index_sql in DatabaseSchema.get_all_indexes():
-                    try:
-                        cursor.execute(index_sql)
-                    except Exception as idx_err:
-                        # 索引创建失败不应阻止整个初始化
-                        logging.warning(f"索引创建失败（可能已存在）: {idx_err}")
-                conn.commit()
+            # 3. 创建索引（此时所有需要的列已存在）。启动阶段遇到写锁时快速延期，
+            #    避免每个索引都等待 busy_timeout，放大成数分钟的接口不可用。
+            self._create_startup_indexes()
 
             logging.info("数据库初始化完成（含表、迁移和索引）")
 
@@ -171,55 +169,26 @@ class DatabaseManager:
 
         幂等判据：建表 SQL 已含目标业务键签名即跳过。
         """
-        target_uq = "UNIQUE(stock_code, trade_date, trade_time, price, volume, direction)"
         try:
             with self._lock:
                 with self.get_connection() as conn:
-                    cursor = conn.cursor()
-                    row = cursor.execute(
-                        "SELECT sql FROM sqlite_master "
-                        "WHERE type='table' AND name='ticker_data'"
-                    ).fetchone()
-                    if not row or not row[0]:
-                        return  # 表不存在：全新库已由 CREATE 直接建成目标结构
-                    if target_uq.replace(" ", "") in row[0].replace(" ", ""):
-                        return  # 已是目标业务键结构
-                    cursor.execute("PRAGMA table_info(ticker_data)")
-                    cols = [r[1] for r in cursor.fetchall()]
-                    has_seq = 'sequence' in cols
-                    has_tt = 'trade_time' in cols
-                    logging.info("[迁移] ticker_data 重建表：换用业务键 (trade_time,price,volume,direction) 去重")
-                    sel_seq = "sequence" if has_seq else "NULL"
-                    sel_tt = "trade_time" if has_tt else "NULL"
-                    cursor.executescript(f"""
-                        PRAGMA foreign_keys=OFF;
-                        CREATE TABLE ticker_data_new (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            stock_code VARCHAR(20) NOT NULL,
-                            price DECIMAL(10,3) NOT NULL,
-                            volume INTEGER NOT NULL,
-                            turnover DECIMAL(15,2),
-                            direction VARCHAR(10) NOT NULL,
-                            timestamp BIGINT NOT NULL,
-                            trade_date TEXT NOT NULL,
-                            sequence BIGINT,
-                            trade_time TEXT,
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            {target_uq}
-                        );
-                        INSERT OR IGNORE INTO ticker_data_new
-                            (id, stock_code, price, volume, turnover, direction,
-                             timestamp, trade_date, sequence, trade_time, created_at)
-                        SELECT id, stock_code, price, volume, turnover, direction,
-                               timestamp, trade_date, {sel_seq}, {sel_tt}, created_at
-                        FROM ticker_data;
-                        DROP TABLE ticker_data;
-                        ALTER TABLE ticker_data_new RENAME TO ticker_data;
-                    """)
-                    conn.commit()
-                    logging.info("[迁移] ticker_data 重建完成（业务键去重，旧行已保留）")
+                    migrate_ticker_data_schema(conn)
         except Exception as e:
             logging.error(f"[迁移] ticker_data 重建失败: {e}")
+
+    def _create_startup_indexes(self) -> Dict[str, bool]:
+        """Best-effort startup index creation with bounded lock wait.
+
+        Missing indexes can be retried on the next startup. Once SQLite reports a
+        lock, further DDL in the same startup is deferred because it would hit the
+        same writer and only extend downtime.
+        """
+        with self.get_connection() as conn:
+            return create_indexes_best_effort(conn, DatabaseSchema.get_all_indexes())
+
+    @staticmethod
+    def _index_name(index_sql: str) -> str:
+        return index_name(index_sql)
 
     def _run_auto_migrations(self):
         """自动运行数据库迁移（添加缺失的列）"""
@@ -312,8 +281,7 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 for index_sql in DatabaseSchema.get_all_indexes():
                     # 从SQL中提取索引名称
-                    index_name = index_sql.split('idx_')[1].split(' ')[0] if 'idx_' in index_sql else 'unknown'
-                    index_name = f"idx_{index_name}"
+                    index_name = self._index_name(index_sql)
                     try:
                         cursor.execute(index_sql)
                         results[index_name] = True

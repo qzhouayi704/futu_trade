@@ -57,8 +57,17 @@ export function GlobalSignalListener() {
     };
 
     socket.on("strategy_signal", handleSignal);
+    const handleV2Alert = (data: unknown) => {
+      const alert = data as Record<string, unknown>;
+      const title = String(alert.title || "V2 决策提醒");
+      const message = String(alert.message || alert.reason || "新的 V2 决策已生成");
+      const type = title.includes("卖") || title.includes("风险") ? "warning" : "info";
+      showToast(type, title, message.slice(0, 180));
+    };
+    socket.on("v2_trade_alert", handleV2Alert);
     return () => {
       socket.off("strategy_signal", handleSignal);
+      socket.off("v2_trade_alert", handleV2Alert);
     };
   }, [socket, showToast]);
 

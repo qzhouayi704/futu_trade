@@ -1,0 +1,90 @@
+"""V2 领域模型。"""
+
+from .candidates import TradeCandidate
+from .decisions import DecisionEvent, NotificationEvent, StrategyState, StrategyTransition
+from .events import (
+    DataQualityEvent,
+    DomainEvent,
+    FeatureSnapshotEvent,
+    MarketEvent,
+    OrderBookEvent,
+    PositionReconciledEvent,
+    RiskAssessedEvent,
+    QuoteEvent,
+    TickEvent,
+)
+from .risk import AccountSnapshot, RiskContext, RiskLimits
+from .features import (
+    ActivityMetrics,
+    BreadthMember,
+    CapitalBaseline,
+    DailyBar,
+    FeatureSnapshot,
+    LiquidityMetrics,
+    MarketContext,
+    PriceAcceptance,
+    PricePosition,
+)
+from .market import (
+    OrderBookLevel,
+    OrderBookSnapshot,
+    QuoteSnapshot,
+    TickAggregate,
+    TickTrade,
+)
+from .orders import ExecutionReport, OrderCommand, OrderLeg, RiskDecision, TradeIntent
+from .positions import (
+    ActiveOrderSnapshot,
+    PositionDecision,
+    PositionEfficiency,
+    PositionReconciliation,
+    PositionSnapshot,
+    PositionState,
+    RotationProposal,
+)
+
+__all__ = [
+    "DecisionEvent",
+    "DomainEvent",
+    "DataQualityEvent",
+    "ExecutionReport",
+    "FeatureSnapshotEvent",
+    "FeatureSnapshot",
+    "ActivityMetrics",
+    "ActiveOrderSnapshot",
+    "BreadthMember",
+    "CapitalBaseline",
+    "DailyBar",
+    "LiquidityMetrics",
+    "MarketContext",
+    "MarketEvent",
+    "OrderBookEvent",
+    "OrderBookLevel",
+    "OrderBookSnapshot",
+    "NotificationEvent",
+    "OrderCommand",
+    "OrderLeg",
+    "PositionDecision",
+    "PositionEfficiency",
+    "PositionReconciliation",
+    "PositionReconciledEvent",
+    "RiskAssessedEvent",
+    "AccountSnapshot",
+    "RiskContext",
+    "RiskLimits",
+    "PositionSnapshot",
+    "PositionState",
+    "PricePosition",
+    "PriceAcceptance",
+    "QuoteSnapshot",
+    "QuoteEvent",
+    "RiskDecision",
+    "RotationProposal",
+    "StrategyState",
+    "StrategyTransition",
+    "TickAggregate",
+    "TickEvent",
+    "TickTrade",
+    "TradeCandidate",
+    "TradeIntent",
+]

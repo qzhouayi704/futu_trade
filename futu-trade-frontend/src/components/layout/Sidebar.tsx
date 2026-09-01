@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { useTheme } from "next-themes";
+import { Workflow } from "lucide-react";
 
 interface NavItem {
   name: string;
@@ -42,6 +43,11 @@ const navGroups: NavGroup[] = [
         name: "交易驾驶舱",
         path: "/trading",
         icon: <Icon d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />,
+      },
+      {
+        name: "V2 工作台",
+        path: "/v2",
+        icon: <Workflow className="h-[18px] w-[18px] flex-shrink-0" />,
       },
       {
         name: "持仓做T",

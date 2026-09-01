@@ -120,6 +120,17 @@ class TestPureTriggers(unittest.TestCase):
         # 可卖量限制
         self.assertEqual(compute_trim_qty(1000, 100, self.cfg), 100)
 
+    def test_compute_trim_qty_honors_real_lot_size(self):
+        # 每手50股：1000股仓位 1/4=250 → 整手250（硬编码100会砍成200）
+        self.assertEqual(compute_trim_qty(1000, 1000, self.cfg, lot_size=50), 250)
+        # 每手200股：250 → 向下取整到200
+        self.assertEqual(compute_trim_qty(1000, 1000, self.cfg, lot_size=200), 200)
+        # 每手500股：250不足一手 → 0（不能下非整手单）
+        self.assertEqual(compute_trim_qty(1000, 1000, self.cfg, lot_size=500), 0)
+        # lot_size 取不到（None/0）时退回 cfg.lot_size=100
+        self.assertEqual(compute_trim_qty(1000, 1000, self.cfg, lot_size=None), 200)
+        self.assertEqual(compute_trim_qty(1000, 1000, self.cfg, lot_size=0), 200)
+
 
 class TestQueriesRoundtrip(unittest.TestCase):
     def setUp(self):
@@ -203,7 +214,7 @@ class TestStateMachineAlertMode(unittest.TestCase):
     def test_daily_loss_kill_freezes_new_sell(self):
         # 预置一条当日大额亏损的已完成腿 → 触发熔断，新卖腿被冻结
         TTradeQueries(self.db).create_leg(
-            stock_code='HK.00100', stock_name='X', trade_date=self.assistant._hk_today(),
+            stock_code='HK.00100', stock_name='X', trade_date='2026-06-24',
             mode='alert', state=S_COMPLETED, original_qty=1000, sold_qty=200,
             sold_price=500.0)
         TTradeQueries(self.db).update_leg(1, realized_pnl=-9999.0, state=S_COMPLETED)

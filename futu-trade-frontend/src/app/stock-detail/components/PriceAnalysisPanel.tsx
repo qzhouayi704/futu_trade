@@ -5,6 +5,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Card, Button, Loading } from "@/components/common";
 import { analysisApi } from "@/lib/api/analysis";
+import { tradeApi } from "@/lib/api";
 import { useToast } from "@/components/common/Toast";
 import type { AnalysisResult, AnalysisTask, AutoTradeTask, BestParams, LastDayInfo } from "@/lib/api/analysis";
 
@@ -41,6 +42,32 @@ export default function PriceAnalysisPanel() {
   const [prevClose, setPrevClose] = useState<number>(0);
   const [autoTradeTasks, setAutoTradeTasks] = useState<AutoTradeTask[]>([]);
   const autoTradePollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [lotSize, setLotSize] = useState<number | null>(null);
+
+  // 该股每手股数（港股每手不一定100股）：用于数量步进和整手提示
+  useEffect(() => {
+    const raw = stockCode.trim().toUpperCase();
+    if (raw.length < 4) {
+      setLotSize(null);
+      return;
+    }
+    const code = raw.startsWith("HK.") ? raw : `HK.${raw}`;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      tradeApi
+        .getLotSize(code)
+        .then((res) => {
+          if (!cancelled) setLotSize(res.success ? res.data?.lot_size ?? null : null);
+        })
+        .catch(() => {
+          if (!cancelled) setLotSize(null);
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [stockCode]);
 
   // 清理轮询
   useEffect(() => {
@@ -143,8 +170,8 @@ export default function PriceAnalysisPanel() {
       return;
     }
 
-    if (tradeQuantity <= 0 || tradeQuantity % 100 !== 0) {
-      showToast("warning", "提示", "交易数量必须是100的正整数倍");
+    if (tradeQuantity <= 0) {
+      showToast("warning", "提示", "交易数量必须大于0");
       return;
     }
 
@@ -533,10 +560,21 @@ export default function PriceAnalysisPanel() {
                   type="number"
                   value={tradeQuantity}
                   onChange={(e) => setTradeQuantity(parseInt(e.target.value) || 0)}
-                  min={100}
-                  step={100}
+                  min={1}
+                  step={lotSize && lotSize > 0 ? lotSize : 1}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md"
                 />
+                {lotSize && lotSize > 0 && (
+                  <p
+                    className={`text-xs mt-1 ${
+                      tradeQuantity % lotSize !== 0 ? "text-amber-600" : "text-gray-500"
+                    }`}
+                  >
+                    {tradeQuantity % lotSize !== 0
+                      ? `⚠️ 数量不是每手 ${lotSize} 股的整数倍，富途可能拒单`
+                      : `每手 ${lotSize} 股`}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">前收盘价</label>

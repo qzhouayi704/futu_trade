@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     quote_pusher_started = False
     quote_pusher = None
+    v2_runtime = None
     background_tasks: list[asyncio.Task] = []
 
     def _track(coro, name: str) -> asyncio.Task:
@@ -144,6 +145,40 @@ async def lifespan(app: FastAPI):
 
         # 注册 container 到 dependencies（唯一的 setter）
         dependencies.set_container(container)
+
+        # V2 内核：shadow 只落库；alert 可提醒；本阶段不允许券商下单。
+        # 配置错误或启动失败只关闭 V2，不能影响现有 V1 生产链路。
+        try:
+            from .v2.application.runtime import V2Runtime
+            from .v2.config.models import V2Config
+
+            v2_config = V2Config.from_env()
+            v2_alerting = v2_config.mode.value == "alert"
+            v2_runtime = V2Runtime(
+                container.db_manager,
+                v2_config,
+                position_source=getattr(container, "futu_trade_service", None),
+                socket_manager=socket_manager if v2_alerting else None,
+                wechat_service=(
+                    getattr(container, "wechat_alert_service", None) if v2_alerting else None
+                ),
+                frequency_guard=(
+                    getattr(container, "trade_frequency_guard", None) if v2_alerting else None
+                ),
+            )
+            container.v2_runtime = v2_runtime
+            if await v2_runtime.start():
+                logging.info(
+                    "V2 影子内核已启动: mode=%s strategy_version=%s",
+                    v2_config.mode.value,
+                    v2_config.strategy_version,
+                )
+            else:
+                logging.info("V2 影子内核未启用 (V2_ENABLED=0)")
+        except Exception as e:
+            v2_runtime = None
+            container.v2_runtime = None
+            logging.error("V2 影子内核启动失败，V1 继续运行: %s", e, exc_info=True)
 
         # ========== 系统数据初始化（与 Flask 模式一致）==========
         init_success = await initialize_system_data(container, state_manager)
@@ -467,6 +502,14 @@ async def lifespan(app: FastAPI):
         raise
 
     finally:
+        # V2 使用独立 supervisor 持有真实长期任务句柄，先优雅排空并停止。
+        if v2_runtime is not None:
+            try:
+                await v2_runtime.stop()
+                logging.info("V2 影子内核已停止")
+            except Exception as e:
+                logging.warning(f"V2 影子内核停止异常（不影响关闭）: {e}")
+
         # 取消所有后台任务
         for t in background_tasks:
             if not t.done():

@@ -88,6 +88,11 @@ def get_order_book_service(container):
         return OrderBookService(
             futu_client=container.futu_client,
             subscription_manager=sm,
+            market_event_sink=lambda code, data: (
+                getattr(container, 'v2_runtime', None).ingest_order_book(code, data)
+                if getattr(container, 'v2_runtime', None) is not None
+                else None
+            ),
         )
 
     if sm is None:

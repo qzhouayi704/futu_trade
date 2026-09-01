@@ -18,6 +18,14 @@ from .market_types import ReturnCode
 from ..utils.market_helper import MarketTimeHelper
 
 
+def _safe_positive_int(value: object) -> int:
+    try:
+        parsed = int(float(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
 class StockDataService:
     """股票数据服务"""
 
@@ -100,6 +108,10 @@ class StockDataService:
                                     'turnover_rate': float(row.get('turnover_rate', 0) or 0),  # 换手率
                                     'amplitude': float(row.get('amplitude', 0) or 0),  # 振幅
                                     'volume_ratio': float(row.get('volume_ratio', 0) or 0),  # 量比
+                                    'lot_size': _safe_positive_int(row.get('lot_size', 0)),
+                                    # 保留交易所时间字段，供 V2 shadow 适配器建立可回放事件轴。
+                                    'data_date': str(row.get('data_date', '') or ''),
+                                    'data_time': str(row.get('data_time', '') or ''),
                                     'update_time': datetime.now().strftime('%H:%M:%S'),
                                     'last_update': datetime.now().isoformat(),
                                     'is_realtime': True  # 标识为实时数据

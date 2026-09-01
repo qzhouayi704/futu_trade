@@ -151,8 +151,10 @@ class FutuTradeService:
             result['message'] = "无效的交易参数"
             return result
 
-        if price < 0 or quantity <= 0 or quantity % 100 != 0:
-            result['message'] = "无效的价格或数量（数量必须是100的倍数）"
+        # 数量只校验为正整数：每手股数按股票而定（港股可小于100），
+        # 整手合法性由富途下单接口按该股真实 lot_size 判定并回传错误
+        if price < 0 or quantity <= 0:
+            result['message'] = "无效的价格或数量"
             return result
 
         # 检查交易准备状态

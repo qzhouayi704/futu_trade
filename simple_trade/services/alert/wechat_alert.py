@@ -20,6 +20,10 @@ from .push_governor import PushGovernor, GovernorConfig, DROP, DIGEST
 
 logger = logging.getLogger(__name__)
 
+SEND_DELIVERED = "DELIVERED"
+SEND_SUPPRESSED = "SUPPRESSED"
+SEND_FAILED = "FAILED"
+
 
 class AlertLevel(Enum):
     """告警级别"""
@@ -79,7 +83,7 @@ class WeChatAlertService:
         self._sent_cache[cache_key] = now
         return True
 
-    async def send(
+    async def send_with_outcome(
         self,
         level: AlertLevel,
         title: str,
@@ -91,7 +95,8 @@ class WeChatAlertService:
         priority: Optional[int] = None,
         severity: Optional[str] = None,
         price: Optional[float] = None,
-    ) -> bool:
+        retry: bool = False,
+    ) -> str:
         """
         发送告警消息
 
@@ -107,10 +112,10 @@ class WeChatAlertService:
             price: 现价（CRITICAL 升级节流判定用）
 
         Returns:
-            是否发送成功
+            DELIVERED、SUPPRESSED 或 FAILED
         """
         if not self.enabled:
-            return False
+            return SEND_FAILED
 
         # 「只推白名单类别」模式（治用户「其他推送先别推，只推持仓主力净流出」）：
         # WECHAT_SOLO_CATEGORIES 设为逗号分隔类别名 → 仅这些类别放行，其余静默丢弃。
@@ -120,35 +125,63 @@ class WeChatAlertService:
             allowed = {c.strip() for c in solo.split(",") if c.strip()}
             if category not in allowed:
                 logger.debug("[solo] 静默非白名单推送: %s / %s", category, stock_code)
-                return False
+                return SEND_SUPPRESSED
 
         # 防抖检查（既有 300s/key 去重，治理器在其之上叠加，不改它）
         cache_key = dedup_key or f"{level.name}:{title}"
-        if not self._check_cooldown(cache_key):
-            return False
+        if not retry and not self._check_cooldown(cache_key):
+            return SEND_SUPPRESSED
 
         # master flag OFF → 整条治理路径短路，与历史行为字节级一致
         gov = self.governor
         if not gov.enabled:
-            return await self._do_send(level, title, content)
+            ok = await self._do_send(level, title, content)
+            return SEND_DELIVERED if ok else SEND_FAILED
 
         prio = gov.resolve_priority(level.name, category, severity, priority)
         verdict, reason = gov.decide(category, stock_code, prio, level.name, price)
         if verdict == DROP:
             logger.info(f"[governor] drop {category}/{stock_code} prio={prio} ({reason})")
-            return False
+            return SEND_SUPPRESSED
         if verdict == DIGEST:
             gov.buffer_digest(category, stock_code, title)
             logger.info(f"[governor] digest {category}/{stock_code} ({reason})")
             digest_text = gov.due_digest()
             if digest_text:
                 await self._do_send(AlertLevel.INFO, "📊 低优信号摘要", digest_text)
-            return False
+            return SEND_SUPPRESSED
 
         ok = await self._do_send(level, title, content)
         if ok:
             gov.record_sent(category, stock_code, prio, level.name, price)
-        return ok
+        return SEND_DELIVERED if ok else SEND_FAILED
+
+    async def send(
+        self,
+        level: AlertLevel,
+        title: str,
+        content: str,
+        dedup_key: Optional[str] = None,
+        *,
+        category: str = "系统",
+        stock_code: Optional[str] = None,
+        priority: Optional[int] = None,
+        severity: Optional[str] = None,
+        price: Optional[float] = None,
+    ) -> bool:
+        """Backward-compatible boolean API for existing callers."""
+        outcome = await self.send_with_outcome(
+            level,
+            title,
+            content,
+            dedup_key,
+            category=category,
+            stock_code=stock_code,
+            priority=priority,
+            severity=severity,
+            price=price,
+        )
+        return outcome == SEND_DELIVERED
 
     async def _do_send(self, level: AlertLevel, title: str, content: str) -> bool:
         """实际构建并发送企业微信消息（HTTP/markdown），不经治理器/去重。"""

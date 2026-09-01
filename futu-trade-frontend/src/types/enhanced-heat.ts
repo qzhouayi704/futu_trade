@@ -253,6 +253,9 @@ export interface MainCapitalDetailRow {
   net: number;               // 本分钟净额（万）
   cum: number;               // 累计净额（万）
   super_net?: number;        // 本分钟超大单净额（万）
+  super_cum?: number;        // 超大单累计净额（万）
+  large_cum?: number;        // 大单累计净额（万）
+  mid_cum?: number;          // 中单累计净额（万）
 }
 
 /** 逐笔主力资金分钟明细 — 汇总 */

@@ -195,6 +195,13 @@ class DatabaseSchema(BaseTables, BusinessTables):
             cls.RT_DATA_TABLE,
             # === CCASS 持仓 ===
             cls.CCASS_HOLDINGS_TABLE,
+            # === 交易系统 V2 影子内核 ===
+            cls.V2_DECISION_EVENTS_TABLE,
+            cls.V2_STRATEGY_STATES_TABLE,
+            cls.V2_POSITION_STATES_TABLE,
+            cls.V2_TRADE_INTENTS_TABLE,
+            cls.V2_NOTIFICATION_LOG_TABLE,
+            cls.V2_OUTCOMES_TABLE,
         ]
 
     @classmethod
@@ -218,6 +225,8 @@ class DatabaseSchema(BaseTables, BusinessTables):
             indexes.extend(cls.SNIPER_SIGNALS_INDEXES)
         if hasattr(cls, 'SIGNAL_PIPELINE_INDEXES'):
             indexes.extend(cls.SIGNAL_PIPELINE_INDEXES)
+        if hasattr(cls, 'V2_INDEXES'):
+            indexes.extend(cls.V2_INDEXES)
         return indexes
 
 
@@ -258,3 +267,9 @@ class TableNames:
     SCALPING_EVENTS = "scalping_events"
     OVERNIGHT_SCREEN_RESULTS = "overnight_screen_results"
     RT_DATA = "rt_data"
+    V2_DECISION_EVENTS = "v2_decision_events"
+    V2_STRATEGY_STATES = "v2_strategy_states"
+    V2_POSITION_STATES = "v2_position_states"
+    V2_TRADE_INTENTS = "v2_trade_intents"
+    V2_NOTIFICATION_LOG = "v2_notification_log"
+    V2_OUTCOMES = "v2_outcomes"

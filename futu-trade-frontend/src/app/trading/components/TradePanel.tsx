@@ -34,6 +34,34 @@ export default function TradePanel() {
   const [manualCode, setManualCode] = useState("");
   const [preCheckResult, setPreCheckResult] = useState<any>(null);
   const [checkingTrade, setCheckingTrade] = useState(false);
+  const [lotSize, setLotSize] = useState<number | null>(null);
+
+  // 每手股数（港股每手不一定100股）：选中股票后取，用于输入步进和整手提示
+  useEffect(() => {
+    const code = selectedStock?.stock_code;
+    if (!code) {
+      setLotSize(null);
+      return;
+    }
+    let cancelled = false;
+    tradeApi
+      .getLotSize(code)
+      .then((res) => {
+        if (!cancelled && res.success) setLotSize(res.data?.lot_size ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setLotSize(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStock?.stock_code]);
+
+  // 数量不是整手时给提示（只提示不拦截，最终由富途判定）
+  const lotWarning =
+    lotSize && lotSize > 0 && tradeQuantity > 0 && tradeQuantity % lotSize !== 0
+      ? `数量不是每手 ${lotSize} 股的整数倍，富途可能拒单`
+      : null;
 
   // 加载交易信号
   const loadSignals = async () => {
@@ -336,11 +364,19 @@ export default function TradePanel() {
                   type="number"
                   value={tradeQuantity}
                   onChange={(e) => setTradeQuantity(parseInt(e.target.value))}
-                  min={100}
-                  step={100}
+                  min={1}
+                  step={lotSize && lotSize > 0 ? lotSize : 1}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md"
                 />
-                <p className="text-xs text-gray-500 mt-1">最小交易单位：100股</p>
+                {lotWarning ? (
+                  <p className="text-xs text-amber-600 mt-1">⚠️ {lotWarning}</p>
+                ) : (
+                  <p className="text-xs text-gray-500 mt-1">
+                    {lotSize && lotSize > 0
+                      ? `每手 ${lotSize} 股，数量需为其整数倍`
+                      : "按该股每手股数下单，部分股票每手不足100股"}
+                  </p>
+                )}
               </div>
 
               <div>

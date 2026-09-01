@@ -167,8 +167,8 @@ class AutoTradeService:
         if stock_code in self.tasks and self.tasks[stock_code].status in ('waiting_buy', 'bought'):
             return {'success': False, 'message': f'{stock_code} 已有活跃的自动交易任务'}
 
-        if quantity <= 0 or quantity % 100 != 0:
-            return {'success': False, 'message': '交易数量必须是100的正整数倍'}
+        if quantity <= 0:
+            return {'success': False, 'message': '交易数量必须大于0'}
 
         if prev_close <= 0:
             return {'success': False, 'message': '前收盘价无效'}

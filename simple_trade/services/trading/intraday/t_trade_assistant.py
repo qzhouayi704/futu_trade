@@ -67,7 +67,7 @@ class TConfig:
     outflow_ratio_thresh: float = -0.05  # net_inflow_ratio 低于此=净流出（卖腿条件）
     min_high_change_pct: float = 2.0     # 判"高位"的最低日内涨幅（%）
     near_high_pct: float = 0.99          # 现价≥当日高×此 也算"高位"（接近日内高点，治平/跌势下的局部高点）
-    lot_size: int = 100                  # 港股每手股数（默认100，按股可调）
+    lot_size: int = 100                  # 每手股数回退值（优先用富途该股真实 lot_size，取不到才用此值）
     # 资格过滤（波动大 + 流动性好）
     min_amplitude_pct: float = 2.5       # 当日振幅(高-低)/昨收 下限（%）
     min_turnover_amount: float = 2.0e7   # 成交额下限（HKD）
@@ -259,9 +259,14 @@ def eval_buyback_trigger(leg: Dict[str, Any], quote: Dict[str, Any], flow: Optio
     return " + ".join(reasons), conditions
 
 
-def compute_trim_qty(original_qty: int, can_sell_qty: int, cfg: TConfig) -> int:
-    """按减仓比例、底仓下限、可卖量、整手 计算本次高抛股数（不足一手返回0）。"""
-    if original_qty <= 0 or cfg.lot_size <= 0:
+def compute_trim_qty(original_qty: int, can_sell_qty: int, cfg: TConfig,
+                     lot_size: Optional[int] = None) -> int:
+    """按减仓比例、底仓下限、可卖量、整手 计算本次高抛股数（不足一手返回0）。
+
+    lot_size: 该股真实每手股数（来自富途 lot_size）。不传则退回 cfg.lot_size（默认100）。
+    """
+    lot = int(lot_size) if lot_size and lot_size > 0 else cfg.lot_size
+    if original_qty <= 0 or lot <= 0:
         return 0
     by_fraction = original_qty * cfg.trim_fraction
     by_cap = original_qty * cfg.max_trim_fraction
@@ -269,8 +274,8 @@ def compute_trim_qty(original_qty: int, can_sell_qty: int, cfg: TConfig) -> int:
     qty = min(by_fraction, by_cap, floor_room)
     if can_sell_qty > 0:
         qty = min(qty, can_sell_qty)
-    lots = int(qty // cfg.lot_size)
-    return lots * cfg.lot_size
+    lots = int(qty // lot)
+    return lots * lot
 
 
 # ==================== 助手主体 ====================
@@ -291,6 +296,16 @@ class TTradeAssistant:
     def _queries(self):
         from ....database.queries.t_trade_queries import TTradeQueries
         return TTradeQueries(self.db)
+
+    @staticmethod
+    def _lot_size(code: str) -> Optional[int]:
+        """该股真实每手股数（富途 lot_size）。取不到返回 None → 退回 cfg.lot_size。"""
+        try:
+            from ...market_data.lot_size_provider import get_lot_size_provider
+            return get_lot_size_provider().get(code)
+        except Exception as e:
+            logger.debug("获取每手股数失败 %s: %s", code, e)
+            return None
 
     def _load_runtime_cfg(self) -> TConfig:
         """每轮刷新 enabled/mode（system_config 覆盖 env）。数值护栏沿用 from_env。"""
@@ -314,6 +329,16 @@ class TTradeAssistant:
         return MarketTimeHelper.get_market_today("HK")
 
     @staticmethod
+    def _trade_date(now: Optional[datetime] = None) -> str:
+        """Use the injected clock for replay/tests and Hong Kong today in realtime."""
+        if now is None:
+            return TTradeAssistant._hk_today()
+        if now.tzinfo is not None:
+            from datetime import timedelta, timezone
+            now = now.astimezone(timezone(timedelta(hours=8)))
+        return now.strftime("%Y-%m-%d")
+
+    @staticmethod
     def _now_min(now: Optional[datetime] = None) -> int:
         """距港股 09:30 的分钟数（服务器=北京时间=HK）。"""
         now = now or datetime.now()
@@ -335,7 +360,7 @@ class TTradeAssistant:
         if not cfg.enabled or not positions:
             return []
 
-        trade_date = self._hk_today()
+        trade_date = self._trade_date(now)
         self._reset_if_new_day(trade_date)
 
         now_min = self._now_min(now)
@@ -404,7 +429,7 @@ class TTradeAssistant:
 
         original_qty = int(pos.get("qty", 0) or 0)
         can_sell = int(pos.get("can_sell_qty", original_qty) or original_qty)
-        trim_qty = compute_trim_qty(original_qty, can_sell, cfg)
+        trim_qty = compute_trim_qty(original_qty, can_sell, cfg, self._lot_size(code))
         if trim_qty <= 0:
             return None
 

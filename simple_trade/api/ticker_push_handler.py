@@ -8,6 +8,7 @@ Ticker 推送处理器
 """
 
 import logging
+import queue
 import threading
 import time
 from typing import Optional
@@ -43,6 +44,7 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
     _DB_FLUSH_INTERVAL = 3.0     # flusher 空闲唤醒周期（秒）
     _DB_FLUSH_MAX_ROWS = 1000    # 缓冲到量立即唤醒 flusher
     _DB_BUFFER_HARD_CAP = 50000  # DB 长时间不可写时的内存保护上限（丢最旧）
+    _PROCESS_QUEUE_CAP = 256      # SDK 回调只投递 DataFrame 批次，防止下游卡顿反压 OpenD
 
     def __init__(self):
         if FUTU_AVAILABLE:
@@ -57,6 +59,9 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
         self._db_flush_event = threading.Event()
         self._db_flusher: Optional[threading.Thread] = None
         self._db_write_fail_log_time = 0.0
+        self._process_queue: queue.Queue = queue.Queue(maxsize=self._PROCESS_QUEUE_CAP)
+        self._processor: Optional[threading.Thread] = None
+        self._process_drop_count = 0
 
     def set_container(self, container):
         """设置服务容器（延迟注入）"""
@@ -77,17 +82,63 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             return RET_OK, None
 
     def _handle_ticker_push(self, df):
-        """处理推送的ticker DataFrame"""
+        """SDK thread boundary: validate ownership and enqueue only."""
         if df is None or df.empty:
             return
-
         try:
             stock_code = df['code'].iloc[0] if 'code' in df.columns else None
             if not stock_code:
                 return
+            owned_df = df.copy(deep=True)
+            self._ensure_processor()
+            try:
+                self._process_queue.put_nowait((stock_code, owned_df))
+            except queue.Full:
+                try:
+                    self._process_queue.get_nowait()
+                    self._process_queue.task_done()
+                except queue.Empty:
+                    pass
+                self._process_drop_count += 1
+                self._process_queue.put_nowait((stock_code, owned_df))
+                self._warn_throttled(
+                    f"[TickerPush] 处理队列已满，丢弃最旧批次，累计 {self._process_drop_count} 批"
+                )
+        except Exception as e:
+            logger.error(f"[TickerPush] SDK 入队失败: {e}")
 
+    def _ensure_processor(self) -> None:
+        if self._processor is not None and self._processor.is_alive():
+            return
+        with self._db_buffer_lock:
+            if self._processor is not None and self._processor.is_alive():
+                return
+            self._processor = threading.Thread(
+                target=self._process_loop,
+                name="ticker-push-processor",
+                daemon=True,
+            )
+            self._processor.start()
+
+    def _process_loop(self) -> None:
+        while True:
+            stock_code, df = self._process_queue.get()
+            try:
+                self._process_ticker_push(stock_code, df)
+            except Exception as e:
+                logger.error(f"[TickerPush] 异步处理推送失败: {e}")
+            finally:
+                self._process_queue.task_done()
+
+    def _process_ticker_push(self, stock_code: str, df) -> None:
+        """Process one owned batch outside the Futu SDK callback thread."""
+        try:
             self._tick_count += len(df)
             self._stocks_seen.add(stock_code)
+
+            # V2 shadow ingress only validates/adapts and enqueues immutable events.
+            # The V2 path performs no DB I/O, notification, or strategy calculation here.
+            self._feed_v2_shadow(stock_code, df)
 
             # 1. 更新 TickerDataFrameCache
             self._update_cache(stock_code, df)
@@ -123,6 +174,17 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                 cache.set(stock_code, df)
         except Exception as e:
             logger.debug(f"[TickerPush] 更新缓存失败: {e}")
+
+    def _feed_v2_shadow(self, stock_code: str, df) -> None:
+        if not self._container:
+            return
+        runtime = getattr(self._container, 'v2_runtime', None)
+        if runtime is None or not getattr(runtime, 'started', False):
+            return
+        try:
+            runtime.ingest_ticker_records(stock_code, df.to_dict('records'))
+        except Exception as error:
+            logger.debug(f"[TickerPush] V2 shadow 入队失败: {error}")
 
     def _feed_momentum(self, stock_code: str, df):
         """将推送数据喂给动量引擎"""

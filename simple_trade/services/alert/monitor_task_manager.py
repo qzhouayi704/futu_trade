@@ -151,8 +151,8 @@ class MonitorTaskManager:
             result['message'] = "目标价格必须大于0"
             return result
 
-        if quantity <= 0 or quantity % 100 != 0:
-            result['message'] = "数量必须是100的正整数倍"
+        if quantity <= 0:
+            result['message'] = "数量必须大于0"
             return result
 
         try:

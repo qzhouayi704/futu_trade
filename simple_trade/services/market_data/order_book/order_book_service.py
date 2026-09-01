@@ -6,7 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from futu import RET_OK, SubType
 
@@ -42,9 +42,10 @@ class OrderBookService:
     基于富途 get_order_book API。
     """
 
-    def __init__(self, futu_client, subscription_manager=None):
+    def __init__(self, futu_client, subscription_manager=None, market_event_sink: Callable | None = None):
         self._futu_client = futu_client
         self._subscription_manager = subscription_manager
+        self._market_event_sink = market_event_sink
         self._cache: Dict[str, OrderBookData] = {}
         self._cache_ttl = 30  # 30秒缓存（盘口变化快）
 
@@ -99,6 +100,11 @@ class OrderBookService:
             result = self._parse_order_book(stock_code, data)
             if result:
                 self._cache[stock_code] = result
+                if self._market_event_sink is not None:
+                    try:
+                        self._market_event_sink(stock_code, result)
+                    except Exception as error:
+                        logger.debug(f"V2 shadow 盘口入队失败 {stock_code}: {error}")
             return result
 
         except Exception as e:

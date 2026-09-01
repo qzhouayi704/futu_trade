@@ -42,10 +42,19 @@ function superBoxColor(v: number): string {
   return "border-border";
 }
 
-// ==================== 累计净额曲线 ====================
+// ==================== 分档累计净额曲线 ====================
+
+// 四档累计走势的系列定义（颜色避开红/绿，避免与净额正负色混淆）
+const TIER_SERIES: { name: string; color: string; width: number; get: (p: MainCapitalDetailRow) => number }[] = [
+  { name: "超大单", color: "#2a78d6", width: 2, get: (p) => p.super_cum ?? 0 },
+  { name: "大单", color: "#d99000", width: 2, get: (p) => p.large_cum ?? 0 },
+  { name: "中单", color: "#7c5cff", width: 2, get: (p) => p.mid_cum ?? 0 },
+  { name: "总≥10万", color: "#e5703e", width: 2.5, get: (p) => p.cum },
+];
 
 function CumNetChart({ rows, tradeDate, height = 360 }: { rows: MainCapitalDetailRow[]; tradeDate: string; height?: number }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const legendRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof import("lightweight-charts").createChart> | null>(null);
 
   useEffect(() => {
@@ -65,7 +74,7 @@ function CumNetChart({ rows, tradeDate, height = 360 }: { rows: MainCapitalDetai
         layout: { background: { color: "transparent" }, textColor: "#6b7280", fontSize: 11 },
         grid: { vertLines: { color: "#f0f0f0" }, horzLines: { color: "#f0f0f0" } },
         crosshair: { mode: CrosshairMode.Magnet },
-        rightPriceScale: { borderColor: "#e5e7eb", scaleMargins: { top: 0.1, bottom: 0.1 } },
+        rightPriceScale: { borderColor: "#e5e7eb", scaleMargins: { top: 0.12, bottom: 0.12 } },
         timeScale: { borderColor: "#e5e7eb", timeVisible: true, secondsVisible: false, barSpacing: 8, minBarSpacing: 3 },
       });
       chartRef.current = chart;
@@ -79,30 +88,60 @@ function CumNetChart({ rows, tradeDate, height = 360 }: { rows: MainCapitalDetai
         return Math.floor(d.getTime() / 1000 - tzOffsetSec) as unknown as import("lightweight-charts").Time;
       };
 
-      const cumSeries = chart.addLineSeries({
-        color: "#2563eb",
-        lineWidth: 2,
-        title: "累计净额",
-        lastValueVisible: true,
-        priceLineVisible: true,
-        priceLineColor: "#2563eb",
-        priceLineStyle: 2,
-        crosshairMarkerRadius: 3,
-        priceFormat: { type: "volume" },
-      });
-      cumSeries.setData(rows.map((p) => ({ time: toTimestamp(p.time), value: p.cum })));
-
-      // 0 基线（虚线）
+      // 0 基线（虚线，先加使其位于底层）
       const zeroSeries = chart.addLineSeries({
         color: "#d1d5db",
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
-        title: "",
         priceLineVisible: false,
         lastValueVisible: false,
         crosshairMarkerVisible: false,
       });
       zeroSeries.setData(rows.map((p) => ({ time: toTimestamp(p.time), value: 0 })));
+
+      // 四档累计线
+      const sers = TIER_SERIES.map((s) => {
+        const ser = chart.addLineSeries({
+          color: s.color,
+          lineWidth: s.width as 1 | 2 | 3 | 4,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerRadius: 3,
+          priceFormat: { type: "volume" },
+        });
+        ser.setData(rows.map((p) => ({ time: toTimestamp(p.time), value: s.get(p) })));
+        return ser;
+      });
+
+      // 图例（悬停时显示该时刻各档累计，未悬停显示收盘/最新值）
+      const last = rows[rows.length - 1];
+      const renderLegend = (vals: number[]) => {
+        if (!legendRef.current) return;
+        legendRef.current.innerHTML = TIER_SERIES.map((s, i) => {
+          const v = vals[i];
+          const vc = v > 0 ? "#dc2626" : v < 0 ? "#16a34a" : "#9ca3af";
+          return (
+            `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;white-space:nowrap">` +
+            `<span style="width:14px;height:3px;border-radius:2px;background:${s.color};display:inline-block"></span>` +
+            `<span style="color:#6b7280">${s.name}</span>` +
+            `<span style="font-weight:600;font-variant-numeric:tabular-nums;color:${vc}">${fmtSigned(v)}</span>` +
+            `</span>`
+          );
+        }).join("");
+      };
+      renderLegend(TIER_SERIES.map((s) => s.get(last)));
+
+      chart.subscribeCrosshairMove((param: { time?: unknown; seriesData?: Map<unknown, unknown> }) => {
+        if (!param || param.time == null || !param.seriesData) {
+          renderLegend(TIER_SERIES.map((s) => s.get(last)));
+          return;
+        }
+        const vals = sers.map((ser) => {
+          const d = param.seriesData!.get(ser) as { value?: number } | undefined;
+          return d && typeof d.value === "number" ? d.value : 0;
+        });
+        renderLegend(vals);
+      });
 
       chart.timeScale().fitContent();
 
@@ -122,7 +161,12 @@ function CumNetChart({ rows, tradeDate, height = 360 }: { rows: MainCapitalDetai
     };
   }, [rows, tradeDate, height]);
 
-  return <div ref={containerRef} className="w-full" style={{ height }} />;
+  return (
+    <div className="relative w-full" style={{ height }}>
+      <div ref={containerRef} className="w-full" style={{ height }} />
+      <div ref={legendRef} className="absolute top-1 left-2 z-10 flex flex-wrap gap-y-0.5 text-[11px] pointer-events-none" />
+    </div>
+  );
 }
 
 // ==================== 主面板 ====================
@@ -303,8 +347,8 @@ export function MainCapitalDetailPanel({ stockCode }: { stockCode: string }) {
           {/* 右：累计净额曲线 */}
           <div>
             <div className="flex items-center justify-between mb-1 px-1">
-              <span className="text-xs font-medium text-foreground">累计净额走势</span>
-              <span className="text-[10px] text-muted-foreground">单位：万元 · 30秒刷新</span>
+              <span className="text-xs font-medium text-foreground">分档累计净额走势</span>
+              <span className="text-[10px] text-muted-foreground">超大单/大单/中单/总 · 万元 · 30秒刷新</span>
             </div>
             <CumNetChart rows={rows} tradeDate={data.trade_date} />
           </div>

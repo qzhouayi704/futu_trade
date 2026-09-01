@@ -34,8 +34,9 @@ interface QuickOrderPopoverProps {
 }
 
 // ── 快捷数量选项 ──────────────────────────────
+// 按该股每手股数的倍数给（港股每手不一定100股），取不到每手时退回100
 
-const QTY_OPTIONS = [100, 200, 500, 1000, 2000];
+const QTY_MULTIPLES = [1, 2, 5, 10, 20];
 
 // ── 组件 ──────────────────────────────────────
 
@@ -49,8 +50,31 @@ export function QuickOrderPopover({ stockCode, stockName, price, direction }: Qu
   const [checking, setChecking] = useState(false);
   const [executing, setExecuting] = useState(false);
   const [step, setStep] = useState<"form" | "confirm">("form");
+  const [lotSize, setLotSize] = useState<number | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
+
+  const lot = lotSize && lotSize > 0 ? lotSize : 100;
+  const qtyOptions = QTY_MULTIPLES.map((m) => m * lot);
+
+  // ── 打开时取该股每手股数，数量不足/不整手时对齐到一手 ──
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    tradeApi
+      .getLotSize(stockCode)
+      .then((res) => {
+        const size = res.success ? res.data?.lot_size ?? null : null;
+        if (cancelled || !size || size <= 0) return;
+        setLotSize(size);
+        setQuantity((q) => (q % size === 0 && q > 0 ? q : size));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, stockCode]);
 
   // ── 点击外部关闭 ────────────────────────────
 
@@ -241,7 +265,7 @@ export function QuickOrderPopover({ stockCode, stockName, price, direction }: Qu
               <div>
                 <label className="text-[10px] font-medium text-muted-foreground mb-1 block">交易数量（股）</label>
                 <div className="flex items-center gap-1 flex-wrap">
-                  {QTY_OPTIONS.map((q) => (
+                  {qtyOptions.map((q) => (
                     <button
                       key={q}
                       onClick={() => setQuantity(q)}
@@ -257,12 +281,23 @@ export function QuickOrderPopover({ stockCode, stockName, price, direction }: Qu
                   <input
                     type="number"
                     value={quantity}
-                    onChange={(e) => setQuantity(Math.max(100, parseInt(e.target.value) || 100))}
-                    min={100}
-                    step={100}
+                    onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                    min={1}
+                    step={lot}
                     className="w-16 text-[10px] px-2 py-1 rounded-md border border-border bg-background text-foreground text-center"
                   />
                 </div>
+                {lotSize && lotSize > 0 && (
+                  <p
+                    className={`text-[10px] mt-1 ${
+                      quantity % lotSize !== 0 ? "text-amber-600" : "text-muted-foreground"
+                    }`}
+                  >
+                    {quantity % lotSize !== 0
+                      ? `⚠️ 数量不是每手 ${lotSize} 股的整数倍，富途可能拒单`
+                      : `每手 ${lotSize} 股`}
+                  </p>
+                )}
               </div>
 
               {/* 价格选择 */}
@@ -315,7 +350,7 @@ export function QuickOrderPopover({ stockCode, stockName, price, direction }: Qu
               {/* 操作按钮 */}
               <button
                 onClick={() => setStep("confirm")}
-                disabled={quantity < 100}
+                disabled={quantity < 1}
                 className={`w-full py-2 rounded-lg text-xs font-bold transition-all ${
                   isBuy
                     ? "bg-red-600 hover:bg-red-700 text-white disabled:bg-red-300"

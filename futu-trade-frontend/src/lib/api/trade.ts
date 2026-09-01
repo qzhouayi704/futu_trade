@@ -28,6 +28,13 @@ export const tradeApi = {
     return apiClient.post("/trading/execute", order);
   },
 
+  // 获取该股每手股数（下单数量须为其整数倍；港股每手不一定是100股）
+  getLotSize: async (
+    stockCode: string
+  ): Promise<ApiResponse<{ stock_code: string; lot_size: number | null }>> => {
+    return apiClient.get("/trading/lot-size", { params: { stock_code: stockCode } });
+  },
+
   // 获取持仓信息
   getPositions: async (): Promise<ApiResponse<Position[]>> => {
     return apiClient.get("/trading/positions");

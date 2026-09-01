@@ -41,6 +41,7 @@ class ServiceContainer:
         self.system_coordinator = None
         self.quote_pusher = None
         self.state_manager = None
+        self.v2_runtime = None
 
     def initialize_core(self):
         """初始化核心服务"""

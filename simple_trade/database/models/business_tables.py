@@ -632,3 +632,143 @@ class BusinessTables:
     CCASS_HOLDINGS_INDEXES = [
         'CREATE INDEX IF NOT EXISTS idx_ccass_stock_date ON ccass_holdings(stock_code, holding_date)',
     ]
+
+    # ========== 交易系统 V2 影子内核 ==========
+
+    V2_DECISION_EVENTS_TABLE = '''
+        CREATE TABLE IF NOT EXISTS v2_decision_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            event_type TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            strategy_version TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            exchange_time TEXT NOT NULL,
+            received_time TEXT NOT NULL,
+            sequence INTEGER,
+            correlation_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            old_state TEXT,
+            new_state TEXT,
+            reason_code TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    '''
+
+    V2_STRATEGY_STATES_TABLE = '''
+        CREATE TABLE IF NOT EXISTS v2_strategy_states (
+            strategy_version TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            status TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            last_event_id TEXT NOT NULL,
+            confirmed_price REAL,
+            peak_price REAL,
+            last_sequence INTEGER,
+            metadata_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (strategy_version, stock_code),
+            FOREIGN KEY (last_event_id) REFERENCES v2_decision_events(event_id)
+        )
+    '''
+
+    V2_POSITION_STATES_TABLE = '''
+        CREATE TABLE IF NOT EXISTS v2_position_states (
+            strategy_version TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            status TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            last_event_id TEXT NOT NULL,
+            opened_at TEXT NOT NULL,
+            cost_price REAL NOT NULL,
+            peak_price REAL NOT NULL,
+            trough_price REAL NOT NULL,
+            mfe_pct REAL NOT NULL,
+            mae_pct REAL NOT NULL,
+            last_high_at TEXT NOT NULL,
+            stalled_since TEXT,
+            profit_ready_since TEXT,
+            flow_peak REAL NOT NULL,
+            metadata_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (strategy_version, stock_code),
+            FOREIGN KEY (last_event_id) REFERENCES v2_decision_events(event_id)
+        )
+    '''
+
+    V2_TRADE_INTENTS_TABLE = '''
+        CREATE TABLE IF NOT EXISTS v2_trade_intents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            intent_id TEXT NOT NULL UNIQUE,
+            source_event_id TEXT NOT NULL,
+            intent_type TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            sell_leg_json TEXT,
+            buy_leg_json TEXT,
+            risk_result TEXT,
+            risk_reason_json TEXT,
+            broker_order_ids_json TEXT,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(source_event_id, intent_type),
+            FOREIGN KEY (source_event_id) REFERENCES v2_decision_events(event_id)
+        )
+    '''
+
+    V2_NOTIFICATION_LOG_TABLE = '''
+        CREATE TABLE IF NOT EXISTS v2_notification_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_event_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            expires_at TEXT,
+            delivered_at TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(idempotency_key, channel),
+            FOREIGN KEY (decision_event_id) REFERENCES v2_decision_events(event_id)
+        )
+    '''
+
+    V2_OUTCOMES_TABLE = '''
+        CREATE TABLE IF NOT EXISTS v2_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_event_id TEXT NOT NULL UNIQUE,
+            stock_code TEXT NOT NULL,
+            strategy_version TEXT NOT NULL,
+            signal_time TEXT NOT NULL,
+            signal_price REAL NOT NULL,
+            mfe_pct REAL,
+            mae_pct REAL,
+            close_return_pct REAL,
+            next_day_return_pct REAL,
+            reached_1_5 INTEGER,
+            reached_3 INTEGER,
+            reached_5 INTEGER,
+            time_to_1_5_seconds INTEGER,
+            time_to_3_seconds INTEGER,
+            time_to_5_seconds INTEGER,
+            time_to_peak_seconds INTEGER,
+            hold_control_return_pct REAL,
+            rotation_return_pct REAL,
+            evaluated_at TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (decision_event_id) REFERENCES v2_decision_events(event_id)
+        )
+    '''
+
+    V2_INDEXES = [
+        'CREATE INDEX IF NOT EXISTS idx_v2_events_stock_time ON v2_decision_events(stock_code, exchange_time)',
+        'CREATE INDEX IF NOT EXISTS idx_v2_events_strategy_type_time ON v2_decision_events(strategy_version, event_type, exchange_time)',
+        'CREATE INDEX IF NOT EXISTS idx_v2_events_correlation ON v2_decision_events(correlation_id)',
+        'CREATE INDEX IF NOT EXISTS idx_v2_states_status ON v2_strategy_states(status, updated_at)',
+        'CREATE INDEX IF NOT EXISTS idx_v2_position_states_status ON v2_position_states(status, updated_at)',
+        'CREATE INDEX IF NOT EXISTS idx_v2_intents_status ON v2_trade_intents(status, updated_at)',
+        'CREATE INDEX IF NOT EXISTS idx_v2_notifications_status ON v2_notification_log(status, updated_at)',
+        'CREATE INDEX IF NOT EXISTS idx_v2_outcomes_strategy_time ON v2_outcomes(strategy_version, signal_time)',
+    ]

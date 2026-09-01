@@ -19,8 +19,12 @@ from .hot_stock import HotStockCoordinator
 from .activity_filter import ActivityFilterService
 from .invalid_stock_detector import InvalidStockDetector
 from .leader_stock_filter import LeaderStockFilter, LeaderStockCandidate, LeaderFilterConfig
+from .lot_size_provider import LotSizeProvider, get_lot_size_provider, DEFAULT_LOT_SIZE
 
 __all__ = [
+    'LotSizeProvider',
+    'get_lot_size_provider',
+    'DEFAULT_LOT_SIZE',
     'KlineDataService',
     'KlineDataFetcher',
     'KlineProgressManager',

@@ -156,6 +156,12 @@ class QuotePipeline:
         if quote_cache:
             quote_cache.update_from_quotes(quotes)
 
+        # V2 shadow only: typed adaptation + bounded in-memory enqueue.
+        # No decision, notification, database write, or broker call occurs here.
+        v2_runtime = getattr(self.container, 'v2_runtime', None)
+        if v2_runtime is not None and getattr(v2_runtime, 'started', False):
+            v2_runtime.ingest_quotes(quotes)
+
         # P2-1: 仅在监控未启动时广播报价（监控启动时由 run_monitoring_cycle 统一广播，避免双重推送）
         if not self.state_manager.is_running():
             task = asyncio.create_task(self._broadcaster.broadcast(quotes, [], []))
@@ -181,6 +187,9 @@ class QuotePipeline:
 
         # 一次性获取持仓，避免各子函数重复调用 Futu API
         positions = await self._get_positions_dict()
+        v2_runtime = getattr(self.container, 'v2_runtime', None)
+        if v2_runtime is not None and getattr(v2_runtime, 'started', False):
+            v2_runtime.ingest_positions(positions, quotes)
 
         await self._check_price_triggers(quotes, positions)
 
@@ -1134,8 +1143,12 @@ class QuotePipeline:
                                      inflow_context=inflow_context)
                 if not alert:
                     continue
-                await self.socket_manager.emit_to_all('capital_trend_alert', alert.to_dict())
-                emitted.append(alert.to_dict())
+                alert_payload = alert.to_dict()
+                await self.socket_manager.emit_to_all('capital_trend_alert', alert_payload)
+                emitted.append(alert_payload)
+                v2_runtime = getattr(self.container, 'v2_runtime', None)
+                if v2_runtime is not None and getattr(v2_runtime, 'started', False):
+                    v2_runtime.ingest_legacy_signal(alert_payload)
                 should_push = (
                     not getattr(alert, 'wechat_suppressed', False)
                     and (

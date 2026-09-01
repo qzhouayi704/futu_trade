@@ -20,7 +20,7 @@ class ExecuteTradeRequest(BaseModel):
     stock_code: str = Field(..., min_length=1, description="股票代码")
     trade_type: str = Field(..., description="交易类型(BUY/SELL/buy/sell)")
     price: Optional[float] = Field(None, description="交易价格，None表示市价")
-    quantity: int = Field(..., gt=0, description="交易数量(必须是100的倍数)")
+    quantity: int = Field(..., gt=0, description="交易数量(须为该股每手股数的整数倍，由券商校验)")
     signal_id: Optional[int] = Field(None, description="信号ID")
 
     @field_validator('trade_type')
@@ -33,9 +33,13 @@ class ExecuteTradeRequest(BaseModel):
         return v
 
     def validate_quantity(self):
-        """验证数量是100的倍数"""
-        if self.quantity % 100 != 0:
-            raise ValidationError("交易数量必须是100的倍数")
+        """验证数量为正整数。
+
+        不再强制100的倍数：港股每手股数按股票而定（可小于100），
+        整手校验交由富途下单接口按该股真实 lot_size 判定。
+        """
+        if self.quantity <= 0:
+            raise ValidationError("交易数量必须大于0")
 
 
 class AddMonitorTaskRequest(BaseModel):
@@ -44,13 +48,13 @@ class AddMonitorTaskRequest(BaseModel):
     stock_name: Optional[str] = Field(None, description="股票名称")
     direction: str = Field(..., pattern="^(BUY|SELL)$", description="交易方向(BUY/SELL)")
     target_price: float = Field(..., gt=0, description="目标价格")
-    quantity: int = Field(..., gt=0, description="数量(必须是100的倍数)")
+    quantity: int = Field(..., gt=0, description="数量(须为该股每手股数的整数倍，由券商校验)")
     stop_loss_price: Optional[float] = Field(None, gt=0, description="止损价格")
 
     def validate_quantity(self):
-        """验证数量是100的倍数"""
-        if self.quantity % 100 != 0:
-            raise ValidationError("数量必须是100的正整数倍")
+        """验证数量为正整数（不强制100的倍数，见 ExecuteTradeRequest）"""
+        if self.quantity <= 0:
+            raise ValidationError("数量必须大于0")
 
     def to_stock_info(self) -> StockInfo:
         """转换为 StockInfo 对象"""

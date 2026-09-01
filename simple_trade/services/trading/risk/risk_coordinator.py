@@ -589,7 +589,8 @@ class RiskCoordinator:
     def _execute_hybrid_sell(self, mgr, code: str, action, price: float):
         """实盘执行混合出场卖单(HYBRID_EXIT_LIVE 开启时)。
 
-        安全约束: 只对 hybrid profile 持仓下单; 港股 SELL_PARTIAL 向下取整到整手(100),
+        安全约束: 只对 hybrid profile 持仓下单; SELL_PARTIAL 向下取整到该股真实整手
+        (每手股数来自富途快照 lot_size, 取不到才回退100),
         SELL_ALL 卖全部剩余(含可能的碎股); 市价单(price=0); 报单成功后回写 remaining。
         任何异常都不向上抛(出场环不能因单只股票报错而中断)。
         """
@@ -604,7 +605,8 @@ class RiskCoordinator:
                 return
             qty = int(action.qty_to_sell or 0)
             if action.action == 'SELL_PARTIAL':
-                qty = (qty // 100) * 100  # 港股整手
+                from ...market_data.lot_size_provider import get_lot_size_provider
+                qty = get_lot_size_provider().floor_to_lot(code, qty)  # 按该股每手取整
             if qty <= 0:
                 return
             res = fts.order_manager.place_order(

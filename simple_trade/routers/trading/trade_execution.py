@@ -111,6 +111,26 @@ async def execute_trade(
     )
 
 
+@router.get("/lot-size", response_model=APIResponse)
+async def get_lot_size(
+    stock_code: str = Query(..., min_length=1, description="股票代码"),
+):
+    """获取该股每手股数（富途 lot_size）。
+
+    下单数量须为每手股数的整数倍——港股每手不一定是100股。
+    富途不可用时 lot_size 返回 null，前端不做整手限制、由券商判定。
+    """
+    from ...services.market_data.lot_size_provider import get_lot_size_provider
+
+    lot_size = await asyncio.to_thread(get_lot_size_provider().get, stock_code)
+
+    return APIResponse(
+        success=True,
+        data={'stock_code': stock_code, 'lot_size': lot_size},
+        message="获取每手股数成功" if lot_size else "未取到每手股数（富途不可用）"
+    )
+
+
 @router.get("/kline", response_model=APIResponse)
 async def get_kline_data(
     stock_code: str = Query(..., min_length=1, description="股票代码"),

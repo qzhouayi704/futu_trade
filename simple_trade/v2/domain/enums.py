@@ -1,0 +1,143 @@
+"""V2 领域枚举。"""
+
+from enum import Enum
+
+
+class StringEnum(str, Enum):
+    """序列化值稳定的字符串枚举。"""
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class EventType(StringEnum):
+    QUOTE_UPDATED = "QUOTE_UPDATED"
+    TICK_RECEIVED = "TICK_RECEIVED"
+    ORDER_BOOK_UPDATED = "ORDER_BOOK_UPDATED"
+    KLINE_UPDATED = "KLINE_UPDATED"
+    MARKET_CONTEXT_UPDATED = "MARKET_CONTEXT_UPDATED"
+    DATA_QUALITY_CHANGED = "DATA_QUALITY_CHANGED"
+    FEATURE_SNAPSHOT_READY = "FEATURE_SNAPSHOT_READY"
+    POSITION_RECONCILED = "POSITION_RECONCILED"
+    CANDIDATE_ENTERED = "CANDIDATE_ENTERED"
+    CANDIDATE_UPDATED = "CANDIDATE_UPDATED"
+    CANDIDATE_INVALIDATED = "CANDIDATE_INVALIDATED"
+    BUY_CONFIRMED = "BUY_CONFIRMED"
+    BUY_INVALIDATED = "BUY_INVALIDATED"
+    POSITION_OPENED = "POSITION_OPENED"
+    POSITION_EFFICIENCY_CHANGED = "POSITION_EFFICIENCY_CHANGED"
+    EXIT_RISK_CONFIRMED = "EXIT_RISK_CONFIRMED"
+    ROTATION_PROPOSED = "ROTATION_PROPOSED"
+    POSITION_CLOSED = "POSITION_CLOSED"
+    TRADE_INTENT_CREATED = "TRADE_INTENT_CREATED"
+    RISK_APPROVED = "RISK_APPROVED"
+    RISK_REJECTED = "RISK_REJECTED"
+    ORDER_SUBMITTED = "ORDER_SUBMITTED"
+    ORDER_UPDATED = "ORDER_UPDATED"
+    EXECUTION_COMPLETED = "EXECUTION_COMPLETED"
+    NOTIFICATION_REQUESTED = "NOTIFICATION_REQUESTED"
+    NOTIFICATION_DELIVERED = "NOTIFICATION_DELIVERED"
+    NOTIFICATION_FAILED = "NOTIFICATION_FAILED"
+    RUNTIME_DEGRADED = "RUNTIME_DEGRADED"
+
+
+class RuntimeMode(StringEnum):
+    SHADOW = "shadow"
+    ALERT = "alert"
+    SEMI = "semi"
+    FULL = "full"
+
+
+class DataQuality(StringEnum):
+    GOOD = "GOOD"
+    DEGRADED = "DEGRADED"
+    INVALID = "INVALID"
+
+
+class MarketRegime(StringEnum):
+    NORMAL = "NORMAL"
+    WEAK = "WEAK"
+    EXTREME = "EXTREME"
+
+
+class TickDirection(StringEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+    NEUTRAL = "NEUTRAL"
+
+
+class CandidateStatus(StringEnum):
+    OBSERVE = "OBSERVE"
+    SETUP = "SETUP"
+    BUY_CONFIRMED = "BUY_CONFIRMED"
+    BUY_INVALIDATED = "BUY_INVALIDATED"
+
+
+class StrategyStatus(StringEnum):
+    IDLE = "IDLE"
+    SETUP = "SETUP"
+    WATCHING = "WATCHING"
+    CONFIRMED = "CONFIRMED"
+    INVALIDATED = "INVALIDATED"
+
+
+class PositionStatus(StringEnum):
+    FLAT = "FLAT"
+    HOLDING = "HOLDING"
+    PROFIT_READY = "PROFIT_READY"
+    STALLED = "STALLED"
+    EXIT_RISK = "EXIT_RISK"
+    ROTATION_READY = "ROTATION_READY"
+    EXITING = "EXITING"
+    CLOSED = "CLOSED"
+
+
+class DecisionAction(StringEnum):
+    HOLD = "HOLD"
+    PROTECT_PROFIT = "PROTECT_PROFIT"
+    EXIT = "EXIT"
+    ROTATE = "ROTATE"
+
+
+class IntentType(StringEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+    ROTATE = "ROTATE"
+
+
+class OrderSide(StringEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderType(StringEnum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+
+
+class RiskResult(StringEnum):
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    DEGRADED = "DEGRADED"
+
+
+class ExecutionStatus(StringEnum):
+    PENDING = "PENDING"
+    SUBMITTED = "SUBMITTED"
+    PARTIAL = "PARTIAL"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+
+
+class NotificationChannel(StringEnum):
+    WECHAT = "WECHAT"
+    WEBSOCKET = "WEBSOCKET"
+    FRONTEND = "FRONTEND"
+
+
+class NotificationDeliveryResult(StringEnum):
+    DELIVERED = "DELIVERED"
+    COLLAPSED = "COLLAPSED"
+    FAILED = "FAILED"

@@ -415,6 +415,8 @@ async def main_capital_detail(stock_code: str, container=Depends(get_container))
         t_super_buy = t_super_sell = 0.0
         t_large_buy = t_large_sell = 0.0
         t_mid_buy = t_mid_sell = 0.0
+        # 逐分钟分档累计净额（元），供前端多线走势图（三档累计和恒=cum）
+        cum_super = cum_large = cum_mid = 0.0
         for minute, big_buy, big_sell, super_buy, super_sell, large_buy, large_sell, price in rows:
             if not minute or not ('09:15' <= minute <= '16:10'):
                 continue
@@ -436,6 +438,9 @@ async def main_capital_detail(stock_code: str, container=Depends(get_container))
             t_large_sell += ls
             t_mid_buy += mb
             t_mid_sell += ms
+            cum_super += (sb - ss)
+            cum_large += (lb - ls)
+            cum_mid += (mb - ms)
             p = float(price or 0)
             change_pct = round((p / prev_close - 1) * 100, 2) if (prev_close > 0 and p > 0) else None
             detail.append({
@@ -447,6 +452,9 @@ async def main_capital_detail(stock_code: str, container=Depends(get_container))
                 "net": round(net / WAN, 1),
                 "cum": round(cum / WAN, 1),
                 "super_net": round((sb - ss) / WAN, 1),   # 本分钟超大单净额（万）
+                "super_cum": round(cum_super / WAN, 1),   # 超大单累计净额（万）
+                "large_cum": round(cum_large / WAN, 1),   # 大单累计净额（万）
+                "mid_cum": round(cum_mid / WAN, 1),       # 中单累计净额（万）
             })
 
         total = total_buy + total_sell
