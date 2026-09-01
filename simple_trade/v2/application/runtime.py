@@ -2,20 +2,23 @@
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
+import threading
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...database.core.db_manager import DatabaseManager
 from ..config.models import V2Config
 from ..domain.enums import EventType, RuntimeMode
-from ..domain.events import DomainEvent
+from ..domain.events import DomainEvent, MarketEvent
 from ..domain.events import QuoteEvent
 from ..domain.events import PositionReconciledEvent
 from ..infrastructure.capital_seed_loader import CapitalSeedLoader
 from ..infrastructure.futu_market_adapter import FutuAdapterStats, FutuMarketAdapter
 from ..infrastructure.feature_reference_loader import FeatureReferenceLoader
+from ..infrastructure.ticker_replay_loader import TickerReplayLoader
 from ..infrastructure.sqlite_event_store import SqliteEventStore
 from ..infrastructure.sqlite_state_store import SqliteStateStore
 from ..infrastructure.sqlite_position_state_store import SqlitePositionStateStore
@@ -99,6 +102,7 @@ class V2Runtime:
         )
         self.capital_seed_loader = CapitalSeedLoader(db)
         self.feature_reference_loader = FeatureReferenceLoader(db)
+        self.ticker_replay_loader = TickerReplayLoader(db)
         self.dual_track = DualTrackScoreboard()
         self.candidate_coordinator = CandidateCoordinator(
             self.event_store,
@@ -156,6 +160,10 @@ class V2Runtime:
         )
         self._loop: asyncio.AbstractEventLoop | None = None
         self._started = False
+        self._reference_queue: asyncio.Queue[tuple[str, ...]] = asyncio.Queue(maxsize=100)
+        self._reference_pending: set[str] = set()
+        self._reference_attempted_at: dict[str, float] = {}
+        self._reference_lock = threading.RLock()
 
     async def start(self) -> bool:
         if not self.config.enabled:
@@ -182,6 +190,11 @@ class V2Runtime:
             await self.event_bus.start(self.supervisor)
             await self._restore_feature_references()
             await self._restore_capital()
+            self.supervisor.create_task(
+                "v2-reference-refresh",
+                self._reference_refresh_loop(),
+                critical=False,
+            )
         except Exception:
             await self.notification_coordinator.stop(drain=False)
             self.notification_coordinator.unregister()
@@ -246,9 +259,9 @@ class V2Runtime:
         events: list[DomainEvent] = []
         for row in rows:
             events.extend(self.market_adapter.adapt_quote(row, received_time=received))
-        self.feature_engine.stage_quote_universe(
-            tuple(event.quote for event in events if isinstance(event, QuoteEvent))
-        )
+        quotes = tuple(event.quote for event in events if isinstance(event, QuoteEvent))
+        self.feature_engine.stage_quote_universe(quotes)
+        self._schedule_reference_refresh(tuple(quote.stock_code for quote in quotes))
         self._publish_threadsafe(tuple(events))
 
     def ingest_ticker_records(self, stock_code: str, rows: list[dict]) -> None:
@@ -277,8 +290,12 @@ class V2Runtime:
         self._publish_threadsafe(events)
 
     def ingest_legacy_signal(self, payload: dict) -> None:
-        if self._started:
-            self.dual_track.record_legacy_payload(payload)
+        if not self._started:
+            return
+        self.dual_track.record_legacy_payload(payload)
+        event = self._legacy_signal_event(payload)
+        if event is not None:
+            self._publish_threadsafe((event,))
 
     def ingest_positions(self, rows: dict | list[dict], quotes: list[dict]) -> None:
         if not self._started:
@@ -319,21 +336,152 @@ class V2Runtime:
         for event in events:
             self.event_bus.publish_nowait(event)
 
+    def _legacy_signal_event(self, payload: dict) -> MarketEvent | None:
+        code = str(payload.get("stock_code") or payload.get("code") or "").strip()
+        if not code:
+            return None
+        observed_at = self._parse_legacy_time(payload.get("timestamp"), code)
+        direction = str(
+            payload.get("direction") or payload.get("signal_type") or "UNKNOWN"
+        ).upper()
+        net_buy_amount = self._number(payload.get("net_buy_amount"))
+        if net_buy_amount <= 0:
+            net_buy_amount = self._number(payload.get("cum_net_buy")) * 10_000.0
+        return MarketEvent(
+            event_type=EventType.LEGACY_SIGNAL_RECEIVED,
+            stock_code=code,
+            exchange_time=observed_at,
+            received_time=datetime.now(timezone.utc),
+            source="legacy.signal-bridge",
+            schema_version=self.config.event_schema_version,
+            strategy_version=self.config.strategy_version,
+            payload={
+                "signal_source": str(
+                    payload.get("strategy_id") or payload.get("source") or "unknown"
+                ),
+                "direction": direction,
+                "alert_type": str(payload.get("alert_type") or ""),
+                "severity": str(payload.get("severity") or ""),
+                "duration_minutes": self._integer(
+                    payload.get("duration_minutes", payload.get("duration_min"))
+                ),
+                "price_change_pct": self._number(payload.get("price_change_pct")),
+                "net_buy_amount": net_buy_amount,
+                "position": str(payload.get("position") or "unknown"),
+                "signal_price": self._number(
+                    payload.get("signal_price", payload.get("price"))
+                ),
+                "reason": str(payload.get("reason") or payload.get("message") or ""),
+            },
+        )
+
+    @staticmethod
+    def _parse_legacy_time(value: object, stock_code: str) -> datetime:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, (int, float)):
+            parsed = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        elif value:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        else:
+            parsed = datetime.now(timezone.utc)
+        if parsed.tzinfo is None:
+            offset = -5 if stock_code.strip().upper().startswith("US.") else 8
+            parsed = parsed.replace(tzinfo=timezone(timedelta(hours=offset)))
+        return parsed
+
+    @staticmethod
+    def _number(value: object) -> float:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    @staticmethod
+    def _integer(value: object) -> int:
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
     async def _restore_capital(self) -> None:
         try:
-            try:
-                from zoneinfo import ZoneInfo
-
-                trade_date = datetime.now(ZoneInfo("Asia/Hong_Kong")).date().isoformat()
-            except Exception:
-                trade_date = datetime.now(timezone.utc).date().isoformat()
+            now = datetime.now(timezone(timedelta(hours=8)))
+            trade_date = now.date().isoformat()
+            replay_rows = await self.ticker_replay_loader.load(trade_date, now)
+            replayed = 0
+            for row in replay_rows:
+                for event in self.market_adapter.adapt_ticker(
+                    row,
+                    stock_code=str(row["stock_code"]),
+                    received_time=datetime.now(timezone.utc),
+                ):
+                    while not self.event_bus.publish_nowait(event):
+                        await self.event_bus.join()
+                    replayed += 1
+            if replayed:
+                await self.event_bus.join()
+                logging.info("V2 replayed recent ticker events: %s", replayed)
+        except Exception as error:
+            logging.warning("V2 recent ticker replay skipped: %s", error)
+        try:
+            now = datetime.now(timezone(timedelta(hours=8)))
+            trade_date = now.date().isoformat()
             aggregates = await self.capital_seed_loader.load(trade_date)
             self.market_projector.restore_capital(aggregates)
             self.feature_engine.seed_capital(aggregates)
             if aggregates:
                 logging.info("V2 restored tick capital snapshots: %s", len(aggregates))
         except Exception as error:
-            logging.warning("V2 tick capital restore skipped: %s", error)
+            logging.warning("V2 cumulative capital restore skipped: %s", error)
+
+    def _schedule_reference_refresh(self, stock_codes: tuple[str, ...]) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        missing = self.feature_engine.missing_daily_bar_codes(stock_codes)
+        now = time.monotonic()
+        with self._reference_lock:
+            fresh = tuple(
+                code for code in missing
+                if code not in self._reference_pending
+                and now - self._reference_attempted_at.get(code, 0.0) >= 300.0
+            )
+            if not fresh:
+                return
+            self._reference_pending.update(fresh)
+            for code in fresh:
+                self._reference_attempted_at[code] = now
+        loop.call_soon_threadsafe(self._enqueue_reference_refresh, fresh)
+
+    def _enqueue_reference_refresh(self, stock_codes: tuple[str, ...]) -> None:
+        try:
+            self._reference_queue.put_nowait(stock_codes)
+        except asyncio.QueueFull:
+            with self._reference_lock:
+                self._reference_pending.difference_update(stock_codes)
+            logging.warning("V2 daily reference refresh queue full: %s", len(stock_codes))
+
+    async def _reference_refresh_loop(self) -> None:
+        while True:
+            stock_codes = await self._reference_queue.get()
+            try:
+                bars = await self.feature_reference_loader.load_daily_bars_for_codes(stock_codes)
+                self.feature_engine.seed_daily_bars(bars)
+                if bars:
+                    logging.info(
+                        "V2 dynamically loaded daily bars: stocks=%s bars=%s",
+                        len({bar.stock_code for bar in bars}),
+                        len(bars),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logging.warning("V2 dynamic daily reference refresh failed: %s", error)
+            finally:
+                with self._reference_lock:
+                    self._reference_pending.difference_update(stock_codes)
+                self._reference_queue.task_done()
 
     async def _restore_feature_references(self) -> None:
         try:

@@ -217,6 +217,9 @@ class QuotePipeline:
         if trading_quotes:
             flow_signals = await self._check_capital_flow_signals(trading_quotes, positions)
             absorption_alerts = await self._check_absorption(trading_quotes)
+            if absorption_alerts and v2_runtime is not None:
+                for alert in absorption_alerts:
+                    v2_runtime.ingest_legacy_signal(alert)
 
         trade_actions: List[Dict] = []
         trade_actions.extend(intraday_signals)
@@ -634,11 +637,23 @@ class QuotePipeline:
                     'stock_code': alert['stock_code'],
                     'stock_name': alert.get('stock_name', ''),
                     'signal_type': signal_type,
+                    'alert_type': alert_type,
                     'price': alert.get('end_price', 0),
+                    'signal_price': alert.get('end_price', 0),
                     'reason': reason,
                     'message': alert['message'],
                     'severity': alert.get('severity', ''),  # high(🚀强拉升)/其它(📈) — 供推送质量门
-                    'timestamp': datetime.now().isoformat(),
+                    'duration_minutes': alert.get('duration_min', 0),
+                    'price_change_pct': alert.get('price_change_pct', 0),
+                    'cum_net_buy': alert.get('cum_net_buy', 0),
+                    'net_buy_amount': float(alert.get('cum_net_buy', 0) or 0) * 10000,
+                    'position': alert.get('position', 'unknown'),
+                    'position_pct': alert.get('position_pct'),
+                    'start_price': alert.get('start_price', 0),
+                    'end_price': alert.get('end_price', 0),
+                    'start_time': alert.get('start_time'),
+                    'end_time': alert.get('end_time'),
+                    'timestamp': self._absorption_observed_at(alert),
                     'strategy_id': 'absorption_scanner',
                 })
 
@@ -646,6 +661,13 @@ class QuotePipeline:
         except Exception as e:
             logging.debug(f"量价异常检查异常: {e}")
             return []
+
+    @staticmethod
+    def _absorption_observed_at(alert: Dict) -> str:
+        end_time = str(alert.get('end_time') or '').strip()
+        if len(end_time) == 5:
+            return f"{datetime.now().date().isoformat()}T{end_time}:00+08:00"
+        return datetime.now().astimezone().isoformat()
 
     def _filter_trading_quotes(self, quotes: List[Dict]) -> List[Dict]:
         """过滤出"所属市场此刻确实在交易"的报价。

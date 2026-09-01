@@ -363,6 +363,25 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await runtime.stop()
 
+    async def test_legacy_rally_is_published_as_structured_market_event(self) -> None:
+        runtime = V2Runtime(self.db, V2Config(enabled=True, mode=RuntimeMode.SHADOW))
+        event = runtime._legacy_signal_event({
+            "stock_code": "HK.02706",
+            "timestamp": "2026-09-01T10:57:00+08:00",
+            "strategy_id": "absorption_scanner",
+            "signal_type": "BUY",
+            "alert_type": "rally",
+            "duration_minutes": 6,
+            "price_change_pct": 1.7,
+            "cum_net_buy": 220.0,
+            "position": "low",
+            "price": 11.2,
+        })
+
+        self.assertEqual(event.event_type, EventType.LEGACY_SIGNAL_RECEIVED)
+        self.assertEqual(event.payload["net_buy_amount"], 2_200_000)
+        self.assertEqual(event.payload["signal_source"], "absorption_scanner")
+
     async def test_alert_mode_starts_without_execution(self) -> None:
         class ExecutionSpy:
             calls = 0

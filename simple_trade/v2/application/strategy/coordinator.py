@@ -1,6 +1,7 @@
 """Asynchronous shadow coordinator for candidate ranking and state persistence."""
 
 import asyncio
+from datetime import datetime
 import logging
 import threading
 from typing import Protocol
@@ -9,17 +10,21 @@ from ...domain.candidates import TradeCandidate
 from ...domain.decisions import DecisionEvent, StrategyState
 from ...domain.enums import CandidateStatus, EventType, StrategyStatus
 from ...domain.events import FeatureSnapshotEvent
+from ...domain.serialization import to_primitive
 from ...infrastructure.sqlite_state_store import StateConflictError
 from ..event_bus import EventBus
 from ..runtime_supervisor import RuntimeSupervisor
 from .candidate_scorer import CandidateScorer
 from .decision_builder import build_transition
 from .models import CandidateCoordinatorStats
+from .legacy_observations import LegacyObservationBook
 from .state_machine import CandidateStateMachine
 from .universe import UniversePolicy
 
 
 class EventStorePort(Protocol):
+    async def append(self, event: DecisionEvent) -> bool: ...
+
     async def append_with_state(
         self,
         event: DecisionEvent,
@@ -61,6 +66,7 @@ class CandidateCoordinator:
         self._universe = UniversePolicy()
         self._scorer = CandidateScorer()
         self._machine = CandidateStateMachine()
+        self._observations = LegacyObservationBook()
         self._observer = observer
         self._bus: EventBus | None = None
         self._worker: asyncio.Task | None = None
@@ -73,8 +79,10 @@ class CandidateCoordinator:
         self._dropped = 0
         self._processed = 0
         self._transitions = 0
+        self._rejections_persisted = 0
         self._persistence_failures = 0
         self._conflicts = 0
+        self._last_rejections: dict[str, tuple[tuple[str, ...], datetime]] = {}
 
     def register(self, bus: EventBus) -> None:
         if self._bus is bus:
@@ -82,12 +90,14 @@ class CandidateCoordinator:
         if self._bus is not None:
             raise RuntimeError("CandidateCoordinator already registered")
         bus.subscribe(EventType.FEATURE_SNAPSHOT_READY, self.on_feature_snapshot)
+        bus.subscribe(EventType.LEGACY_SIGNAL_RECEIVED, self._observations.on_event)
         self._bus = bus
 
     def unregister(self) -> None:
         if self._bus is None:
             return
         self._bus.unsubscribe(EventType.FEATURE_SNAPSHOT_READY, self.on_feature_snapshot)
+        self._bus.unsubscribe(EventType.LEGACY_SIGNAL_RECEIVED, self._observations.on_event)
         self._bus = None
 
     async def start(self, supervisor: RuntimeSupervisor | None = None) -> None:
@@ -154,6 +164,7 @@ class CandidateCoordinator:
                 dropped=self._dropped,
                 processed=self._processed,
                 transitions=self._transitions,
+                rejections_persisted=self._rejections_persisted,
                 persistence_failures=self._persistence_failures,
                 conflicts=self._conflicts,
                 queue_size=self._queue.qsize(),
@@ -185,7 +196,8 @@ class CandidateCoordinator:
         universe = self._universe.evaluate(snapshot)
         score = self._scorer.score(snapshot)
         state = await self._state_for(snapshot.stock_code)
-        proposal = self._machine.evaluate(snapshot, state, universe)
+        legacy = self._observations.latest(snapshot.stock_code, snapshot.computed_at)
+        proposal = self._machine.evaluate(snapshot, state, universe, legacy)
 
         status = state.status if state is not None else StrategyStatus.IDLE
         if proposal is not None:
@@ -209,7 +221,7 @@ class CandidateCoordinator:
                     self._conflicts += 1
                     self._states.pop(snapshot.stock_code, None)
                 state = await self._state_for(snapshot.stock_code, force_reload=True)
-                retry = self._machine.evaluate(snapshot, state, universe)
+                retry = self._machine.evaluate(snapshot, state, universe, legacy)
                 if retry is None:
                     proposal = None
                 else:
@@ -237,6 +249,9 @@ class CandidateCoordinator:
                 if self._bus is not None:
                     self._bus.publish_nowait(event)
 
+        if proposal is None and status is StrategyStatus.IDLE:
+            await self._persist_rejection(source, universe, score)
+
         candidate = TradeCandidate(
             stock_code=snapshot.stock_code,
             as_of=snapshot.computed_at,
@@ -244,7 +259,9 @@ class CandidateCoordinator:
             score=score.total,
             quality=score.quality,
             reason_codes=(
-                (proposal.reason_code,) if proposal is not None else score.reason_codes
+                (proposal.reason_code,)
+                if proposal is not None
+                else universe.reason_codes or score.reason_codes or ("NO_TRANSITION",)
             ),
             invalidation_conditions=(
                 "15m main flow turns negative or sell amount offsets at least 80% of buys",
@@ -255,6 +272,45 @@ class CandidateCoordinator:
         )
         with self._lock:
             self._latest[snapshot.stock_code] = candidate
+
+    async def _persist_rejection(self, source, universe, score) -> None:
+        reasons = list(universe.reason_codes)
+        if source.snapshot.price_position.quality.value == "INVALID":
+            reasons.append("DAILY_POSITION_INVALID")
+        fingerprint = tuple(dict.fromkeys(reasons))
+        if not fingerprint:
+            return
+        previous = self._last_rejections.get(source.stock_code)
+        if previous is not None:
+            previous_reasons, previous_at = previous
+            elapsed = (source.exchange_time - previous_at).total_seconds()
+            if previous_reasons == fingerprint and elapsed < 300:
+                return
+        event = DecisionEvent(
+            event_type=EventType.CANDIDATE_REJECTED,
+            stock_code=source.stock_code,
+            exchange_time=source.exchange_time,
+            received_time=source.received_time,
+            source="v2.candidate-coordinator",
+            schema_version=self._schema_version,
+            strategy_version=self._strategy_version,
+            sequence=source.sequence,
+            correlation_id=source.correlation_id,
+            old_state=StrategyStatus.IDLE.value,
+            new_state=StrategyStatus.IDLE.value,
+            reason_code=fingerprint[0],
+            payload={
+                "shadow_only": True,
+                "reason_codes": fingerprint,
+                "universe": to_primitive(universe),
+                "candidate_score": to_primitive(score),
+                "feature_snapshot": to_primitive(source.snapshot),
+            },
+        )
+        if await self._event_store.append(event):
+            self._last_rejections[source.stock_code] = (fingerprint, source.exchange_time)
+            with self._lock:
+                self._rejections_persisted += 1
 
     async def _state_for(
         self,

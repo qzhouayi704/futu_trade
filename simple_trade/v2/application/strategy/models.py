@@ -1,6 +1,7 @@
 """Typed Phase 4 candidate-policy results."""
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Mapping
 
 from ...domain.enums import DataQuality, EventType, StrategyStatus
@@ -11,6 +12,19 @@ from ...domain.serialization import JsonValue, freeze_json
 class UniverseDecision:
     eligible: bool
     reason_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LegacySignalContext:
+    observed_at: datetime
+    source: str
+    direction: str
+    severity: str
+    duration_minutes: int
+    price_change_pct: float
+    net_buy_amount: float
+    position: str
+    signal_price: float
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -48,6 +62,7 @@ class CandidateCoordinatorStats:
     dropped: int
     processed: int
     transitions: int
+    rejections_persisted: int
     persistence_failures: int
     conflicts: int
     queue_size: int

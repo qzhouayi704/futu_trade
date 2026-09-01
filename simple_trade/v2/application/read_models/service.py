@@ -54,7 +54,9 @@ class V2ReadModelService:
             "FROM v2_strategy_states s "
             "LEFT JOIN v2_decision_events e ON e.event_id=s.last_event_id "
             "LEFT JOIN stocks st ON st.code=s.stock_code "
-            f"{where} ORDER BY s.updated_at DESC LIMIT ?",
+            f"{where} ORDER BY CASE s.status "
+            "WHEN 'CONFIRMED' THEN 0 WHEN 'WATCHING' THEN 1 "
+            "WHEN 'SETUP' THEN 2 ELSE 3 END, s.updated_at DESC LIMIT ?",
             params,
         )
         items = [self._candidate_row(row) for row in rows]

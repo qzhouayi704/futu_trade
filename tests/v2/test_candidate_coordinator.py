@@ -29,6 +29,10 @@ class MemoryStores:
         self.states[key] = state
         return True
 
+    async def append(self, event):
+        self.events.append(event)
+        return True
+
 
 def feature_event(item, suffix: str) -> FeatureSnapshotEvent:
     return FeatureSnapshotEvent(
@@ -89,6 +93,21 @@ class CandidateCoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(stores.events), 1)
         self.assertEqual(stores.events[0].event_type, EventType.CANDIDATE_ENTERED)
+
+    async def test_idle_rejection_is_persisted_and_rate_limited(self) -> None:
+        stores = MemoryStores()
+        coordinator = CandidateCoordinator(stores, stores, strategy_version="test-v2")
+        await coordinator.start()
+        coordinator.on_feature_snapshot(feature_event(snapshot(rank=0.60), "reject-1"))
+        coordinator.on_feature_snapshot(feature_event(
+            snapshot(as_of=NOW + timedelta(seconds=1), rank=0.60), "reject-2"
+        ))
+        await coordinator.stop(drain=True)
+
+        self.assertEqual(len(stores.events), 1)
+        self.assertEqual(stores.events[0].event_type, EventType.CANDIDATE_REJECTED)
+        self.assertEqual(stores.events[0].reason_code, "TURNOVER_RANK_NOT_HOT")
+        self.assertEqual(coordinator.snapshot().rejections_persisted, 1)
 
 
 class DualTrackTests(unittest.TestCase):

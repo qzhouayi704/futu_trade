@@ -72,6 +72,24 @@ class FeatureReferenceLoaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({bar.stock_code for bar in bars}, {"HK.00100", "HK.00200"})
         self.assertTrue(all(bar.as_of.tzinfo is not None for bar in bars))
 
+    async def test_dynamic_stock_daily_bars_load_outside_startup_universe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dynamic-references.db"
+            with closing(sqlite3.connect(path)) as connection:
+                connection.executescript(
+                    "CREATE TABLE kline_data (stock_code TEXT, time_key TEXT, "
+                    "open_price REAL, high_price REAL, low_price REAL, "
+                    "close_price REAL, volume INTEGER, turnover REAL);"
+                    "INSERT INTO kline_data VALUES "
+                    "('HK.02706', '2026-08-29', 10, 12, 9, 11, 1000, 11000);"
+                )
+            bars = await FeatureReferenceLoader(
+                SqliteReferenceDatabase(path)
+            ).load_daily_bars_for_codes(("HK.02706",))
+
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0].stock_code, "HK.02706")
+
 
 if __name__ == "__main__":
     unittest.main()

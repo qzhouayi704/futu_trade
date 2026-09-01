@@ -20,8 +20,7 @@ class FeatureReferenceLoader:
         self._lookback = lookback
 
     async def load_daily_bars(self) -> tuple[DailyBar, ...]:
-        rows = await asyncio.to_thread(
-            self._db.execute_query,
+        rows = await self._query_daily_bars(
             "WITH universe AS ("
             "SELECT stock_code FROM daily_active_stocks "
             "WHERE check_date=(SELECT MAX(check_date) FROM daily_active_stocks) "
@@ -38,6 +37,32 @@ class FeatureReferenceLoader:
             "ORDER BY stock_code, time_key",
             (self._lookback,),
         )
+        return self._rows_to_bars(rows)
+
+    async def load_daily_bars_for_codes(
+        self, stock_codes: tuple[str, ...]
+    ) -> tuple[DailyBar, ...]:
+        codes = tuple(sorted({code.strip().upper() for code in stock_codes if code.strip()}))
+        if not codes:
+            return ()
+        placeholders = ",".join("?" for _ in codes)
+        rows = await self._query_daily_bars(
+            "WITH ranked AS ("
+            "SELECT stock_code, time_key, open_price, high_price, low_price, "
+            "close_price, volume, turnover, ROW_NUMBER() OVER "
+            "(PARTITION BY stock_code ORDER BY time_key DESC) AS rn "
+            f"FROM kline_data WHERE stock_code IN ({placeholders})) "
+            "SELECT stock_code, time_key, open_price, high_price, low_price, "
+            "close_price, volume, turnover FROM ranked WHERE rn <= ? "
+            "ORDER BY stock_code, time_key",
+            (*codes, self._lookback),
+        )
+        return self._rows_to_bars(rows)
+
+    async def _query_daily_bars(self, query: str, params: tuple) -> list:
+        return await asyncio.to_thread(self._db.execute_query, query, params)
+
+    def _rows_to_bars(self, rows: list) -> tuple[DailyBar, ...]:
         bars: list[DailyBar] = []
         for row in rows:
             try:

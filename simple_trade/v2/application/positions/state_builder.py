@@ -4,7 +4,7 @@ from datetime import datetime
 
 from ...domain.decisions import DecisionEvent
 from ...domain.enums import EventType, PositionStatus
-from ...domain.events import PositionReconciledEvent
+from ...domain.events import FeatureSnapshotEvent, PositionReconciledEvent
 from ...domain.positions import (
     PositionEfficiency,
     PositionSnapshot,
@@ -55,7 +55,7 @@ def evolve_state(
 
 
 def build_position_transition(
-    source: PositionReconciledEvent,
+    source: FeatureSnapshotEvent | PositionReconciledEvent,
     position: PositionSnapshot,
     prior: PositionState | None,
     efficiency: PositionEfficiency,
@@ -82,7 +82,16 @@ def build_position_transition(
             "efficiency": to_primitive(efficiency),
             "decision": to_primitive(evaluation.decision),
             "rotation": to_primitive(evaluation.rotation) if evaluation.rotation else None,
-            "reconciliation_quality": source.reconciliation.quality,
+            "mark_source": (
+                "feature_snapshot"
+                if isinstance(source, FeatureSnapshotEvent)
+                else "position_reconciliation"
+            ),
+            "source_quality": (
+                source.snapshot.quality
+                if isinstance(source, FeatureSnapshotEvent)
+                else source.reconciliation.quality
+            ),
         },
     )
     placeholder = prior or _initial_state(position, strategy_version, event.event_id)

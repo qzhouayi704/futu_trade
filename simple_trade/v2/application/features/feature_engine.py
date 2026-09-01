@@ -92,6 +92,13 @@ class FeatureEngine:
             for code, rows in grouped.items():
                 self._daily_bars[code] = tuple(sorted(rows, key=lambda row: row.as_of)[-30:])
 
+    def missing_daily_bar_codes(self, stock_codes: tuple[str, ...]) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(
+                code for code in dict.fromkeys(stock_codes)
+                if code and code not in self._daily_bars
+            )
+
     def seed_capital(self, aggregates: tuple[TickAggregate, ...]) -> None:
         for aggregate in aggregates:
             self.capital.seed(aggregate)

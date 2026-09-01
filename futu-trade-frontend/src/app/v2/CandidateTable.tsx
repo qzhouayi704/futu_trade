@@ -9,6 +9,17 @@ const statusTone: Record<string, string> = {
   INVALIDATED: "bg-rose-500/12 text-rose-700 dark:text-rose-400",
 };
 
+const reasonLabel: Record<string, string> = {
+  HOT_ACTIVE_DAILY_SETUP: "热门活跃，等待资金确认",
+  FIRST_STRONG_INFLOW_WATCH: "首次强流入，继续观察",
+  LEGACY_RALLY_STRONG_WATCH: "量价齐升，等待多次流入确认",
+  LEGACY_RALLY_SETUP_WATCH: "量价齐升，升级观察",
+  SOFT_GATE_STRONG_SIGNAL_REENTRY: "强信号恢复观察",
+  FAST_15M_MULTI_INFLOW_CONFIRMED: "15分钟多次流入确认",
+  WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED: "弱市60分钟强势确认",
+  EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED: "极弱市60分钟多次确认",
+};
+
 function FlowCell({ item }: { item: V2Candidate }) {
   const windows = [900, 3600].map((seconds) => item.capital_windows.find((window) => window.window_seconds === seconds));
   return (
@@ -43,7 +54,7 @@ export function CandidateTable({ items, compact = false }: { items: V2Candidate[
             return (
               <tr key={item.stock_code} className="h-14 hover:bg-muted/25">
                 <td className="px-3 py-2"><div className="font-semibold">{item.stock_name || item.stock_code}</div><div className="text-muted-foreground">{item.stock_code}</div></td>
-                <td className="px-3 py-2"><span className={`inline-flex rounded px-2 py-1 font-medium ${statusTone[item.status] || "bg-muted text-muted-foreground"}`}>{item.status}</span></td>
+                <td className="max-w-52 px-3 py-2"><span className={`inline-flex rounded px-2 py-1 font-medium ${statusTone[item.status] || "bg-muted text-muted-foreground"}`}>{item.status}</span><div className="mt-1 truncate text-[11px] text-muted-foreground" title={reasonLabel[item.reason_code] || item.reason_code}>{reasonLabel[item.reason_code] || item.reason_code}</div></td>
                 <td className="px-3 py-2 text-base font-semibold tabular-nums">{item.score?.toFixed(1) ?? "--"}</td>
                 <td className="px-3 py-2 tabular-nums"><div>{current?.toFixed(3) ?? "--"} / {item.confirmed_price?.toFixed(3) ?? "--"}</div><div className={tone(fromConfirm)}>{pct(fromConfirm)}</div></td>
                 <td className="px-3 py-2"><FlowCell item={item} /></td>

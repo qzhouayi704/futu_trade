@@ -1,10 +1,12 @@
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from simple_trade.v2.application.positions.coordinator import PositionCoordinator
 from simple_trade.v2.domain.enums import DataQuality, EventType
-from simple_trade.v2.domain.events import PositionReconciledEvent
+from simple_trade.v2.domain.events import FeatureSnapshotEvent, PositionReconciledEvent
 from simple_trade.v2.domain.positions import PositionReconciliation, PositionSnapshot
+from tests.v2.test_candidate_strategy import snapshot as feature_snapshot, window
 
 
 NOW = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
@@ -83,6 +85,30 @@ def event(
     )
 
 
+def feature_event(*, as_of: datetime, price: float) -> FeatureSnapshotEvent:
+    outflow = window(
+        900,
+        buys=1,
+        sells=3,
+        buy_amount=200_000,
+        sell_amount=1_200_000,
+        span=300,
+    )
+    feature = feature_snapshot(as_of=as_of, windows=(outflow,), accepted=True)
+    feature = replace(feature, quote=replace(feature.quote, last_price=price))
+    return FeatureSnapshotEvent(
+        event_id="feature-source-exit",
+        event_type=EventType.FEATURE_SNAPSHOT_READY,
+        stock_code="HK.00100",
+        exchange_time=as_of,
+        received_time=as_of,
+        source="test",
+        strategy_version="test-v2",
+        correlation_id="feature-correlation-exit",
+        snapshot=feature,
+    )
+
+
 class PositionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_broker_position_opens_and_authoritative_absence_closes(self) -> None:
         stores = MemoryPositionStores()
@@ -121,6 +147,32 @@ class PositionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item.event_type for item in stores.events], [EventType.POSITION_OPENED])
         self.assertEqual(coordinator.snapshot().closed, 0)
+
+    async def test_live_feature_price_revalues_held_position_and_confirms_exit(self) -> None:
+        stores = MemoryPositionStores()
+        coordinator = PositionCoordinator(
+            stores, stores, EmptyCandidates(), EmptyFeatures(),
+            strategy_version="test-v2",
+        )
+        await coordinator.start()
+        coordinator.on_reconciliation(event((position(),), suffix="open"))
+        await coordinator.join()
+
+        coordinator.on_feature_snapshot(
+            feature_event(as_of=NOW + timedelta(minutes=5), price=99)
+        )
+        await coordinator.stop(drain=True)
+
+        self.assertEqual(
+            [item.event_type for item in stores.events],
+            [EventType.POSITION_OPENED, EventType.EXIT_RISK_CONFIRMED],
+            (coordinator.snapshot(), coordinator.latest("HK.00100")),
+        )
+        exit_event = stores.events[-1]
+        self.assertEqual(exit_event.reason_code, "STRONG_OUTFLOW_AND_PRICE_BREAK")
+        self.assertEqual(exit_event.payload["position"]["current_price"], 99)
+        self.assertEqual(exit_event.payload["mark_source"], "feature_snapshot")
+        self.assertEqual(coordinator.snapshot().exits, 1)
 
 
 if __name__ == "__main__":

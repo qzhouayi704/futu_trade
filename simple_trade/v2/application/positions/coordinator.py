@@ -1,6 +1,7 @@
 """Async position reconciliation, efficiency, risk, and rotation coordinator."""
 
 import asyncio
+from dataclasses import replace
 from datetime import timedelta
 import logging
 import threading
@@ -10,7 +11,7 @@ from ...domain.decisions import DecisionEvent
 from ...domain.enums import DecisionAction, EventType, PositionStatus
 from ...domain.events import FeatureSnapshotEvent, PositionReconciledEvent
 from ...domain.features import FeatureSnapshot
-from ...domain.positions import PositionDecision, PositionState
+from ...domain.positions import PositionDecision, PositionSnapshot, PositionState
 from ...infrastructure.sqlite_state_store import StateConflictError
 from ..event_bus import EventBus
 from ..runtime_supervisor import RuntimeSupervisor
@@ -72,10 +73,13 @@ class PositionCoordinator:
         self._efficiency = PositionEfficiencyEngine()
         self._decisions = PositionDecisionEngine()
         self._rotation = RotationEvaluator()
-        self._queue: asyncio.Queue[PositionReconciledEvent | object] = asyncio.Queue(
+        self._queue: asyncio.Queue[
+            FeatureSnapshotEvent | PositionReconciledEvent | object
+        ] = asyncio.Queue(
             maxsize=queue_capacity
         )
         self._history = PositionFeatureHistory()
+        self._positions: dict[str, PositionSnapshot] = {}
         self._states: dict[str, PositionState] = {}
         self._latest: dict[str, PositionDecision] = {}
         self._loaded = False
@@ -132,10 +136,24 @@ class PositionCoordinator:
         self._worker = None
         self._running = False
 
+    async def join(self) -> None:
+        await self._queue.join()
+
     def on_feature_snapshot(self, event) -> None:
         if not isinstance(event, FeatureSnapshotEvent):
             return
         self._history.on_feature(event)
+        if not self._accepting:
+            return
+        with self._lock:
+            held = event.stock_code in self._positions
+        if not held:
+            return
+        try:
+            self._queue.put_nowait(event)
+        except asyncio.QueueFull:
+            with self._lock:
+                self._dropped += 1
 
     def on_reconciliation(self, event) -> None:
         if not isinstance(event, PositionReconciledEvent) or not self._accepting:
@@ -174,6 +192,8 @@ class PositionCoordinator:
                     return
                 if isinstance(item, PositionReconciledEvent):
                     await self._process(item)
+                elif isinstance(item, FeatureSnapshotEvent):
+                    await self._process_feature(item)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -186,6 +206,14 @@ class PositionCoordinator:
     async def _process(self, source: PositionReconciledEvent) -> None:
         await self._load_states()
         held_codes = {item.stock_code for item in source.reconciliation.positions}
+        with self._lock:
+            self._positions.update(
+                {item.stock_code: item for item in source.reconciliation.positions}
+            )
+            if source.reconciliation.authoritative:
+                for code in tuple(self._positions):
+                    if code not in held_codes:
+                        self._positions.pop(code, None)
         for position in source.reconciliation.positions:
             await self._process_position(source, position, held_codes)
         if source.reconciliation.authoritative:
@@ -195,16 +223,41 @@ class PositionCoordinator:
         with self._lock:
             self._reconciliations += 1
 
+    async def _process_feature(self, source: FeatureSnapshotEvent) -> None:
+        await self._load_states()
+        with self._lock:
+            position = self._positions.get(source.stock_code)
+            state = self._states.get(source.stock_code)
+            held_codes = set(self._positions)
+        if position is None:
+            return
+        if state is not None and source.exchange_time < state.updated_at:
+            return
+        await self._process_position(source, position, held_codes)
+
     async def _process_position(self, source, position, held_codes: set[str]) -> None:
         state = self._states.get(position.stock_code)
         if state is not None and state.status is PositionStatus.CLOSED:
             state = None
-        feature, prices, candidate_features = self._history.context(position.stock_code)
-        feature = feature or self._feature_source.latest(position.stock_code)
-        if feature is not None and abs(
-            (position.as_of - feature.computed_at).total_seconds()
-        ) > 180:
-            feature = None
+        history_feature, prices, candidate_features = self._history.context(
+            position.stock_code
+        )
+        if isinstance(source, FeatureSnapshotEvent):
+            feature = source.snapshot
+        else:
+            feature = history_feature or self._feature_source.latest(position.stock_code)
+            if feature is not None and abs(
+                (position.as_of - feature.computed_at).total_seconds()
+            ) > 180:
+                feature = None
+        if feature is not None and feature.quote.last_price > 0:
+            position = replace(
+                position,
+                as_of=max(position.as_of, feature.computed_at),
+                current_price=feature.quote.last_price,
+                peak_price=max(position.peak_price, feature.quote.last_price),
+                lot_size=feature.quote.lot_size or position.lot_size,
+            )
         efficiency = self._efficiency.calculate(position, state, feature, prices)
         evaluation = self._decisions.evaluate(position, state, efficiency, feature)
         analytical_state = evolve_state(position, state, efficiency, evaluation) if state else None
