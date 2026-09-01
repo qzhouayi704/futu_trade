@@ -34,13 +34,21 @@ async def submit_write(
     future = db.write_queue.submit(operation, *args)
     wrapped = asyncio.wrap_future(future)
     try:
-        return await asyncio.wait_for(wrapped, timeout=timeout)
+        return await asyncio.wait_for(asyncio.shield(wrapped), timeout=timeout)
     except TimeoutError:
         cancelled = future.cancel()
-        logging.error(
-            "V2 数据库写入超时: operation=%s cancelled=%s pending=%s",
-            getattr(operation, "__name__", type(operation).__name__),
-            cancelled,
+        operation_name = getattr(operation, "__name__", type(operation).__name__)
+        if cancelled:
+            logging.error(
+                "V2 数据库写入排队超时，任务已取消: operation=%s pending=%s",
+                operation_name,
+                db.write_queue.pending_count,
+            )
+            raise
+        logging.warning(
+            "V2 数据库写入超过等待阈值，事务已开始并继续等待: "
+            "operation=%s pending=%s",
+            operation_name,
             db.write_queue.pending_count,
         )
-        raise
+        return await wrapped
