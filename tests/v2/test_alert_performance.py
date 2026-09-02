@@ -62,6 +62,7 @@ class FakeAlertDatabase:
             ("HK.00200", "2026-09-03", 45, 52, 44),
         ])
         self.ticker_rows = []
+        self.ticker_close_rows = []
 
     def execute_query(self, query: str, params: tuple = ()) -> list:
         if "FROM v2_decision_events e LEFT JOIN v2_outcomes" in query:
@@ -74,6 +75,8 @@ class FakeAlertDatabase:
             return self.kline_rows
         if "FROM ticker_minute" in query:
             return self.ticker_rows
+        if "FROM ticker_data" in query:
+            return self.ticker_close_rows
         if "FROM stocks" in query:
             return [("HK.00100", "测试买入"), ("HK.00200", "测试卖出")]
         raise AssertionError(f"unexpected query: {query}")
@@ -179,6 +182,7 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
             ("HK.00100", "10:05", 101, 102, 100),
             ("HK.00100", "15:59", 103, 104, 102),
         ]
+        database.ticker_close_rows = [("HK.00100", 103)]
 
         result = await AlertPerformanceReader(database).history(
             trade_date="2026-09-02"
@@ -198,6 +202,7 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         database.ticker_rows = [
             ("HK.00100", "09:39", 97, 97, 97),
         ]
+        database.ticker_close_rows = [("HK.00100", 97)]
 
         result = await AlertPerformanceReader(database).history(
             trade_date="2026-09-02"
@@ -208,6 +213,23 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(same_day["close_return_pct"], -1.0204)
         self.assertEqual(same_day["max_return_pct"], -1.0204)
         self.assertEqual(same_day["max_drawdown_pct"], -1.0204)
+
+    async def test_uses_last_raw_trade_instead_of_last_minute_average_for_close(self) -> None:
+        database = FakeAlertDatabase()
+        database.candidate_rows = [database.candidate_rows[0]]
+        database.kline_rows = []
+        database.ticker_rows = [
+            ("HK.00100", "15:59", 102, 104, 101),
+        ]
+        database.ticker_close_rows = [("HK.00100", 103)]
+
+        result = await AlertPerformanceReader(database).history(
+            trade_date="2026-09-02"
+        )
+
+        same_day = result["items"][0]["same_day"]
+        self.assertEqual(same_day["close_return_pct"], 5.102)
+        self.assertEqual(same_day["max_return_pct"], 6.1224)
 
 
 if __name__ == "__main__":

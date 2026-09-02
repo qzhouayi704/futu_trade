@@ -33,12 +33,16 @@ class AlertPerformanceReader:
             return self._empty(selected_date, scope)
 
         codes = sorted({item["stock_code"] for item in alerts})
-        names, klines, intraday = await asyncio.gather(
+        names, klines, intraday, intraday_closes = await asyncio.gather(
             self._names(codes),
             self._klines(codes, selected_date),
             self._intraday(codes, selected_date),
+            self._intraday_closes(codes, selected_date),
         )
-        items = [self._evaluate(item, names, klines, intraday) for item in alerts]
+        items = [
+            self._evaluate(item, names, klines, intraday, intraday_closes)
+            for item in alerts
+        ]
         return {
             "trade_date": selected_date,
             "scope": scope,
@@ -138,6 +142,21 @@ class AlertPerformanceReader:
                 float(row[4]) if row[4] is not None else price,
             ))
         return dict(result)
+
+    async def _intraday_closes(self, codes: list[str], trade_date: str) -> dict[str, float]:
+        placeholders = ",".join("?" for _ in codes)
+        rows = await self._query(
+            "SELECT t.stock_code, t.price FROM ticker_data t JOIN ("
+            "SELECT stock_code, MAX(id) AS last_id FROM ticker_data "
+            f"WHERE stock_code IN ({placeholders}) AND trade_date=? "
+            "GROUP BY stock_code) latest ON latest.last_id=t.id",
+            (*codes, trade_date),
+        )
+        return {
+            str(row[0]): float(row[1])
+            for row in rows
+            if row[1] is not None
+        }
 
     async def _query(self, sql: str, params: tuple = ()) -> list:
         return await asyncio.to_thread(self._db.execute_query, sql, params)
@@ -247,6 +266,7 @@ class AlertPerformanceReader:
         names: dict,
         klines: dict,
         intraday: dict,
+        intraday_closes: dict,
     ) -> dict:
         basis = alert["signal_price"]
         direction = alert["direction"]
@@ -277,7 +297,9 @@ class AlertPerformanceReader:
             same_day_source = "DAILY_KLINE"
         elif minute_rows:
             same_close = cls._directional_return(
-                minute_rows[-1][1], basis, direction
+                intraday_closes.get(alert["stock_code"], minute_rows[-1][1]),
+                basis,
+                direction,
             )
             same_day_source = "TICKER_MINUTE"
         same_best = cls._directional_value(alert["intraday_mfe_pct"], direction)

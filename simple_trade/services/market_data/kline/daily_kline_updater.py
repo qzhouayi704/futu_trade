@@ -291,6 +291,7 @@ class DailyKlineUpdater:
         数据来源：市场扫描已订阅股票 + 持仓 + 市场扫描报价快照
         """
         codes = set()
+        priority_codes = set()
 
         # 市场扫描中的已订阅股票
         sub_mgr = getattr(self._container, 'subscription_manager', None)
@@ -307,9 +308,34 @@ class DailyKlineUpdater:
                 if result.get('success'):
                     for pos in result.get('positions', []):
                         if pos.get('qty', 0) > 0:
-                            codes.add(pos['stock_code'])
+                            stock_code = pos['stock_code']
+                            codes.add(stock_code)
+                            priority_codes.add(stock_code)
         except Exception:
             pass
+
+        # 当天 V2 候选是复盘和次日跟踪的核心样本，必须先于全市场扩展池更新。
+        try:
+            db_mgr = getattr(self._container, 'db_manager', None)
+            if db_mgr:
+                today = datetime.now().strftime("%Y-%m-%d")
+                rows = db_mgr.execute_query(
+                    "SELECT DISTINCT stock_code FROM v2_decision_events "
+                    "WHERE substr(exchange_time,1,10)=? "
+                    "AND event_type IN "
+                    "('CANDIDATE_ENTERED','CANDIDATE_UPDATED','BUY_CONFIRMED') "
+                    "AND new_state IN ('SETUP','WATCHING','CONFIRMED')",
+                    (today,),
+                )
+                candidate_codes = {str(row[0]) for row in rows if row[0]}
+                codes.update(candidate_codes)
+                priority_codes.update(candidate_codes)
+                if candidate_codes:
+                    logger.info(
+                        f"[每日K线] 优先更新当天 V2 候选 {len(candidate_codes)} 只"
+                    )
+        except Exception as e:
+            logger.warning(f"[每日K线] 读取当天 V2 候选失败: {e}")
 
         # 市场扫描报价快照中的股票（确保盘后优选的评分池全覆盖）
         try:
@@ -367,4 +393,18 @@ class DailyKlineUpdater:
             )
             return []
 
-        return sorted(codes)
+        return self._sort_target_codes(codes, priority_codes)
+
+    @staticmethod
+    def _sort_target_codes(codes: set, priority_codes: set) -> list:
+        market_rank = {"HK": 0, "SH": 1, "SZ": 1, "US": 2}
+
+        def sort_key(code: str) -> tuple:
+            market = str(code).split(".", 1)[0]
+            return (
+                0 if code in priority_codes else 1,
+                market_rank.get(market, 3),
+                str(code),
+            )
+
+        return sorted(codes, key=sort_key)
