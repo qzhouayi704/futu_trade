@@ -33,10 +33,12 @@ class AlertPerformanceReader:
             return self._empty(selected_date, scope)
 
         codes = sorted({item["stock_code"] for item in alerts})
-        names, klines = await asyncio.gather(
-            self._names(codes), self._klines(codes, selected_date)
+        names, klines, intraday = await asyncio.gather(
+            self._names(codes),
+            self._klines(codes, selected_date),
+            self._intraday(codes, selected_date),
         )
-        items = [self._evaluate(item, names, klines) for item in alerts]
+        items = [self._evaluate(item, names, klines, intraday) for item in alerts]
         return {
             "trade_date": selected_date,
             "scope": scope,
@@ -45,6 +47,9 @@ class AlertPerformanceReader:
             "available_kline_through": max(
                 (day for stock_days in klines.values() for day in stock_days),
                 default=None,
+            ),
+            "intraday_coverage_count": sum(
+                bool(intraday.get(item["stock_code"])) for item in alerts
             ),
             "summary": self._summary(items),
         }
@@ -111,6 +116,27 @@ class AlertPerformanceReader:
                 float(row[3]) if row[3] is not None else float(row[2]),
                 float(row[4]) if row[4] is not None else float(row[2]),
             )
+        return dict(result)
+
+    async def _intraday(self, codes: list[str], trade_date: str) -> dict[str, list[tuple]]:
+        placeholders = ",".join("?" for _ in codes)
+        rows = await self._query(
+            "SELECT stock_code, minute, price, high, low FROM ticker_minute "
+            f"WHERE stock_code IN ({placeholders}) AND trade_date=? "
+            "ORDER BY stock_code, minute",
+            (*codes, trade_date),
+        )
+        result: dict[str, list[tuple]] = defaultdict(list)
+        for row in rows:
+            if row[2] is None:
+                continue
+            price = float(row[2])
+            result[str(row[0])].append((
+                str(row[1]),
+                price,
+                float(row[3]) if row[3] is not None else price,
+                float(row[4]) if row[4] is not None else price,
+            ))
         return dict(result)
 
     async def _query(self, sql: str, params: tuple = ()) -> list:
@@ -215,25 +241,44 @@ class AlertPerformanceReader:
         return list(collapsed.values())
 
     @classmethod
-    def _evaluate(cls, alert: dict, names: dict, klines: dict) -> dict:
+    def _evaluate(
+        cls,
+        alert: dict,
+        names: dict,
+        klines: dict,
+        intraday: dict,
+    ) -> dict:
         basis = alert["signal_price"]
         direction = alert["direction"]
         stock_days = klines.get(alert["stock_code"], {})
         same_day = stock_days.get(alert["signal_date"])
         later_days = [day for day in sorted(stock_days) if day > alert["signal_date"]]
+        signal_minute = cls._signal_minute(alert["signal_time"])
+        minute_rows = [
+            row for row in intraday.get(alert["stock_code"], [])
+            if row[0] >= signal_minute
+        ]
 
         outcome_close = alert["outcome_close_return_pct"]
         same_close = None
+        same_day_source = None
         price_scale = 1.0
         if outcome_close is not None:
             same_close = cls._directional_value(
                 outcome_close, direction
             )
+            same_day_source = "OUTCOME"
             if same_day and same_day[0] > 0:
                 actual_close = basis * (1.0 + outcome_close / 100.0)
                 price_scale = actual_close / same_day[0]
         elif same_day:
             same_close = cls._directional_return(same_day[0], basis, direction)
+            same_day_source = "DAILY_KLINE"
+        elif minute_rows:
+            same_close = cls._directional_return(
+                minute_rows[-1][1], basis, direction
+            )
+            same_day_source = "TICKER_MINUTE"
         same_best = cls._directional_value(alert["intraday_mfe_pct"], direction)
         same_worst = cls._directional_value(alert["intraday_mae_pct"], direction)
         if direction == "SELL":
@@ -241,6 +286,25 @@ class AlertPerformanceReader:
                 cls._directional_value(alert["intraday_mae_pct"], direction),
                 cls._directional_value(alert["intraday_mfe_pct"], direction),
             )
+        if minute_rows:
+            if same_best is None:
+                favorable_price = (
+                    min(row[3] for row in minute_rows)
+                    if direction == "SELL"
+                    else max(row[2] for row in minute_rows)
+                )
+                same_best = cls._directional_return(
+                    favorable_price, basis, direction
+                )
+            if same_worst is None:
+                adverse_price = (
+                    max(row[2] for row in minute_rows)
+                    if direction == "SELL"
+                    else min(row[3] for row in minute_rows)
+                )
+                same_worst = cls._directional_return(
+                    adverse_price, basis, direction
+                )
 
         periods = {
             str(horizon): cls._period(
@@ -257,6 +321,7 @@ class AlertPerformanceReader:
                 "close_return_pct": same_close,
                 "max_return_pct": same_best,
                 "max_drawdown_pct": same_worst,
+                "source": same_day_source,
             },
             "periods": periods,
             "completed_horizon": max(
@@ -336,6 +401,12 @@ class AlertPerformanceReader:
             return None
 
     @staticmethod
+    def _signal_minute(value: str) -> str:
+        text = str(value or "")
+        time_part = text.split("T", 1)[-1] if "T" in text else text.split(" ", 1)[-1]
+        return time_part[:5] if len(time_part) >= 5 else "00:00"
+
+    @staticmethod
     def _max_number(current: float | None, candidate) -> float | None:
         value = AlertPerformanceReader._number(candidate)
         if value is None:
@@ -366,6 +437,7 @@ class AlertPerformanceReader:
             "items": [],
             "count": 0,
             "available_kline_through": None,
+            "intraday_coverage_count": 0,
             "summary": {
                 "alert_count": 0,
                 "periods": {

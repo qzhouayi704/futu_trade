@@ -74,7 +74,9 @@ function PeriodCell({ value }: { value: V2AlertPeriodResult }) {
       最差 <span className={tone(value.max_drawdown_pct)}>{pct(value.max_drawdown_pct)}</span>
     </div>
     <div className="text-[10px] text-muted-foreground">
-      {value.status === "OBSERVING" ? "盘中跟踪" : value.trading_day?.slice(5) || "待观察"}
+      {value.source === "TICKER_MINUTE"
+        ? "逐笔分钟统计"
+        : value.status === "OBSERVING" ? "盘中跟踪" : value.trading_day?.slice(5) || "待观察"}
     </div>
   </div>;
 }
@@ -170,7 +172,9 @@ export function AlertPerformance() {
         </table>
         {!data.items.length && <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">所选日期没有符合当前范围的复盘样本</div>}
       </div>
-      <div className="mt-2 text-right text-[11px] text-muted-foreground">日线数据更新至 {data.available_kline_through || "尚无可用交易日"}</div>
+      <div className="mt-2 text-right text-[11px] text-muted-foreground">
+        当日逐笔覆盖 {data.intraday_coverage_count}/{data.count} · 后续日线更新至 {data.available_kline_through || "尚无可用交易日"}
+      </div>
     </>}
   </section>;
 }

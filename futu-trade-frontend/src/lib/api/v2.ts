@@ -161,6 +161,7 @@ export interface V2AlertPeriodResult {
   close_return_pct: number | null;
   max_return_pct: number | null;
   max_drawdown_pct: number | null;
+  source?: "OUTCOME" | "DAILY_KLINE" | "TICKER_MINUTE" | null;
 }
 
 export interface V2AlertPerformanceItem {
@@ -192,6 +193,7 @@ export interface V2AlertPerformance {
   items: V2AlertPerformanceItem[];
   count: number;
   available_kline_through: string | null;
+  intraday_coverage_count: number;
   summary: {
     alert_count: number;
     periods: Record<"1" | "3" | "5" | "10", {

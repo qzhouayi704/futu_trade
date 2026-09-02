@@ -61,6 +61,7 @@ class FakeAlertDatabase:
             ("HK.00200", "2026-09-02", 49, 51, 48),
             ("HK.00200", "2026-09-03", 45, 52, 44),
         ])
+        self.ticker_rows = []
 
     def execute_query(self, query: str, params: tuple = ()) -> list:
         if "FROM v2_decision_events e LEFT JOIN v2_outcomes" in query:
@@ -71,6 +72,8 @@ class FakeAlertDatabase:
             return self.alert_rows
         if "FROM kline_data" in query:
             return self.kline_rows
+        if "FROM ticker_minute" in query:
+            return self.ticker_rows
         if "FROM stocks" in query:
             return [("HK.00100", "测试买入"), ("HK.00200", "测试卖出")]
         raise AssertionError(f"unexpected query: {query}")
@@ -165,6 +168,28 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
             await AlertPerformanceReader(FakeAlertDatabase()).history(
                 trade_date="2026-09-02", scope="rejected"
             )
+
+    async def test_uses_post_signal_ticker_minutes_when_daily_kline_is_missing(self) -> None:
+        database = FakeAlertDatabase()
+        database.candidate_rows = [database.candidate_rows[0]]
+        database.kline_rows = []
+        database.ticker_rows = [
+            ("HK.00100", "09:39", 120, 121, 119),
+            ("HK.00100", "09:40", 98, 99, 97),
+            ("HK.00100", "10:05", 101, 102, 100),
+            ("HK.00100", "15:59", 103, 104, 102),
+        ]
+
+        result = await AlertPerformanceReader(database).history(
+            trade_date="2026-09-02"
+        )
+
+        item = result["items"][0]
+        self.assertEqual(result["intraday_coverage_count"], 1)
+        self.assertEqual(item["same_day"]["source"], "TICKER_MINUTE")
+        self.assertEqual(item["same_day"]["close_return_pct"], 5.102)
+        self.assertEqual(item["same_day"]["max_return_pct"], 6.1224)
+        self.assertEqual(item["same_day"]["max_drawdown_pct"], -1.0204)
 
 
 if __name__ == "__main__":
