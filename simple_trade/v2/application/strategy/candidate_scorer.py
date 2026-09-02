@@ -20,6 +20,12 @@ class CandidateScorer:
             events = clamp(window.independent_buy_events / 3.0 * 100.0)
             ratio = clamp(((window.buy_sell_ratio or 0.0) - 0.5) / 0.35 * 100.0)
             flow_score = amount * 0.45 + events * 0.30 + ratio * 0.25
+        if (
+            snapshot.capital_memory is not None
+            and snapshot.capital_memory.quality is not DataQuality.INVALID
+        ):
+            memory_flow_score = clamp((snapshot.capital_memory.score - 50.0) * 2.0)
+            flow_score = flow_score * 0.60 + memory_flow_score * 0.40
 
         strength = snapshot.market_context.relative_strength
         strength_score = clamp(((strength or 0.0) + 1.0) / 6.0 * 100.0)

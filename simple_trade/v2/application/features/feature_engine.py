@@ -196,6 +196,7 @@ class FeatureEngine:
             members,
         )
         windows = self.capital.snapshots(quote.stock_code, as_of)
+        capital_memory = self.capital.memory(quote.stock_code, as_of)
         tape = self.price_tape.snapshot(quote.stock_code, as_of)
         acceptance = self._acceptance.calculate(
             as_of=as_of,
@@ -218,6 +219,8 @@ class FeatureEngine:
             missing.append("market_context.sector")
         if all(window.quality is DataQuality.INVALID for window in windows):
             missing.append("capital_windows.tick_stream")
+        if capital_memory.quality is DataQuality.INVALID:
+            missing.append("capital_memory.event_stream")
         if acceptance.confirmation_price is None:
             missing.append("price_acceptance.confirmation_price")
         if acceptance.vwap is None:
@@ -231,6 +234,7 @@ class FeatureEngine:
             price_position.quality,
             market_context.quality,
             *(window.quality for window in windows),
+            capital_memory.quality,
             acceptance.quality,
         )
         return FeatureSnapshot(
@@ -247,6 +251,7 @@ class FeatureEngine:
             activity=activity,
             liquidity=liquidity,
             price_acceptance=acceptance,
+            capital_memory=capital_memory,
             missing_fields=tuple(dict.fromkeys(missing)),
         )
 

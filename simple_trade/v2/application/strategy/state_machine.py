@@ -1,7 +1,13 @@
 """Deterministic candidate state machine driven only by a feature snapshot."""
 
 from ...domain.decisions import StrategyState
-from ...domain.enums import DataQuality, EventType, MarketRegime, StrategyStatus
+from ...domain.enums import (
+    CapitalMemoryState,
+    DataQuality,
+    EventType,
+    MarketRegime,
+    StrategyStatus,
+)
 from ...domain.features import FeatureSnapshot
 from ...domain.market import TickAggregate
 from .models import LegacySignalContext, TransitionProposal, UniverseDecision
@@ -36,7 +42,10 @@ class CandidateStateMachine:
         status = state.status if state is not None else StrategyStatus.IDLE
         if status is StrategyStatus.IDLE:
             return (
-                self._enter_low_position_watch(
+                self._enter_capital_memory_watch(
+                    snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
+                )
+                or self._enter_low_position_watch(
                     snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
                 )
                 or self._enter_strict_momentum_watch(
@@ -58,6 +67,11 @@ class CandidateStateMachine:
                     universe,
                     reason="DATA_QUALITY_INVALID",
                 )
+            memory_watch = self._enter_capital_memory_watch(
+                snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
+            )
+            if memory_watch is not None:
+                return memory_watch
             low_position_watch = self._enter_low_position_watch(
                 snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
             )
@@ -106,11 +120,31 @@ class CandidateStateMachine:
         low_position_watch = (
             state.metadata.get("watch_kind") == "low_position_accumulation"
         )
+        capital_memory_watch = state.metadata.get("watch_kind") == "capital_memory"
+        if (
+            capital_memory_watch
+            and self._low_position_market_confirmed(snapshot, universe)
+            and snapshot.computed_at.timetz().replace(tzinfo=None)
+            <= CandidateSignalRules.MEMORY_WATCH_CUTOFF
+            and (
+                self._low_position_accumulation(fast)
+                or self._low_position_accumulation(slow)
+            )
+        ):
+            return self._confirm(
+                snapshot,
+                state,
+                "CAPITAL_MEMORY_MULTI_INFLOW_SHADOW_CONFIRMED",
+                alert_eligible=False,
+            )
         if (
             low_position_watch
             and self._low_position_market_confirmed(snapshot, universe)
             and CandidateSignalRules.before_entry_cutoff(snapshot)
-            and self._low_position_accumulation(fast or slow)
+            and (
+                self._low_position_accumulation(fast)
+                or self._low_position_accumulation(slow)
+            )
         ):
             return self._confirm(
                 snapshot, state, "LOW_POSITION_15M_ACCUMULATION_CONFIRMED"
@@ -144,7 +178,7 @@ class CandidateStateMachine:
 
         watch_seconds = (
             self.SLOW_WINDOW_SECONDS
-            if low_position_watch or regime is not MarketRegime.NORMAL
+            if low_position_watch or capital_memory_watch or regime is not MarketRegime.NORMAL
             else self.FAST_WINDOW_SECONDS
         )
         if (snapshot.computed_at - state.updated_at).total_seconds() > watch_seconds:
@@ -187,6 +221,11 @@ class CandidateStateMachine:
             elapsed >= self.SOFT_REENTRY_SECONDS
             and invalidation_reason in self.SOFT_UNIVERSE_REASONS
         ):
+            memory_watch = self._enter_capital_memory_watch(
+                snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
+            )
+            if memory_watch is not None:
+                return memory_watch
             low_position_watch = self._enter_low_position_watch(
                 snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
             )
@@ -229,6 +268,19 @@ class CandidateStateMachine:
                 reason_code="DATA_QUALITY_INVALID",
                 metadata={"cooldown_started_at": snapshot.computed_at},
             )
+        memory = snapshot.capital_memory
+        if (
+            state is not None
+            and state.metadata.get("watch_kind") == "capital_memory"
+            and memory is not None
+            and memory.state is CapitalMemoryState.DISTRIBUTING
+        ):
+            return TransitionProposal(
+                new_status=StrategyStatus.INVALIDATED,
+                event_type=EventType.BUY_INVALIDATED,
+                reason_code="CAPITAL_MEMORY_TURNED_DISTRIBUTING",
+                metadata={"cooldown_started_at": snapshot.computed_at},
+            )
         fast = self._window(snapshot, self.FAST_WINDOW_SECONDS)
         slow = self._window(snapshot, self.SLOW_WINDOW_SECONDS)
         if any(
@@ -246,8 +298,12 @@ class CandidateStateMachine:
         low_position_watch = bool(
             state and state.metadata.get("watch_kind") == "low_position_accumulation"
         )
-        vwap_floor = -1.0 if low_position_watch else -0.3
-        drawdown_floor = -1.5 if low_position_watch else -1.0
+        capital_memory_watch = bool(
+            state and state.metadata.get("watch_kind") == "capital_memory"
+        )
+        tolerant_watch = low_position_watch or capital_memory_watch
+        vwap_floor = -1.0 if tolerant_watch else -0.3
+        drawdown_floor = -1.5 if tolerant_watch else -1.0
         watch_return = (
             (snapshot.quote.last_price / watch_price - 1.0) * 100.0
             if watch_price and snapshot.quote.last_price > 0
@@ -282,12 +338,19 @@ class CandidateStateMachine:
             and self._state_age(snapshot, state) > self.UNIVERSE_GRACE_SECONDS
             and not self._strict_momentum_context(snapshot, universe)
             and not (
-                low_position_watch
+                tolerant_watch
                 and bool(universe.reason_codes)
                 and set(universe.reason_codes).issubset(
                     self.OBSERVATION_BYPASS_REASONS
                 )
-                and self._usable_global_context(snapshot)
+                and (
+                    self._usable_global_context(snapshot)
+                    or (
+                        capital_memory_watch
+                        and snapshot.market_context.quality is not DataQuality.INVALID
+                        and snapshot.market_context.market_sample_size >= 20
+                    )
+                )
             )
         ):
             return TransitionProposal(
@@ -297,6 +360,41 @@ class CandidateStateMachine:
                 metadata={"cooldown_started_at": snapshot.computed_at},
             )
         return None
+
+    @classmethod
+    def _enter_capital_memory_watch(
+        cls,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+        *,
+        event_type: EventType,
+    ) -> TransitionProposal | None:
+        hard_reasons = set(universe.reason_codes) - cls.OBSERVATION_BYPASS_REASONS
+        memory = snapshot.capital_memory
+        if (
+            hard_reasons
+            or not CandidateSignalRules.capital_memory_watch_context(snapshot)
+            or memory is None
+        ):
+            return None
+        return TransitionProposal(
+            new_status=StrategyStatus.WATCHING,
+            event_type=event_type,
+            reason_code="CAPITAL_MEMORY_REVERSAL_WATCH",
+            confirmation_price=snapshot.quote.last_price,
+            alert_eligible=False,
+            metadata={
+                "watch_started_at": snapshot.computed_at,
+                "watch_price": snapshot.quote.last_price,
+                "watch_kind": "capital_memory",
+                "capital_memory_state": memory.state.value,
+                "capital_memory_score": memory.score,
+                "day_main_net": memory.day_main_net,
+                "decayed_main_net": memory.decayed_main_net,
+                "recent_15m_main_net": memory.recent_15m_main_net,
+                "recent_15m_buy_events": memory.recent_15m_buy_events,
+            },
+        )
 
     @classmethod
     def _enter_low_position_watch(
@@ -312,7 +410,7 @@ class CandidateStateMachine:
         activity = snapshot.activity
         liquidity = snapshot.liquidity
         window = cls._window(snapshot, cls.FAST_WINDOW_SECONDS)
-        if window is None:
+        if not cls._low_position_accumulation(window):
             window = cls._window(snapshot, cls.SLOW_WINDOW_SECONDS)
         if (
             hard_reasons

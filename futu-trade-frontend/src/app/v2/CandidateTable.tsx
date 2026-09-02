@@ -12,6 +12,9 @@ const statusTone: Record<string, string> = {
 const reasonLabel: Record<string, string> = {
   HOT_ACTIVE_DAILY_SETUP: "热门活跃，等待资金确认",
   FIRST_STRONG_INFLOW_WATCH: "首次强流入，继续观察",
+  CAPITAL_MEMORY_REVERSAL_WATCH: "全天吸收转强，等待多次资金确认",
+  CAPITAL_MEMORY_MULTI_INFLOW_SHADOW_CONFIRMED: "资金记忆多次流入影子确认",
+  CAPITAL_MEMORY_TURNED_DISTRIBUTING: "近期资金转为明显流出",
   LOW_POSITION_ACCUMULATION_WATCH: "低位多次吸收，等待环境确认",
   LOW_POSITION_60M_ACCUMULATION_CONFIRMED: "低位60分钟吸收确认",
   LOW_POSITION_15M_ACCUMULATION_CONFIRMED: "低位15分钟吸收确认",
@@ -27,20 +30,41 @@ const reasonLabel: Record<string, string> = {
 
 const strategyLabel: Record<string, string> = {
   capital_absorption: "低位吸收",
+  capital_memory_reversal: "资金转强",
   momentum_continuation: "严格动量",
 };
 
+const memoryStateLabel: Record<string, string> = {
+  NEUTRAL: "中性",
+  ACCUMULATING: "持续流入",
+  REVERSING: "流出修复",
+  ABSORBING: "吸收中",
+  DECAYING: "优势衰减",
+  DISTRIBUTING: "资金流出",
+};
+
 function FlowCell({ item }: { item: V2Candidate }) {
+  const memory = item.capital_memory;
   const windows = [900, 3600].map((seconds) => item.capital_windows.find((window) => window.window_seconds === seconds));
   return (
-    <div className="grid min-w-44 grid-cols-2 gap-3 text-xs tabular-nums">
-      {windows.map((window, index) => (
-        <div key={index}>
-          <span className="text-muted-foreground">{index ? "60m" : "15m"} </span>
-          <span className={tone(window?.main_net)}>{money(window?.main_net)}</span>
-          <span className="ml-1 text-muted-foreground">{window ? `${window.independent_buy_events}/${window.independent_sell_events}` : "--"}</span>
+    <div className="min-w-56 text-xs tabular-nums">
+      {memory && (
+        <div className="mb-1 flex items-center gap-2">
+          <span className="font-medium">{memoryStateLabel[memory.state] || memory.state}</span>
+          <span className="text-muted-foreground">记忆 {memory.score.toFixed(0)}</span>
+          <span className={tone(memory.decayed_main_net)}>衰减 {money(memory.decayed_main_net)}</span>
         </div>
-      ))}
+      )}
+      <div className="grid grid-cols-2 gap-3">
+        {windows.map((window, index) => (
+          <div key={index}>
+            <span className="text-muted-foreground">{index ? "60m" : "15m"} </span>
+            <span className={tone(window?.main_net)}>{money(window?.main_net)}</span>
+            <span className="ml-1 text-muted-foreground">{window ? `${window.independent_buy_events}/${window.independent_sell_events}` : "--"}</span>
+          </div>
+        ))}
+      </div>
+      {memory && <div className="mt-1 text-[11px] text-muted-foreground">全天 {money(memory.day_main_net)} · 15m {money(memory.recent_15m_main_net)} · {memory.recent_15m_buy_events}/{memory.recent_15m_sell_events} 次</div>}
     </div>
   );
 }

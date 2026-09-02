@@ -3,11 +3,12 @@
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from math import exp, log, tanh
 import threading
 
-from ...domain.enums import DataQuality, TickDirection
+from ...domain.enums import CapitalMemoryState, DataQuality, TickDirection
 from ...domain.features import CapitalBaseline
-from ...domain.market import TickAggregate, TickTrade
+from ...domain.market import CapitalMemory, TickAggregate, TickTrade
 from .quality import worst_quality
 
 
@@ -33,9 +34,19 @@ class _FlowSample:
 
 
 @dataclass(slots=True)
+class _FlowEvent:
+    started_at: datetime
+    last_at: datetime
+    amount: float
+    direction: TickDirection
+    event_group: int
+
+
+@dataclass(slots=True)
 class _StockState:
     trade_date: object
     samples: deque[_FlowSample] = field(default_factory=deque)
+    events: deque[_FlowEvent] = field(default_factory=deque)
     seen_keys: set[tuple[object, ...]] = field(default_factory=set)
     seen_order: deque[tuple[object, ...]] = field(default_factory=deque)
     group_counter: int = 0
@@ -45,6 +56,7 @@ class _StockState:
     cumulative_trough: float = 0.0
     last_sequence: int | None = None
     quality: DataQuality = DataQuality.GOOD
+    seeded: bool = False
 
 
 class CapitalWindowEngine:
@@ -58,6 +70,7 @@ class CapitalWindowEngine:
         split_merge_seconds: float = 3.0,
         split_price_tolerance: float = 0.0015,
         dedupe_capacity: int = 50_000,
+        memory_half_life_minutes: int = 30,
     ) -> None:
         if not windows or any(value <= 0 for value in windows):
             raise ValueError("windows must contain positive seconds")
@@ -65,11 +78,14 @@ class CapitalWindowEngine:
             raise ValueError("capital thresholds must be valid")
         if split_price_tolerance < 0 or dedupe_capacity <= 0:
             raise ValueError("dedupe parameters must be valid")
+        if memory_half_life_minutes <= 0:
+            raise ValueError("memory_half_life_minutes must be positive")
         self._windows = tuple(sorted(set(windows)))
         self._threshold = large_order_threshold
         self._merge_seconds = split_merge_seconds
         self._price_tolerance = split_price_tolerance
         self._dedupe_capacity = dedupe_capacity
+        self._memory_half_life_minutes = memory_half_life_minutes
         self._states: dict[str, _StockState] = {}
         self._baselines: dict[str, CapitalBaseline] = {}
         self._lock = threading.RLock()
@@ -127,6 +143,20 @@ class CapitalWindowEngine:
                 event_group=group,
             )
             state.samples.append(sample)
+            if independent:
+                state.events.append(
+                    _FlowEvent(
+                        started_at=tick.exchange_time,
+                        last_at=tick.exchange_time,
+                        amount=tick.turnover,
+                        direction=tick.direction,
+                        event_group=group,
+                    )
+                )
+            else:
+                event = state.events[-1]
+                event.last_at = tick.exchange_time
+                event.amount += tick.turnover
             state.last_flow = sample
             signed = tick.turnover if tick.direction is TickDirection.BUY else -tick.turnover
             state.cumulative_main_net += signed
@@ -143,6 +173,7 @@ class CapitalWindowEngine:
             state.cumulative_trough = aggregate.cumulative_trough
             state.last_sequence = aggregate.last_sequence
             state.quality = worst_quality(state.quality, aggregate.quality)
+            state.seeded = True
 
     def snapshots(self, stock_code: str, as_of: datetime) -> tuple[TickAggregate, ...]:
         with self._lock:
@@ -154,6 +185,103 @@ class CapitalWindowEngine:
             return tuple(
                 self._aggregate(stock_code, as_of, window, samples, state)
                 for window in self._windows
+            )
+
+    def memory(self, stock_code: str, as_of: datetime) -> CapitalMemory:
+        with self._lock:
+            state = self._states.get(stock_code)
+            if state is None or state.trade_date != as_of.date():
+                return self._empty_memory(stock_code, as_of)
+            self._prune(state, as_of)
+            events = tuple(state.events)
+            baseline = self._baselines.get(stock_code)
+            threshold = self._threshold_for(stock_code)
+            scale = self._flow_scale_for(stock_code)
+
+            half_life_seconds = self._memory_half_life_minutes * 60.0
+            decayed_buy_amount = 0.0
+            decayed_sell_amount = 0.0
+            decayed_buy_events = 0.0
+            decayed_sell_events = 0.0
+            for event in events:
+                age = self._trading_seconds_between(event.last_at, as_of)
+                weight = exp(-log(2.0) * age / half_life_seconds)
+                if event.direction is TickDirection.BUY:
+                    decayed_buy_amount += event.amount * weight
+                    decayed_buy_events += weight
+                else:
+                    decayed_sell_amount += event.amount * weight
+                    decayed_sell_events += weight
+
+            recent_events = [
+                event
+                for event in events
+                if self._trading_seconds_between(event.last_at, as_of) <= 900
+            ]
+            recent_buy_amount = sum(
+                event.amount
+                for event in recent_events
+                if event.direction is TickDirection.BUY
+            )
+            recent_sell_amount = sum(
+                event.amount
+                for event in recent_events
+                if event.direction is TickDirection.SELL
+            )
+            recent_buy_events = sum(
+                event.direction is TickDirection.BUY for event in recent_events
+            )
+            recent_sell_events = sum(
+                event.direction is TickDirection.SELL for event in recent_events
+            )
+            decayed_main_net = decayed_buy_amount - decayed_sell_amount
+            recent_main_net = recent_buy_amount - recent_sell_amount
+            recovery = self._day_recovery_ratio(state)
+            memory_state = self._memory_state(
+                day_main_net=state.cumulative_main_net,
+                day_peak=state.cumulative_peak,
+                decayed_buy_amount=decayed_buy_amount,
+                decayed_sell_amount=decayed_sell_amount,
+                decayed_buy_events=decayed_buy_events,
+                decayed_sell_events=decayed_sell_events,
+                recent_main_net=recent_main_net,
+                recent_buy_events=recent_buy_events,
+                recovery=recovery,
+                threshold=threshold,
+                scale=scale,
+            )
+            quality = worst_quality(
+                state.quality,
+                baseline.quality if baseline is not None else DataQuality.DEGRADED,
+                DataQuality.DEGRADED if state.seeded and not events else DataQuality.GOOD,
+            )
+            return CapitalMemory(
+                stock_code=stock_code,
+                as_of=as_of,
+                state=memory_state,
+                score=self._memory_score(
+                    day_main_net=state.cumulative_main_net,
+                    decayed_main_net=decayed_main_net,
+                    recent_main_net=recent_main_net,
+                    decayed_buy_events=decayed_buy_events,
+                    decayed_sell_events=decayed_sell_events,
+                    scale=scale,
+                ),
+                day_main_net=round(state.cumulative_main_net, 4),
+                day_peak=round(state.cumulative_peak, 4),
+                day_trough=round(state.cumulative_trough, 4),
+                day_recovery_ratio=round(recovery, 6),
+                decayed_buy_amount=round(decayed_buy_amount, 4),
+                decayed_sell_amount=round(decayed_sell_amount, 4),
+                decayed_main_net=round(decayed_main_net, 4),
+                decayed_buy_events=round(decayed_buy_events, 6),
+                decayed_sell_events=round(decayed_sell_events, 6),
+                recent_15m_main_net=round(recent_main_net, 4),
+                recent_15m_buy_events=recent_buy_events,
+                recent_15m_sell_events=recent_sell_events,
+                half_life_minutes=self._memory_half_life_minutes,
+                quality=quality,
+                reason_codes=(f"CAPITAL_MEMORY_{memory_state.value}",),
             )
 
     def _state_for(self, stock_code: str, as_of: datetime) -> _StockState:
@@ -253,6 +381,135 @@ class CapitalWindowEngine:
             large_order_threshold=self._threshold_for(stock_code),
             flow_scale=self._flow_scale_for(stock_code),
         )
+
+    def _empty_memory(self, stock_code: str, as_of: datetime) -> CapitalMemory:
+        return CapitalMemory(
+            stock_code=stock_code,
+            as_of=as_of,
+            state=CapitalMemoryState.NEUTRAL,
+            score=50.0,
+            day_main_net=0.0,
+            day_peak=0.0,
+            day_trough=0.0,
+            day_recovery_ratio=0.5,
+            decayed_buy_amount=0.0,
+            decayed_sell_amount=0.0,
+            decayed_main_net=0.0,
+            decayed_buy_events=0.0,
+            decayed_sell_events=0.0,
+            recent_15m_main_net=0.0,
+            recent_15m_buy_events=0,
+            recent_15m_sell_events=0,
+            half_life_minutes=self._memory_half_life_minutes,
+            quality=DataQuality.INVALID,
+            reason_codes=("CAPITAL_MEMORY_EMPTY",),
+        )
+
+    @staticmethod
+    def _day_recovery_ratio(state: _StockState) -> float:
+        path = state.cumulative_peak - state.cumulative_trough
+        if path <= 0:
+            return 1.0 if state.cumulative_main_net > 0 else 0.5
+        return max(
+            0.0,
+            min(1.0, (state.cumulative_main_net - state.cumulative_trough) / path),
+        )
+
+    @staticmethod
+    def _memory_state(
+        *,
+        day_main_net: float,
+        day_peak: float,
+        decayed_buy_amount: float,
+        decayed_sell_amount: float,
+        decayed_buy_events: float,
+        decayed_sell_events: float,
+        recent_main_net: float,
+        recent_buy_events: int,
+        recovery: float,
+        threshold: float,
+        scale: float,
+    ) -> CapitalMemoryState:
+        decayed_net = decayed_buy_amount - decayed_sell_amount
+        base = max(3.0 * threshold, scale)
+        decayed_total = decayed_buy_amount + decayed_sell_amount
+        buy_ratio = decayed_buy_amount / decayed_total if decayed_total > 0 else 0.5
+        if (
+            decayed_net <= -max(threshold, 0.75 * scale)
+            and decayed_sell_events >= 1.0
+        ):
+            return CapitalMemoryState.DISTRIBUTING
+        if (
+            day_main_net < 0
+            and decayed_net >= base
+            and recent_main_net > 0
+            and recent_buy_events >= 1
+            and recovery >= 0.50
+        ):
+            return CapitalMemoryState.REVERSING
+        if (
+            day_main_net >= base
+            and decayed_net >= base
+            and recent_buy_events >= 2
+            and decayed_buy_events > decayed_sell_events
+        ):
+            return CapitalMemoryState.ACCUMULATING
+        if (
+            decayed_net >= max(threshold, 0.75 * scale)
+            and recent_buy_events >= 1
+            and buy_ratio >= 0.65
+        ):
+            return CapitalMemoryState.ABSORBING
+        if day_peak >= base and decayed_net < 0.25 * base:
+            return CapitalMemoryState.DECAYING
+        return CapitalMemoryState.NEUTRAL
+
+    @staticmethod
+    def _memory_score(
+        *,
+        day_main_net: float,
+        decayed_main_net: float,
+        recent_main_net: float,
+        decayed_buy_events: float,
+        decayed_sell_events: float,
+        scale: float,
+    ) -> float:
+        normalizer = max(scale, 1.0)
+        day_score = 50.0 + 50.0 * tanh(day_main_net / (3.0 * normalizer))
+        event_total = decayed_buy_events + decayed_sell_events
+        event_balance = (
+            (decayed_buy_events - decayed_sell_events) / event_total
+            if event_total > 0
+            else 0.0
+        )
+        decayed_score = (
+            50.0 + 40.0 * tanh(decayed_main_net / (2.0 * normalizer))
+            + 10.0 * event_balance
+        )
+        recent_score = 50.0 + 50.0 * tanh(recent_main_net / normalizer)
+        score = day_score * 0.25 + decayed_score * 0.45 + recent_score * 0.30
+        return round(max(0.0, min(100.0, score)), 4)
+
+    @staticmethod
+    def _trading_seconds_between(start: datetime, end: datetime) -> float:
+        if end <= start:
+            return 0.0
+        if start.date() != end.date():
+            return max(0.0, (end - start).total_seconds())
+        sessions = ((9, 30, 12, 0), (13, 0, 16, 0))
+        seconds = 0.0
+        for start_hour, start_minute, end_hour, end_minute in sessions:
+            session_start = start.replace(
+                hour=start_hour, minute=start_minute, second=0, microsecond=0
+            )
+            session_end = start.replace(
+                hour=end_hour, minute=end_minute, second=0, microsecond=0
+            )
+            overlap_start = max(start, session_start)
+            overlap_end = min(end, session_end)
+            if overlap_end > overlap_start:
+                seconds += (overlap_end - overlap_start).total_seconds()
+        return seconds
 
     @staticmethod
     def _event_times(samples: list[_FlowSample]) -> tuple[datetime, ...]:

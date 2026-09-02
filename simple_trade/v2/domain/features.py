@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .enums import DataQuality, MarketRegime
-from .market import QuoteSnapshot, TickAggregate
+from .market import CapitalMemory, QuoteSnapshot, TickAggregate
 from .serialization import require_aware, require_stock_code
 
 
@@ -203,6 +203,7 @@ class FeatureSnapshot:
     activity: ActivityMetrics | None = None
     liquidity: LiquidityMetrics | None = None
     price_acceptance: PriceAcceptance | None = None
+    capital_memory: CapitalMemory | None = None
     missing_fields: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -213,6 +214,8 @@ class FeatureSnapshot:
             raise ValueError("quote 与 FeatureSnapshot 的 stock_code 不一致")
         if any(window.stock_code != code for window in self.tick_windows):
             raise ValueError("tick_windows 与 FeatureSnapshot 的 stock_code 不一致")
+        if self.capital_memory is not None and self.capital_memory.stock_code != code:
+            raise ValueError("capital_memory 与 FeatureSnapshot 的 stock_code 不一致")
         for value in (
             self.activity_score,
             self.liquidity_score,

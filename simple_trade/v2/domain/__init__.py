@@ -26,6 +26,7 @@ from .features import (
     PricePosition,
 )
 from .market import (
+    CapitalMemory,
     OrderBookLevel,
     OrderBookSnapshot,
     QuoteSnapshot,
@@ -54,6 +55,7 @@ __all__ = [
     "ActiveOrderSnapshot",
     "BreadthMember",
     "CapitalBaseline",
+    "CapitalMemory",
     "DailyBar",
     "LiquidityMetrics",
     "MarketContext",

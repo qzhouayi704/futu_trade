@@ -204,6 +204,7 @@ class V2ReadModelService:
             "market_context": feature.get("market_context"),
             "price_position": feature.get("price_position"),
             "price_acceptance": feature.get("price_acceptance"),
+            "capital_memory": feature.get("capital_memory"),
             "capital_windows": feature.get("tick_windows", []),
             "quote": feature.get("quote"),
         }

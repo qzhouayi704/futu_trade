@@ -110,6 +110,8 @@ class FeatureEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(snapshot.quality, DataQuality.GOOD)
         self.assertEqual(snapshot.missing_fields, ())
         self.assertEqual(tuple(window.window_seconds for window in snapshot.tick_windows), (60, 300, 900, 1800, 3600))
+        self.assertIsNotNone(snapshot.capital_memory)
+        self.assertEqual(snapshot.capital_memory.recent_15m_buy_events, 1)
         self.assertTrue(snapshot.price_acceptance.accepted)
         self.assertEqual(len(self.events), 1)
         self.assertEqual(self.events[0].snapshot, snapshot)
@@ -135,6 +137,7 @@ class FeatureEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(snapshot.quality, DataQuality.INVALID)
         self.assertIn("price_position.daily_bars", snapshot.missing_fields)
         self.assertIn("capital_windows.tick_stream", snapshot.missing_fields)
+        self.assertIn("capital_memory.event_stream", snapshot.missing_fields)
         self.assertIn("liquidity.lot_size", snapshot.missing_fields)
 
 

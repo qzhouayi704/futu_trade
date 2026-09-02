@@ -26,6 +26,18 @@ export interface V2Candidate {
   quote?: { last_price?: number; prev_close?: number };
   market_context?: { market_breadth?: number; sector_breadth?: number | null; market_regime?: string };
   price_position?: { daily_percentile?: number; structure?: string; distance_to_ma20?: number };
+  capital_memory?: {
+    state: string;
+    score: number;
+    day_main_net: number;
+    decayed_main_net: number;
+    recent_15m_main_net: number;
+    decayed_buy_events: number;
+    decayed_sell_events: number;
+    recent_15m_buy_events: number;
+    recent_15m_sell_events: number;
+    quality: string;
+  } | null;
   capital_windows: Array<{
     window_seconds: number;
     main_net: number;

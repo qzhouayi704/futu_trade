@@ -68,6 +68,15 @@ class TickDirection(StringEnum):
     NEUTRAL = "NEUTRAL"
 
 
+class CapitalMemoryState(StringEnum):
+    NEUTRAL = "NEUTRAL"
+    ACCUMULATING = "ACCUMULATING"
+    REVERSING = "REVERSING"
+    ABSORBING = "ABSORBING"
+    DECAYING = "DECAYING"
+    DISTRIBUTING = "DISTRIBUTING"
+
+
 class CandidateStatus(StringEnum):
     OBSERVE = "OBSERVE"
     SETUP = "SETUP"

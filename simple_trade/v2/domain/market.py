@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from .enums import DataQuality, TickDirection
+from .enums import CapitalMemoryState, DataQuality, TickDirection
 from .serialization import require_aware, require_stock_code
 
 
@@ -170,3 +170,42 @@ class TickAggregate:
         if self.main_net < 0:
             return TickDirection.SELL
         return TickDirection.NEUTRAL
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CapitalMemory:
+    stock_code: str
+    as_of: datetime
+    state: CapitalMemoryState
+    score: float
+    day_main_net: float
+    day_peak: float
+    day_trough: float
+    day_recovery_ratio: float
+    decayed_buy_amount: float
+    decayed_sell_amount: float
+    decayed_main_net: float
+    decayed_buy_events: float
+    decayed_sell_events: float
+    recent_15m_main_net: float
+    recent_15m_buy_events: int
+    recent_15m_sell_events: int
+    half_life_minutes: int
+    quality: DataQuality
+    reason_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "stock_code", require_stock_code(self.stock_code))
+        require_aware(self.as_of, "as_of")
+        if not 0 <= self.score <= 100:
+            raise ValueError("score 必须在 0 到 100 之间")
+        if not 0 <= self.day_recovery_ratio <= 1:
+            raise ValueError("day_recovery_ratio 必须在 0 到 1 之间")
+        if self.decayed_buy_amount < 0 or self.decayed_sell_amount < 0:
+            raise ValueError("衰减资金金额不能小于 0")
+        if self.decayed_buy_events < 0 or self.decayed_sell_events < 0:
+            raise ValueError("衰减事件数不能小于 0")
+        if self.recent_15m_buy_events < 0 or self.recent_15m_sell_events < 0:
+            raise ValueError("近期事件数不能小于 0")
+        if self.half_life_minutes <= 0:
+            raise ValueError("half_life_minutes 必须大于 0")

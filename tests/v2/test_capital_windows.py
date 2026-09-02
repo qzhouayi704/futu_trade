@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from simple_trade.v2.application.features.capital_windows import CapitalWindowEngine
-from simple_trade.v2.domain.enums import DataQuality, TickDirection
+from simple_trade.v2.domain.enums import CapitalMemoryState, DataQuality, TickDirection
 from simple_trade.v2.domain.features import CapitalBaseline
 from simple_trade.v2.domain.market import TickAggregate, TickTrade
 
@@ -31,6 +31,15 @@ def tick(
 
 
 class CapitalWindowTests(unittest.TestCase):
+    @staticmethod
+    def _seed_good_baseline(engine: CapitalWindowEngine) -> None:
+        engine.set_baselines((CapitalBaseline(
+            stock_code="HK.00100",
+            large_order_threshold=100_000,
+            flow_scale=300_000,
+            quality=DataQuality.GOOD,
+        ),))
+
     def test_per_stock_baseline_controls_threshold_and_event_span(self) -> None:
         engine = CapitalWindowEngine()
         engine.set_baselines((CapitalBaseline(
@@ -67,14 +76,54 @@ class CapitalWindowTests(unittest.TestCase):
 
     def test_split_orders_keep_amount_but_count_one_independent_event(self) -> None:
         engine = CapitalWindowEngine()
+        self._seed_good_baseline(engine)
         for index, price in enumerate((100.0, 100.05, 100.10), start=1):
             engine.on_tick(tick(index - 1, sequence=index, price=price))
 
         window = engine.snapshots("HK.00100", NOW + timedelta(seconds=3))[0]
+        memory = engine.memory("HK.00100", NOW + timedelta(seconds=3))
 
         self.assertEqual(window.big_buy_count, 3)
         self.assertEqual(window.independent_buy_events, 1)
         self.assertEqual(window.buy_amount, 600_000)
+        self.assertAlmostEqual(memory.decayed_buy_events, 1.0, places=3)
+        self.assertEqual(memory.recent_15m_buy_events, 1)
+
+    def test_memory_decay_uses_trading_time_and_pauses_for_lunch(self) -> None:
+        engine = CapitalWindowEngine(memory_half_life_minutes=30)
+        self._seed_good_baseline(engine)
+        engine.on_tick(tick(6_300, amount=600_000, sequence=1))  # 11:45
+
+        at_afternoon_open = engine.memory(
+            "HK.00100", NOW + timedelta(seconds=10_800)  # 13:00
+        )
+        after_half_life = engine.memory(
+            "HK.00100", NOW + timedelta(seconds=11_700)  # 13:15
+        )
+
+        self.assertAlmostEqual(
+            at_afternoon_open.decayed_buy_amount, 600_000 * 2 ** -0.5, delta=1
+        )
+        self.assertEqual(at_afternoon_open.recent_15m_buy_events, 1)
+        self.assertAlmostEqual(after_half_life.decayed_buy_amount, 300_000, delta=1)
+        self.assertEqual(after_half_life.recent_15m_buy_events, 0)
+
+    def test_all_day_outflow_can_become_recent_reversal_watch_state(self) -> None:
+        engine = CapitalWindowEngine()
+        self._seed_good_baseline(engine)
+        engine.on_tick(tick(
+            0, amount=5_000_000, direction=TickDirection.SELL, sequence=1
+        ))
+        engine.on_tick(tick(13_800, amount=2_000_000, sequence=2, price=99.0))
+        engine.on_tick(tick(13_810, amount=2_000_000, sequence=3, price=99.2))
+
+        memory = engine.memory("HK.00100", NOW + timedelta(seconds=14_400))
+
+        self.assertEqual(memory.day_main_net, -1_000_000)
+        self.assertEqual(memory.recent_15m_buy_events, 2)
+        self.assertGreater(memory.decayed_main_net, 3_000_000)
+        self.assertAlmostEqual(memory.day_recovery_ratio, 0.8, places=3)
+        self.assertIs(memory.state, CapitalMemoryState.REVERSING)
 
     def test_inflow_and_outflow_offset_net_count_and_direction(self) -> None:
         engine = CapitalWindowEngine()

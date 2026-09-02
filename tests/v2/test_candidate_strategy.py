@@ -8,7 +8,13 @@ from simple_trade.v2.application.strategy.portfolio import StrategyPortfolio
 from simple_trade.v2.application.strategy.state_machine import CandidateStateMachine
 from simple_trade.v2.application.strategy.universe import UniversePolicy
 from simple_trade.v2.domain.decisions import StrategyState
-from simple_trade.v2.domain.enums import DataQuality, EventType, MarketRegime, StrategyStatus
+from simple_trade.v2.domain.enums import (
+    CapitalMemoryState,
+    DataQuality,
+    EventType,
+    MarketRegime,
+    StrategyStatus,
+)
 from simple_trade.v2.domain.features import (
     ActivityMetrics,
     FeatureSnapshot,
@@ -17,7 +23,7 @@ from simple_trade.v2.domain.features import (
     PriceAcceptance,
     PricePosition,
 )
-from simple_trade.v2.domain.market import QuoteSnapshot, TickAggregate
+from simple_trade.v2.domain.market import CapitalMemory, QuoteSnapshot, TickAggregate
 
 
 NOW = datetime(2026, 8, 31, 10, 0, tzinfo=timezone(timedelta(hours=8)))
@@ -72,6 +78,7 @@ def snapshot(
     sector_breadth: float = 0.8,
     atr_percent: float = 3.0,
     distance_to_ma20: float = 1.0,
+    memory: CapitalMemory | None = None,
 ) -> FeatureSnapshot:
     quote = QuoteSnapshot(
         stock_code="HK.00100",
@@ -120,7 +127,35 @@ def snapshot(
         ),
         activity_score=80, liquidity_score=80, price_acceptance_score=80,
         quality=DataQuality.GOOD, activity=activity, liquidity=liquidity,
-        price_acceptance=acceptance,
+        price_acceptance=acceptance, capital_memory=memory,
+    )
+
+
+def capital_memory(
+    *,
+    as_of: datetime = NOW,
+    state: CapitalMemoryState = CapitalMemoryState.REVERSING,
+) -> CapitalMemory:
+    return CapitalMemory(
+        stock_code="HK.00100",
+        as_of=as_of,
+        state=state,
+        score=82,
+        day_main_net=-1_000_000,
+        day_peak=500_000,
+        day_trough=-5_000_000,
+        day_recovery_ratio=0.73,
+        decayed_buy_amount=4_000_000,
+        decayed_sell_amount=300_000,
+        decayed_main_net=3_700_000,
+        decayed_buy_events=1.8,
+        decayed_sell_events=0.2,
+        recent_15m_main_net=2_000_000,
+        recent_15m_buy_events=2,
+        recent_15m_sell_events=0,
+        half_life_minutes=30,
+        quality=DataQuality.GOOD,
+        reason_codes=("CAPITAL_MEMORY_REVERSING",),
     )
 
 
@@ -430,6 +465,61 @@ class CandidateStrategyTests(unittest.TestCase):
             self.machine.evaluate(invalid_context, None, incomplete_context)
         )
 
+    def test_capital_memory_reversal_is_visible_in_weak_market_but_stays_shadow(self) -> None:
+        as_of = NOW.replace(hour=14)
+        item = snapshot(as_of=as_of, memory=capital_memory(as_of=as_of))
+        item = replace(
+            item,
+            market_context=replace(item.market_context, market_breadth=0.15),
+            price_position=replace(item.price_position, daily_percentile=0.20),
+        )
+
+        watch = self.machine.evaluate(item, None, SOFT_INELIGIBLE)
+
+        self.assertEqual(watch.new_status, StrategyStatus.WATCHING)
+        self.assertEqual(watch.reason_code, "CAPITAL_MEMORY_REVERSAL_WATCH")
+        self.assertFalse(watch.alert_eligible)
+        self.assertEqual(watch.metadata["watch_kind"], "capital_memory")
+        watching = state(
+            StrategyStatus.WATCHING,
+            updated_at=as_of,
+            metadata={"watch_price": 100, "watch_kind": "capital_memory"},
+        )
+        self.assertIsNone(self.machine.evaluate(item, watching, SOFT_INELIGIBLE))
+
+        repeated = window(900, buys=3, buy_amount=1_500_000, span=600)
+        confirmed_item = replace(
+            item,
+            tick_windows=(repeated,),
+            market_context=replace(item.market_context, market_breadth=0.60),
+        )
+        confirmed = self.machine.evaluate(confirmed_item, watching, SOFT_INELIGIBLE)
+        self.assertEqual(confirmed.new_status, StrategyStatus.CONFIRMED)
+        self.assertEqual(
+            confirmed.reason_code,
+            "CAPITAL_MEMORY_MULTI_INFLOW_SHADOW_CONFIRMED",
+        )
+        self.assertFalse(confirmed.alert_eligible)
+
+    def test_capital_memory_watch_invalidates_when_flow_turns_to_distribution(self) -> None:
+        as_of = NOW.replace(hour=14)
+        item = snapshot(
+            as_of=as_of,
+            memory=capital_memory(
+                as_of=as_of, state=CapitalMemoryState.DISTRIBUTING
+            ),
+        )
+        watching = state(
+            StrategyStatus.WATCHING,
+            updated_at=as_of,
+            metadata={"watch_price": 101, "watch_kind": "capital_memory"},
+        )
+
+        result = self.machine.evaluate(item, watching, ELIGIBLE)
+
+        self.assertEqual(result.new_status, StrategyStatus.INVALIDATED)
+        self.assertEqual(result.reason_code, "CAPITAL_MEMORY_TURNED_DISTRIBUTING")
+
     def test_low_position_watch_requires_low_position_and_no_material_offset(self) -> None:
         accumulation = window(3600, buys=3, buy_amount=1_200_000, span=900)
         high = snapshot(as_of=NOW + timedelta(minutes=15), windows=(accumulation,))
@@ -453,6 +543,23 @@ class CandidateStrategyTests(unittest.TestCase):
             price_position=replace(low.price_position, daily_percentile=0.20),
         )
         self.assertIsNone(self.machine.evaluate(low, None, SOFT_INELIGIBLE))
+
+    def test_empty_fast_window_does_not_hide_valid_slow_accumulation(self) -> None:
+        empty_fast = window(900)
+        slow = window(3600, buys=4, buy_amount=1_800_000, span=900)
+        item = snapshot(
+            as_of=NOW + timedelta(minutes=15),
+            windows=(empty_fast, slow),
+        )
+        item = replace(
+            item,
+            price_position=replace(item.price_position, daily_percentile=0.20),
+        )
+
+        watching = self.machine.evaluate(item, None, SOFT_INELIGIBLE)
+
+        self.assertEqual(watching.new_status, StrategyStatus.WATCHING)
+        self.assertEqual(watching.reason_code, "LOW_POSITION_ACCUMULATION_WATCH")
 
     def test_low_position_watch_can_confirm_through_soft_universe_gates(self) -> None:
         slow = window(3600, buys=4, buy_amount=1_800_000, span=900)
