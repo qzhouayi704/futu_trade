@@ -55,19 +55,20 @@ class CandidateHistoryReader:
         rows = await self._query(
             f"{self._history_cte(placeholders)} "
             "SELECT r.stock_code, COALESCE(st.name, ''), s.first_seen_at, "
-            "s.last_seen_at, s.event_count, s.max_stage_rank, s.max_score, "
+            "s.last_seen_at, s.event_count, s.max_stage_rank, "
             "s.strategy_version_count, r.event_type, COALESCE(r.new_state, 'IDLE'), "
-            "r.reason_code, r.strategy_version, r.payload_json, COUNT(*) OVER() "
+            "r.reason_code, r.strategy_version, latest.payload_json, COUNT(*) OVER() "
             "FROM ranked r JOIN summary s ON s.stock_code=r.stock_code "
+            "JOIN v2_decision_events latest ON latest.id=r.id "
             "LEFT JOIN stocks st ON st.code=r.stock_code "
             f"WHERE {' AND '.join(filters)} "
-            "ORDER BY s.max_stage_rank DESC, s.max_score DESC, s.last_seen_at DESC "
+            "ORDER BY s.max_stage_rank DESC, s.last_seen_at DESC, s.event_count DESC "
             "LIMIT ? OFFSET ?",
             tuple((*params, page_size, (page - 1) * page_size)),
         )
         return {
             "items": [self._history_row(row) for row in rows],
-            "total": int(rows[0][13]) if rows else 0,
+            "total": int(rows[0][12]) if rows else 0,
             "page": page,
             "page_size": page_size,
             "trade_date": day,
@@ -122,29 +123,29 @@ class CandidateHistoryReader:
     @staticmethod
     def _history_cte(placeholders: str) -> str:
         return (
-            "WITH filtered AS (SELECT e.*, "
+            "WITH filtered AS (SELECT e.id, e.stock_code, e.exchange_time, "
+            "e.event_type, e.new_state, e.reason_code, e.strategy_version, "
             "CASE COALESCE(e.new_state, '') WHEN 'CONFIRMED' THEN 4 "
             "WHEN 'WATCHING' THEN 3 WHEN 'SETUP' THEN 2 "
             "WHEN 'INVALIDATED' THEN 1 ELSE 0 END AS stage_rank, "
-            "CASE WHEN e.event_type='CANDIDATE_REJECTED' THEN 0 ELSE 1 END AS meaningful, "
-            "CASE WHEN json_valid(e.payload_json) THEN "
-            "COALESCE(CAST(json_extract(e.payload_json, '$.candidate_score.total') AS REAL), 0) "
-            "ELSE 0 END AS event_score FROM v2_decision_events e "
+            "CASE WHEN e.event_type='CANDIDATE_REJECTED' THEN 0 ELSE 1 END AS meaningful "
+            "FROM v2_decision_events e "
             f"WHERE e.event_type IN ({placeholders}) "
             "AND e.exchange_time>=? AND e.exchange_time<?), "
             "ranked AS (SELECT filtered.*, ROW_NUMBER() OVER (PARTITION BY stock_code "
             "ORDER BY exchange_time DESC, id DESC) AS row_number FROM filtered), "
             "summary AS (SELECT stock_code, MIN(exchange_time) AS first_seen_at, "
             "MAX(exchange_time) AS last_seen_at, COUNT(*) AS event_count, "
-            "MAX(stage_rank) AS max_stage_rank, MAX(event_score) AS max_score, "
+            "MAX(stage_rank) AS max_stage_rank, "
             "COUNT(DISTINCT strategy_version) AS strategy_version_count, "
             "SUM(meaningful) AS meaningful_events FROM filtered GROUP BY stock_code)"
         )
 
     @staticmethod
     def _history_row(row: tuple) -> dict:
-        payload = json.loads(row[12] or "{}")
+        payload = json.loads(row[11] or "{}")
         feature = payload.get("feature_snapshot") or {}
+        score = payload.get("candidate_score") or {}
         stages = {
             0: "EVALUATED", 1: "INVALIDATED", 2: "SETUP",
             3: "WATCHING", 4: "CONFIRMED",
@@ -154,10 +155,10 @@ class CandidateHistoryReader:
             "first_seen_at": row[2], "last_seen_at": row[3],
             "event_count": int(row[4]),
             "max_stage": stages.get(int(row[5]), "EVALUATED"),
-            "max_score": float(row[6]) if row[6] is not None else None,
-            "strategy_version_count": int(row[7]),
-            "latest_event_type": row[8], "latest_status": row[9],
-            "latest_reason_code": row[10], "latest_strategy_version": row[11],
+            "latest_score": score.get("total"),
+            "strategy_version_count": int(row[6]),
+            "latest_event_type": row[7], "latest_status": row[8],
+            "latest_reason_code": row[9], "latest_strategy_version": row[10],
             "quote": feature.get("quote"),
             "capital_memory": feature.get("capital_memory"),
         }

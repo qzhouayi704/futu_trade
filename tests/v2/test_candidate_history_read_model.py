@@ -89,7 +89,7 @@ class CandidateHistoryReadModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["event_count"], 2)
         self.assertEqual(item["strategy_version_count"], 2)
         self.assertEqual(item["max_stage"], "WATCHING")
-        self.assertEqual(item["max_score"], 72)
+        self.assertEqual(item["latest_score"], 61)
         self.assertEqual(item["latest_status"], "INVALIDATED")
 
     async def test_all_scope_includes_rejected_only_stocks_and_filters(self) -> None:

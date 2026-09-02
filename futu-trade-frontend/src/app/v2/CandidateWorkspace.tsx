@@ -83,7 +83,7 @@ function HistoryRow({ item, tradeDate }: { item: V2CandidateHistoryItem; tradeDa
       </td>
       <td className="px-3 py-2"><div className="font-semibold">{item.stock_name || item.stock_code}</div><div className="text-muted-foreground">{item.stock_code}</div></td>
       <td className="px-3 py-2"><div className="font-medium">{candidateStatusText(item.latest_status)}</div><div className="text-[11px] text-muted-foreground">最高：{stageLabel[item.max_stage] || item.max_stage}</div></td>
-      <td className="px-3 py-2 tabular-nums"><div className="text-base font-semibold">{item.max_score?.toFixed(1) ?? "--"}</div><div className="text-[11px] text-muted-foreground">{item.event_count} 条 · {item.strategy_version_count} 版</div></td>
+      <td className="px-3 py-2 tabular-nums"><div className="text-base font-semibold">{item.latest_score?.toFixed(1) ?? "--"}</div><div className="text-[11px] text-muted-foreground">{item.event_count} 条 · {item.strategy_version_count} 版</div></td>
       <td className="px-3 py-2 tabular-nums"><div>{currentPrice?.toFixed(3) ?? "--"}</div><div className="text-[11px] text-muted-foreground">{memory ? candidateMemoryStateText(memory.state || "NEUTRAL") : "资金未知"} · {money(memory?.day_main_net)}</div></td>
       <td className="max-w-64 px-3 py-2"><div className="truncate" title={candidateReasonText(item.latest_reason_code)}>{candidateReasonText(item.latest_reason_code)}</div><div className="text-[11px] text-muted-foreground">{eventLabel[item.latest_event_type] || "候选判断更新"}</div></td>
       <td className="px-3 py-2 text-muted-foreground"><div>{clock(item.first_seen_at)} 首次</div><div>{clock(item.last_seen_at)} 最新</div></td>
@@ -134,7 +134,7 @@ export function CandidateWorkspace({ currentItems }: { currentItems: V2Candidate
       <div className="overflow-x-auto">
         <table className="w-full min-w-[980px] text-left text-xs">
           <thead className="border-b border-border bg-muted/35 text-muted-foreground"><tr>
-            <th className="w-10 px-2 py-2"><History className="h-4 w-4" /></th><th className="px-3 py-2 font-medium">标的</th><th className="px-3 py-2 font-medium">最新 / 最高状态</th><th className="px-3 py-2 font-medium">最高评分 / 记录</th><th className="px-3 py-2 font-medium">现价 / 全天资金</th><th className="px-3 py-2 font-medium">最新判断</th><th className="px-3 py-2 font-medium">时间</th>
+            <th className="w-10 px-2 py-2"><History className="h-4 w-4" /></th><th className="px-3 py-2 font-medium">标的</th><th className="px-3 py-2 font-medium">最新 / 最高状态</th><th className="px-3 py-2 font-medium">最新评分 / 记录</th><th className="px-3 py-2 font-medium">现价 / 全天资金</th><th className="px-3 py-2 font-medium">最新判断</th><th className="px-3 py-2 font-medium">时间</th>
           </tr></thead>
           <tbody className="divide-y divide-border/70">{(history.data?.items || []).map((item) => <HistoryRow key={item.stock_code} item={item} tradeDate={history.data?.trade_date || ""} />)}</tbody>
         </table>

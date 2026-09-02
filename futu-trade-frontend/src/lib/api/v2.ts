@@ -54,7 +54,7 @@ export interface V2CandidateHistoryItem {
   last_seen_at: string;
   event_count: number;
   max_stage: string;
-  max_score: number | null;
+  latest_score: number | null;
   strategy_version_count: number;
   latest_event_type: string;
   latest_status: string;
