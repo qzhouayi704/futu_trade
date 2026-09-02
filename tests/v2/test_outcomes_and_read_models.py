@@ -213,7 +213,8 @@ class V2RouteContractTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         backend = (root / "simple_trade/routers/v2/read_models.py").read_text(encoding="utf-8")
         for path in (
-            "/cockpit", "/candidates", "/positions", "/decisions",
+            "/cockpit", "/candidates", "/candidates/history",
+            "/candidates/{stock_code}/timeline", "/positions", "/decisions",
             "/outcomes/distribution", "/outcomes/shadow-acceptance",
             "/system/health", "/system/runtime",
         ):

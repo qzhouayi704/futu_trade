@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useSocket } from "@/lib/socket";
 import { v2Api } from "@/lib/api/v2";
 import { CandidateTable } from "./CandidateTable";
+import { CandidateWorkspace } from "./CandidateWorkspace";
 import { DecisionStream } from "./DecisionStream";
 import { MetricStrip } from "./MetricStrip";
 import { OutcomeDistribution } from "./OutcomeDistribution";
@@ -58,7 +59,7 @@ export default function V2WorkbenchPage() {
       <main className="mx-auto max-w-[1680px] px-3 py-4 md:px-6 md:py-6">
         {hasError && <div className="mb-4 border-l-2 border-rose-500 bg-rose-500/8 px-3 py-2 text-sm text-rose-700 dark:text-rose-300">部分 V2 Read Model 暂不可用，系统会继续重试。</div>}
         {tab === "cockpit" && <div className="space-y-6"><MetricStrip data={cockpit.data} /><section><h2 className="mb-2 text-sm font-semibold">优先候选</h2><CandidateTable items={cockpit.data?.candidates || []} compact /></section><section><h2 className="mb-2 text-sm font-semibold">持仓效率</h2><PositionTable items={cockpit.data?.positions || []} compact /></section><section><h2 className="mb-2 text-sm font-semibold">最新决策</h2><DecisionStream items={cockpit.data?.decisions || []} compact /></section></div>}
-        {tab === "candidates" && <CandidateTable items={candidates.data?.items || []} />}
+        {tab === "candidates" && <CandidateWorkspace currentItems={candidates.data?.items || []} />}
         {tab === "positions" && <PositionTable items={positions.data?.items || []} />}
         {tab === "review" && <div className="space-y-10"><ShadowAcceptance data={acceptance.data} /><OutcomeDistribution data={distribution.data} /><section><h2 className="mb-2 text-sm font-semibold">事件回放</h2><DecisionStream items={decisions.data?.items || []} /></section></div>}
         {tab === "system" && <SystemPanel data={health.data} />}

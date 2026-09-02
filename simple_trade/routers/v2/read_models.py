@@ -43,6 +43,43 @@ async def get_candidates(
     return await _respond(lambda: service.candidates(limit=limit), "V2候选池读取成功")
 
 
+@router.get("/candidates/history", response_model=APIResponse)
+async def get_candidate_history(
+    trade_date: str | None = Query(default=None),
+    scope: str = Query(default="entered", pattern="^(entered|all)$"),
+    status: str | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=40),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    container=Depends(get_container),
+):
+    service = _service(container)
+    return await _respond(
+        lambda: service.candidate_history(
+            trade_date=trade_date,
+            scope=scope,
+            status=status,
+            search=search,
+            page=page,
+            page_size=page_size,
+        ),
+        "V2今日候选记录读取成功",
+    )
+
+
+@router.get("/candidates/{stock_code}/timeline", response_model=APIResponse)
+async def get_candidate_timeline(
+    stock_code: str,
+    trade_date: str | None = Query(default=None),
+    container=Depends(get_container),
+):
+    service = _service(container)
+    return await _respond(
+        lambda: service.candidate_timeline(stock_code, trade_date=trade_date),
+        "V2候选轨迹读取成功",
+    )
+
+
 @router.get("/candidates/{stock_code}", response_model=APIResponse)
 async def get_candidate(stock_code: str, container=Depends(get_container)):
     service = _service(container)

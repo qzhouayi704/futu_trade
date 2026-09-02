@@ -47,8 +47,12 @@ const reasonLabel: Record<string, string> = {
   RELATIVE_STRENGTH_LOW: "相对强度不足",
 };
 
-function candidateReasonText(value: string): string {
+export function candidateReasonText(value: string): string {
   return reasonLabel[value] || "其他系统判断原因";
+}
+
+export function candidateStatusText(value: string): string {
+  return statusLabel[value] || "其他状态";
 }
 
 const strategyLabel: Record<string, string> = {
@@ -67,6 +71,10 @@ const memoryStateLabel: Record<string, string> = {
   DISTRIBUTING: "资金流出",
 };
 
+export function candidateMemoryStateText(value: string): string {
+  return memoryStateLabel[value] || value;
+}
+
 function FlowCell({ item }: { item: V2Candidate }) {
   const memory = item.capital_memory;
   const windows = [900, 3600].map((seconds) => item.capital_windows.find((window) => window.window_seconds === seconds));
@@ -74,7 +82,7 @@ function FlowCell({ item }: { item: V2Candidate }) {
     <div className="min-w-56 text-xs tabular-nums">
       {memory && (
         <div className="mb-1 flex items-center gap-2">
-          <span className="font-medium">{memoryStateLabel[memory.state] || memory.state}</span>
+          <span className="font-medium">{candidateMemoryStateText(memory.state)}</span>
           <span className="text-muted-foreground">记忆 {memory.score.toFixed(0)}</span>
           <span className={tone(memory.decayed_main_net)}>衰减 {money(memory.decayed_main_net)}</span>
         </div>
@@ -110,7 +118,7 @@ export function CandidateTable({ items, compact = false }: { items: V2Candidate[
             const current = item.quote?.last_price;
             const fromConfirm = current && item.confirmed_price ? (current / item.confirmed_price - 1) * 100 : null;
             const shadowConfirmed = item.status === "CONFIRMED" && item.alert_eligible === false;
-            const displayStatus = shadowConfirmed ? "影子确认" : statusLabel[item.status] || "其他状态";
+            const displayStatus = shadowConfirmed ? "影子确认" : candidateStatusText(item.status);
             const displayTone = shadowConfirmed
               ? statusTone.WATCHING
               : statusTone[item.status] || "bg-muted text-muted-foreground";

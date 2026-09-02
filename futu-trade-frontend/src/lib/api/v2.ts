@@ -47,6 +47,50 @@ export interface V2Candidate {
   }>;
 }
 
+export interface V2CandidateHistoryItem {
+  stock_code: string;
+  stock_name: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  event_count: number;
+  max_stage: string;
+  max_score: number | null;
+  strategy_version_count: number;
+  latest_event_type: string;
+  latest_status: string;
+  latest_reason_code: string;
+  latest_strategy_version: string;
+  quote?: { last_price?: number; prev_close?: number };
+  capital_memory?: {
+    state?: string;
+    day_main_net?: number;
+    decayed_main_net?: number;
+  } | null;
+}
+
+export interface V2CandidateTimelineEvent {
+  event_id: string;
+  event_type: string;
+  stock_code: string;
+  exchange_time: string;
+  old_state: string | null;
+  new_state: string | null;
+  reason_code: string;
+  strategy_version: string;
+  score: number | null;
+  capital_state: string | null;
+  day_main_net: number | null;
+}
+
+export interface V2CandidateHistory {
+  items: V2CandidateHistoryItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  trade_date: string;
+  scope: "entered" | "all";
+}
+
 export interface V2Position {
   stock_code: string;
   stock_name: string;
@@ -210,6 +254,26 @@ async function getData<T>(path: string): Promise<T> {
 export const v2Api = {
   cockpit: () => getData<V2Cockpit>("/v2/cockpit"),
   candidates: () => getData<{ items: V2Candidate[]; count: number }>("/v2/candidates"),
+  candidateHistory: (params: {
+    scope: "entered" | "all";
+    page: number;
+    pageSize?: number;
+    search?: string;
+    status?: string;
+  }) => {
+    const query = new URLSearchParams({
+      scope: params.scope,
+      page: String(params.page),
+      page_size: String(params.pageSize || 50),
+    });
+    if (params.search) query.set("search", params.search);
+    if (params.status) query.set("status", params.status);
+    return getData<V2CandidateHistory>(`/v2/candidates/history?${query}`);
+  },
+  candidateTimeline: (stockCode: string, tradeDate: string) =>
+    getData<{ items: V2CandidateTimelineEvent[]; count: number }>(
+      `/v2/candidates/${encodeURIComponent(stockCode)}/timeline?trade_date=${tradeDate}`,
+    ),
   positions: () => getData<{ items: V2Position[]; count: number }>("/v2/positions"),
   decisions: () => getData<{ items: V2Decision[]; count: number }>("/v2/decisions?limit=200"),
   distribution: () => getData<V2Distribution>("/v2/outcomes/distribution"),

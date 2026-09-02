@@ -6,6 +6,7 @@ import json
 from typing import Protocol
 
 from ...domain.serialization import to_primitive
+from .candidate_history import CandidateHistoryReader
 from .cohorts import build_shadow_acceptance
 from .distribution import histogram, summary
 
@@ -18,6 +19,7 @@ class V2ReadModelService:
     def __init__(self, db: ReadDatabasePort, runtime=None) -> None:
         self._db = db
         self._runtime = runtime
+        self._candidate_history = CandidateHistoryReader(db)
 
     async def cockpit(self) -> dict:
         candidates, positions, decisions, distribution = await asyncio.gather(
@@ -70,6 +72,31 @@ class V2ReadModelService:
         )
         items = [self._candidate_row(row) for row in rows]
         return {"items": items, "count": len(items)}
+
+    async def candidate_history(
+        self,
+        *,
+        trade_date: str | None = None,
+        scope: str = "entered",
+        status: str | None = None,
+        search: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict:
+        return await self._candidate_history.history(
+            trade_date=trade_date, scope=scope, status=status, search=search,
+            page=page, page_size=page_size,
+        )
+
+    async def candidate_timeline(
+        self,
+        stock_code: str,
+        *,
+        trade_date: str | None = None,
+    ) -> dict:
+        return await self._candidate_history.timeline(
+            stock_code, trade_date=trade_date
+        )
 
     async def positions(self) -> dict:
         strategy_version = self._strategy_version()
