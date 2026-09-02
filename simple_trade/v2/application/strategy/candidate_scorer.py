@@ -33,12 +33,12 @@ class CandidateScorer:
         liquidity = snapshot.liquidity_score
         acceptance = snapshot.price_acceptance_score
         total = round(
-            activity * 0.20
+            activity * 0.15
             + liquidity * 0.15
             + flow_score * 0.30
             + acceptance * 0.20
-            + strength_score * 0.10
-            + daily_score * 0.05,
+            + strength_score * 0.05
+            + daily_score * 0.15,
             4,
         )
         quality = worst_quality(

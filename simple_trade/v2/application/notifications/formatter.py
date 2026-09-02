@@ -8,6 +8,20 @@ from ...domain.events import RiskAssessedEvent
 
 
 class NotificationFormatter:
+    REASON_LABELS = {
+        "LOW_POSITION_15M_ACCUMULATION_CONFIRMED": "低位15分钟多次大单吸收确认",
+        "FAST_15M_MULTI_INFLOW_CONFIRMED": "15分钟多次主力流入确认",
+        "STRICT_MOMENTUM_SHADOW_CONFIRMED": "严格热门动量影子确认",
+        "WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED": "弱市60分钟强股资金确认",
+        "EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED": "极弱市60分钟多次流入确认",
+        "HARD_STOP_3_PCT": "亏损达到3%硬止损",
+        "TAKE_PROFIT_5_PCT": "收益达到5%止盈",
+        "REPEATED_OUTFLOW_AND_STRUCTURE_BREAK": "多次大单流出且价格结构破位",
+        "TRAIL_AFTER_SUPPORT_LOST": "浮盈超过3%后回撤1.5%，且20分钟无新承接",
+        "PROFIT_FLOOR_AFTER_SUPPORT_LOST": "浮盈超过3%后回落至0.5%，且20分钟无新承接",
+        "CONFIRMED_CANDIDATE_NET_ADVANTAGE": "新候选相对持仓具备净优势",
+    }
+
     def __init__(self, *, expiry_seconds: int) -> None:
         self._expiry = timedelta(seconds=expiry_seconds)
 
@@ -57,6 +71,12 @@ class NotificationFormatter:
                 f"- 买入参考：{intent.buy_leg.stock_code} "
                 f"{intent.buy_leg.quantity} 股 @ {intent.buy_leg.reference_price:.3f}"
             )
+        if intent.reason_codes:
+            labels = [
+                NotificationFormatter.REASON_LABELS.get(reason, reason)
+                for reason in intent.reason_codes
+            ]
+            lines.append(f"- 信号：{', '.join(labels)}")
         lines.append(f"- 风控：**{source.risk.result.value}**")
         lines.append(f"- 原因：{', '.join(source.risk.reason_codes)}")
         lines.append("- 当前仅为提醒，不会自动下单")

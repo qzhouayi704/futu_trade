@@ -4,7 +4,12 @@ from ...domain.decisions import DecisionEvent, StrategyState
 from ...domain.enums import StrategyStatus
 from ...domain.events import FeatureSnapshotEvent
 from ...domain.serialization import to_primitive
-from .models import CandidateScore, TransitionProposal, UniverseDecision
+from .models import (
+    CandidateScore,
+    StrategyPortfolioResult,
+    TransitionProposal,
+    UniverseDecision,
+)
 
 
 def build_transition(
@@ -13,6 +18,7 @@ def build_transition(
     proposal: TransitionProposal,
     score: CandidateScore,
     universe: UniverseDecision,
+    portfolio: StrategyPortfolioResult,
     *,
     strategy_version: str,
     schema_version: int,
@@ -38,8 +44,10 @@ def build_transition(
         reason_code=proposal.reason_code,
         payload={
             "shadow_only": True,
+            "alert_eligible": proposal.alert_eligible,
             "universe": to_primitive(universe),
             "candidate_score": to_primitive(score),
+            "strategy_portfolio": to_primitive(portfolio),
             "feature_snapshot": to_primitive(source.snapshot),
         },
     )

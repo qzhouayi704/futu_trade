@@ -49,6 +49,7 @@ class TradeIntent:
     intent_type: IntentType
     created_at: datetime
     mode: RuntimeMode
+    reason_codes: tuple[str, ...] = ()
     sell_leg: OrderLeg | None = None
     buy_leg: OrderLeg | None = None
     intent_id: str = field(default_factory=lambda: uuid4().hex)
@@ -57,6 +58,8 @@ class TradeIntent:
         require_aware(self.created_at, "created_at")
         if not self.source_event_id.strip():
             raise ValueError("source_event_id 不能为空")
+        if any(not reason.strip() for reason in self.reason_codes):
+            raise ValueError("reason_codes 不能包含空值")
         if self.intent_type is IntentType.ROTATE:
             if self.sell_leg is None or self.buy_leg is None:
                 raise ValueError("换票意图必须同时包含卖出腿和买入腿")

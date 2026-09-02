@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from simple_trade.v2.application.strategy.candidate_scorer import CandidateScorer
 from simple_trade.v2.application.strategy.models import LegacySignalContext, UniverseDecision
+from simple_trade.v2.application.strategy.portfolio import StrategyPortfolio
 from simple_trade.v2.application.strategy.state_machine import CandidateStateMachine
 from simple_trade.v2.application.strategy.universe import UniversePolicy
 from simple_trade.v2.domain.decisions import StrategyState
@@ -67,6 +68,10 @@ def snapshot(
     price: float = 101,
     accepted: bool = True,
     rank: float = 0.95,
+    relative_strength: float = 3.0,
+    sector_breadth: float = 0.8,
+    atr_percent: float = 3.0,
+    distance_to_ma20: float = 1.0,
 ) -> FeatureSnapshot:
     quote = QuoteSnapshot(
         stock_code="HK.00100",
@@ -102,13 +107,15 @@ def snapshot(
         tick_windows=windows,
         market_context=MarketContext(
             as_of=as_of, market_breadth=0.6 if regime is MarketRegime.NORMAL else 0.45,
-            market_sample_size=30, sector_code="AI", sector_breadth=0.8,
-            sector_sample_size=8, relative_strength=3, quality=DataQuality.GOOD,
+            market_sample_size=30, sector_code="AI", sector_breadth=sector_breadth,
+            sector_sample_size=8, relative_strength=relative_strength,
+            quality=DataQuality.GOOD,
             turnover_rank_percentile=rank, market_regime=regime,
         ),
         price_position=PricePosition(
-            as_of=as_of, daily_percentile=0.35, atr_percent=3,
-            drawdown_from_high=-5, distance_to_ma20=1, structure="MID",
+            as_of=as_of, daily_percentile=0.35, atr_percent=atr_percent,
+            drawdown_from_high=-5, distance_to_ma20=distance_to_ma20,
+            structure="MID",
             quality=DataQuality.GOOD,
         ),
         activity_score=80, liquidity_score=80, price_acceptance_score=80,
@@ -170,6 +177,59 @@ class CandidateStrategyTests(unittest.TestCase):
         self.assertLessEqual(score.total, 100)
         self.assertFalse(hasattr(score, "event_type"))
 
+    def test_daily_position_has_meaningful_ranking_weight(self) -> None:
+        base = snapshot(windows=(window(3600, buys=3, buy_amount=1_500_000, span=900),))
+        low = replace(
+            base,
+            price_position=replace(base.price_position, daily_percentile=0.20),
+        )
+        high = replace(
+            base,
+            price_position=replace(base.price_position, daily_percentile=0.90),
+        )
+
+        low_score = CandidateScorer().score(low)
+        high_score = CandidateScorer().score(high)
+
+        self.assertGreaterEqual(low_score.total - high_score.total, 9.0)
+
+    def test_strategy_portfolio_keeps_consensus_as_diagnostic_without_bonus(self) -> None:
+        fast = window(900, buys=3, buy_amount=1_500_000, span=600)
+        item = snapshot(as_of=NOW + timedelta(minutes=10), windows=(fast,))
+        item = replace(
+            item,
+            price_position=replace(item.price_position, daily_percentile=0.20),
+        )
+        base = CandidateScorer().score(item)
+
+        portfolio = StrategyPortfolio().evaluate(item, ELIGIBLE, base)
+
+        self.assertIn("capital_absorption", portfolio.strategy_sources)
+        self.assertIn("momentum_continuation", portfolio.strategy_sources)
+        self.assertEqual(portfolio.consensus_count, 2)
+        self.assertNotIn(
+            "relative_strength",
+            {item.strategy_id for item in portfolio.nominations},
+        )
+        self.assertEqual(
+            portfolio.ranking_score,
+            max(base.total, *(item.score for item in portfolio.nominations if item.eligible)),
+        )
+
+    def test_absorption_nomination_respects_breadth_and_entry_cutoff(self) -> None:
+        fast = window(900, buys=3, buy_amount=1_500_000, span=600)
+        base = snapshot(as_of=NOW + timedelta(minutes=10), windows=(fast,))
+        weak_breadth = replace(
+            base,
+            market_context=replace(base.market_context, market_breadth=0.39),
+        )
+        late = replace(base, computed_at=NOW.replace(hour=11, minute=31))
+
+        for item in (weak_breadth, late):
+            score = CandidateScorer().score(item)
+            result = StrategyPortfolio().evaluate(item, ELIGIBLE, score)
+            self.assertNotIn("capital_absorption", result.strategy_sources)
+
     def test_idle_enters_setup_but_single_inflow_only_enters_watching(self) -> None:
         setup = self.machine.evaluate(snapshot(), None, ELIGIBLE)
         self.assertEqual(setup.new_status, StrategyStatus.SETUP)
@@ -181,24 +241,32 @@ class CandidateStrategyTests(unittest.TestCase):
         self.assertEqual(watching.new_status, StrategyStatus.WATCHING)
         self.assertEqual(watching.event_type, EventType.CANDIDATE_UPDATED)
 
-    def test_fast_confirmation_requires_multiple_spaced_inflows_and_acceptance(self) -> None:
+    def test_strict_momentum_requires_three_spaced_inflows_and_context(self) -> None:
         two = window(900, buys=2, buy_amount=1_200_000, span=301)
-        result = self.machine.evaluate(
+        self.assertIsNone(self.machine.evaluate(
             snapshot(as_of=NOW + timedelta(seconds=301), windows=(two,)),
+            state(StrategyStatus.WATCHING, metadata={"watch_price": 100}),
+            ELIGIBLE,
+        ))
+
+        strict = window(900, buys=3, buy_amount=1_200_000, span=600)
+        result = self.machine.evaluate(
+            snapshot(as_of=NOW + timedelta(seconds=600), windows=(strict,)),
             state(StrategyStatus.WATCHING, metadata={"watch_price": 100}),
             ELIGIBLE,
         )
         self.assertEqual(result.new_status, StrategyStatus.CONFIRMED)
-        self.assertEqual(result.reason_code, "FAST_15M_MULTI_INFLOW_CONFIRMED")
+        self.assertEqual(result.reason_code, "STRICT_MOMENTUM_SHADOW_CONFIRMED")
+        self.assertFalse(result.alert_eligible)
 
-        compressed = window(900, buys=2, buy_amount=1_200_000, span=10)
+        compressed = window(900, buys=3, buy_amount=1_200_000, span=10)
         self.assertIsNone(self.machine.evaluate(
             snapshot(as_of=NOW + timedelta(seconds=10), windows=(compressed,)),
             state(StrategyStatus.WATCHING, metadata={"watch_price": 100}), ELIGIBLE,
         ))
 
         degraded = replace(
-            snapshot(as_of=NOW + timedelta(seconds=301), windows=(two,)),
+            snapshot(as_of=NOW + timedelta(seconds=600), windows=(strict,)),
             quality=DataQuality.DEGRADED,
         )
         self.assertIsNone(self.machine.evaluate(
@@ -206,6 +274,46 @@ class CandidateStrategyTests(unittest.TestCase):
             state(StrategyStatus.WATCHING, metadata={"watch_price": 100}),
             ELIGIBLE,
         ))
+
+        for weak_context in (
+            snapshot(
+                as_of=NOW + timedelta(seconds=600), windows=(strict,),
+                distance_to_ma20=4.0,
+            ),
+            snapshot(
+                as_of=NOW + timedelta(seconds=600), windows=(strict,),
+                relative_strength=1.0,
+            ),
+            snapshot(
+                as_of=NOW + timedelta(seconds=600), windows=(strict,), rank=0.65,
+            ),
+        ):
+            self.assertIsNone(self.machine.evaluate(
+                weak_context,
+                state(StrategyStatus.WATCHING, metadata={"watch_price": 100}),
+                ELIGIBLE,
+            ))
+
+    def test_strict_momentum_can_bypass_weak_sector_breadth_only(self) -> None:
+        strict = window(900, buys=3, buy_amount=1_200_000, span=600)
+        item = snapshot(
+            as_of=NOW + timedelta(seconds=600),
+            windows=(strict,),
+            sector_breadth=0.30,
+        )
+        soft = UniverseDecision(
+            eligible=False,
+            reason_codes=("SECTOR_BREADTH_WEAK",),
+        )
+
+        result = self.machine.evaluate(
+            item,
+            state(StrategyStatus.WATCHING, metadata={"watch_price": 100}),
+            soft,
+        )
+
+        self.assertEqual(result.reason_code, "STRICT_MOMENTUM_SHADOW_CONFIRMED")
+        self.assertFalse(result.alert_eligible)
 
     def test_weak_market_allows_sixty_minute_slow_confirmation(self) -> None:
         fast = window(900, buys=1, buy_amount=500_000)
@@ -267,15 +375,121 @@ class CandidateStrategyTests(unittest.TestCase):
             legacy_signal(observed_at=NOW + timedelta(minutes=4), position="high"),
         ))
 
+    def test_low_position_repeated_inflow_bypasses_only_soft_universe_gates(self) -> None:
+        slow = window(
+            3600,
+            buys=4,
+            sells=1,
+            buy_amount=1_500_000,
+            sell_amount=300_000,
+            span=900,
+        )
+        item = snapshot(as_of=NOW + timedelta(minutes=15), windows=(slow,))
+        item = replace(
+            item,
+            price_position=replace(item.price_position, daily_percentile=0.20),
+        )
+
+        watching = self.machine.evaluate(item, None, SOFT_INELIGIBLE)
+
+        self.assertEqual(watching.new_status, StrategyStatus.WATCHING)
+        self.assertEqual(watching.reason_code, "LOW_POSITION_ACCUMULATION_WATCH")
+        self.assertEqual(watching.metadata["watch_kind"], "low_position_accumulation")
+
+        incomplete_context = UniverseDecision(
+            eligible=False,
+            reason_codes=("MARKET_CONTEXT_INCOMPLETE",),
+        )
+        degraded = replace(
+            item,
+            market_context=replace(
+                item.market_context,
+                quality=DataQuality.DEGRADED,
+                sector_code=None,
+                sector_breadth=None,
+                sector_sample_size=0,
+                relative_strength=None,
+            ),
+            quality=DataQuality.DEGRADED,
+        )
+        self.assertEqual(
+            self.machine.evaluate(degraded, None, incomplete_context).new_status,
+            StrategyStatus.WATCHING,
+        )
+
+        invalid_context = replace(
+            degraded,
+            market_context=replace(
+                degraded.market_context,
+                quality=DataQuality.INVALID,
+                market_sample_size=0,
+                turnover_rank_percentile=None,
+            ),
+        )
+        self.assertIsNone(
+            self.machine.evaluate(invalid_context, None, incomplete_context)
+        )
+
+    def test_low_position_watch_requires_low_position_and_no_material_offset(self) -> None:
+        accumulation = window(3600, buys=3, buy_amount=1_200_000, span=900)
+        high = snapshot(as_of=NOW + timedelta(minutes=15), windows=(accumulation,))
+        high = replace(
+            high,
+            price_position=replace(high.price_position, daily_percentile=0.80),
+        )
+        self.assertIsNone(self.machine.evaluate(high, None, SOFT_INELIGIBLE))
+
+        offset = window(
+            3600,
+            buys=4,
+            sells=3,
+            buy_amount=1_200_000,
+            sell_amount=1_100_000,
+            span=900,
+        )
+        low = snapshot(as_of=NOW + timedelta(minutes=15), windows=(offset,))
+        low = replace(
+            low,
+            price_position=replace(low.price_position, daily_percentile=0.20),
+        )
+        self.assertIsNone(self.machine.evaluate(low, None, SOFT_INELIGIBLE))
+
+    def test_low_position_watch_can_confirm_through_soft_universe_gates(self) -> None:
+        slow = window(3600, buys=4, buy_amount=1_800_000, span=900)
+        item = snapshot(
+            as_of=NOW + timedelta(minutes=15),
+            regime=MarketRegime.WEAK,
+            windows=(slow,),
+        )
+        item = replace(
+            item,
+            price_position=replace(item.price_position, daily_percentile=0.20),
+        )
+        watching = state(
+            StrategyStatus.WATCHING,
+            metadata={
+                "watch_price": 100,
+                "watch_kind": "low_position_accumulation",
+            },
+        )
+
+        confirmed = self.machine.evaluate(item, watching, SOFT_INELIGIBLE)
+        self.assertEqual(confirmed.new_status, StrategyStatus.CONFIRMED)
+        self.assertTrue(confirmed.alert_eligible)
+        self.assertEqual(
+            confirmed.reason_code,
+            "LOW_POSITION_15M_ACCUMULATION_CONFIRMED",
+        )
+
     def test_soft_universe_gate_has_grace_and_fast_signal_reentry(self) -> None:
         setup_state = state(StrategyStatus.SETUP, updated_at=NOW)
         self.assertIsNone(self.machine.evaluate(
-            snapshot(as_of=NOW + timedelta(minutes=4)),
+            snapshot(as_of=NOW + timedelta(minutes=4), rank=0.60),
             setup_state,
             SOFT_INELIGIBLE,
         ))
         invalidated = self.machine.evaluate(
-            snapshot(as_of=NOW + timedelta(minutes=6)),
+            snapshot(as_of=NOW + timedelta(minutes=6), rank=0.60),
             setup_state,
             SOFT_INELIGIBLE,
         )

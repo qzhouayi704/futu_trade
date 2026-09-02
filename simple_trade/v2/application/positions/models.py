@@ -1,9 +1,11 @@
 """Typed outputs and observability for the Phase 5 position engine."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Mapping
 
 from ...domain.enums import DecisionAction, EventType, PositionStatus
 from ...domain.positions import PositionDecision, PositionState, RotationProposal
+from ...domain.serialization import JsonValue, freeze_json
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -13,12 +15,14 @@ class PositionEvaluation:
     target_status: PositionStatus
     persist_immediately: bool
     rotation: RotationProposal | None = None
+    metadata_updates: Mapping[str, JsonValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.decision.status is not self.target_status:
             raise ValueError("decision.status must equal target_status")
         if self.decision.action is DecisionAction.ROTATE and self.rotation is None:
             raise ValueError("ROTATE evaluation must include rotation proposal")
+        object.__setattr__(self, "metadata_updates", freeze_json(self.metadata_updates))
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,224 @@
+"""Independent strategy nominations with one conservative ranking portfolio."""
+
+from datetime import time
+
+from ...domain.enums import DataQuality
+from ...domain.features import FeatureSnapshot
+from ...domain.market import TickAggregate
+from ..features.quality import clamp
+from .models import (
+    CandidateScore,
+    StrategyNomination,
+    StrategyPortfolioResult,
+    UniverseDecision,
+)
+
+
+class CandidateSignalRules:
+    LOW_POSITION_MAX_PERCENTILE = 0.50
+    MIN_MARKET_BREADTH = 0.40
+    ENTRY_CUTOFF = time(11, 30)
+    MOMENTUM_MIN_RELATIVE_STRENGTH = 1.5
+    MOMENTUM_MIN_ACTIVITY_PERCENTILE = 0.70
+    MOMENTUM_MAX_EXTENSION_ATR = 1.0
+    MOMENTUM_SOFT_UNIVERSE_REASONS = {
+        "TURNOVER_RANK_NOT_HOT",
+        "SECTOR_BREADTH_WEAK",
+        "RELATIVE_STRENGTH_LOW",
+    }
+
+    @staticmethod
+    def window(snapshot: FeatureSnapshot, seconds: int) -> TickAggregate | None:
+        return next(
+            (item for item in snapshot.tick_windows if item.window_seconds == seconds),
+            None,
+        )
+
+    @staticmethod
+    def repeated_absorption(window: TickAggregate | None) -> bool:
+        if window is None:
+            return False
+        threshold = window.large_order_threshold or 100_000.0
+        scale = window.flow_scale or threshold
+        return bool(
+            window.independent_buy_events >= 3
+            and window.independent_buy_span_seconds >= 600
+            and window.main_net >= max(3.0 * threshold, scale)
+            and (window.buy_sell_ratio or 0.0) >= 0.65
+            and not CandidateSignalRules.outflow_offsets_inflow(window)
+        )
+
+    @staticmethod
+    def fast_momentum(window: TickAggregate | None) -> bool:
+        if window is None:
+            return False
+        threshold = window.large_order_threshold or 100_000.0
+        scale = window.flow_scale or threshold
+        return bool(
+            window.independent_buy_events >= 3
+            and window.independent_buy_span_seconds >= 600
+            and window.main_net >= max(3.0 * threshold, 1.25 * scale)
+            and (window.buy_sell_ratio or 0.0) >= 0.80
+            and not CandidateSignalRules.outflow_offsets_inflow(window)
+        )
+
+    @classmethod
+    def strict_momentum_context(cls, snapshot: FeatureSnapshot) -> bool:
+        context = snapshot.market_context
+        position = snapshot.price_position
+        activity = snapshot.activity
+        liquidity = snapshot.liquidity
+        acceptance = snapshot.price_acceptance
+        extension_atr = (
+            position.distance_to_ma20 / position.atr_percent
+            if position.atr_percent > 0
+            else None
+        )
+        return bool(
+            snapshot.quality is DataQuality.GOOD
+            and context.quality is DataQuality.GOOD
+            and context.market_sample_size >= 20
+            and context.turnover_rank_percentile is not None
+            and context.turnover_rank_percentile >= cls.MOMENTUM_MIN_ACTIVITY_PERCENTILE
+            and context.relative_strength is not None
+            and context.relative_strength >= cls.MOMENTUM_MIN_RELATIVE_STRENGTH
+            and position.quality is not DataQuality.INVALID
+            and extension_atr is not None
+            and extension_atr <= cls.MOMENTUM_MAX_EXTENSION_ATR
+            and activity is not None
+            and activity.is_active
+            and liquidity is not None
+            and liquidity.score >= 30
+            and acceptance is not None
+            and acceptance.accepted
+            and (
+                acceptance.distance_to_vwap_pct is None
+                or acceptance.distance_to_vwap_pct >= -0.5
+            )
+        )
+
+    @staticmethod
+    def outflow_offsets_inflow(window: TickAggregate) -> bool:
+        threshold = window.large_order_threshold or 100_000.0
+        return bool(
+            window.main_net <= -threshold
+            or (
+                window.independent_sell_events > 0
+                and window.sell_amount > 0
+                and window.sell_amount >= window.buy_amount * 0.80
+                and (window.buy_sell_ratio or 0.0) < 0.55
+            )
+        )
+
+    @classmethod
+    def low_position_context(cls, snapshot: FeatureSnapshot) -> bool:
+        acceptance = snapshot.price_acceptance
+        return bool(
+            snapshot.quality is not DataQuality.INVALID
+            and snapshot.price_position.quality is not DataQuality.INVALID
+            and snapshot.price_position.daily_percentile <= cls.LOW_POSITION_MAX_PERCENTILE
+            and snapshot.market_context.quality is not DataQuality.INVALID
+            and snapshot.market_context.market_sample_size >= 20
+            and snapshot.market_context.market_breadth >= cls.MIN_MARKET_BREADTH
+            and snapshot.activity is not None
+            and snapshot.activity.is_active
+            and snapshot.liquidity is not None
+            and snapshot.liquidity.score >= 30
+            and acceptance is not None
+            and (acceptance.distance_to_vwap_pct is None or acceptance.distance_to_vwap_pct >= -1.0)
+            and (acceptance.drawdown_from_peak_pct is None or acceptance.drawdown_from_peak_pct >= -1.5)
+        )
+
+    @classmethod
+    def before_entry_cutoff(cls, snapshot: FeatureSnapshot) -> bool:
+        return snapshot.computed_at.timetz().replace(tzinfo=None) <= cls.ENTRY_CUTOFF
+
+
+class StrategyPortfolio:
+    """Runs independent selectors; it cannot create a state transition."""
+
+    def evaluate(
+        self,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+        base_score: CandidateScore,
+    ) -> StrategyPortfolioResult:
+        nominations = (
+            self._capital_absorption(snapshot, base_score),
+            self._momentum(snapshot, universe, base_score),
+        )
+        eligible = tuple(item for item in nominations if item.eligible)
+        sources = tuple(item.strategy_id for item in eligible)
+        best = max((item.score for item in eligible), default=base_score.total)
+        return StrategyPortfolioResult(
+            nominations=nominations,
+            strategy_sources=sources,
+            consensus_count=len(sources),
+            ranking_score=round(min(100.0, max(base_score.total, best)), 4),
+        )
+
+    @staticmethod
+    def _capital_absorption(
+        snapshot: FeatureSnapshot,
+        base: CandidateScore,
+    ) -> StrategyNomination:
+        fast = CandidateSignalRules.window(snapshot, 900)
+        context_ok = CandidateSignalRules.low_position_context(snapshot)
+        flow_ok = CandidateSignalRules.repeated_absorption(fast)
+        cutoff_ok = CandidateSignalRules.before_entry_cutoff(snapshot)
+        eligible = context_ok and flow_ok and cutoff_ok
+        score = clamp(
+            base.capital_flow * 0.45
+            + base.price_acceptance * 0.25
+            + base.daily_position * 0.20
+            + snapshot.activity_score * 0.10
+        )
+        reasons = []
+        if not context_ok:
+            reasons.append("ABSORPTION_CONTEXT_NOT_READY")
+        if not flow_ok:
+            reasons.append("ABSORPTION_SEQUENCE_NOT_READY")
+        if not cutoff_ok:
+            reasons.append("ABSORPTION_ENTRY_WINDOW_CLOSED")
+        return StrategyNomination(
+            strategy_id="capital_absorption",
+            eligible=eligible,
+            stage="CONFIRMED" if eligible else "WATCH" if context_ok else "REJECTED",
+            score=round(score, 4),
+            reason_codes=tuple(reasons) or ("LOW_POSITION_REPEATED_ABSORPTION",),
+        )
+
+    @staticmethod
+    def _momentum(
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+        base: CandidateScore,
+    ) -> StrategyNomination:
+        fast = CandidateSignalRules.window(snapshot, 900)
+        hard_reasons = set(universe.reason_codes) - (
+            CandidateSignalRules.MOMENTUM_SOFT_UNIVERSE_REASONS
+        )
+        context_ok = not hard_reasons and CandidateSignalRules.strict_momentum_context(
+            snapshot
+        )
+        eligible = bool(
+            context_ok
+            and CandidateSignalRules.fast_momentum(fast)
+        )
+        score = clamp(
+            base.capital_flow * 0.40
+            + base.price_acceptance * 0.30
+            + base.activity * 0.15
+            + base.relative_strength * 0.15
+        )
+        return StrategyNomination(
+            strategy_id="momentum_continuation",
+            eligible=eligible,
+            stage="CONFIRMED" if eligible else "WATCH" if context_ok else "REJECTED",
+            score=round(score, 4),
+            reason_codes=(
+                ("STRICT_MOMENTUM_SHADOW_READY",)
+                if eligible
+                else tuple(hard_reasons) or ("STRICT_MOMENTUM_CONTEXT_NOT_READY",)
+            ),
+        )

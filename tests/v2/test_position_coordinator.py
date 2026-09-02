@@ -169,7 +169,10 @@ class PositionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             (coordinator.snapshot(), coordinator.latest("HK.00100")),
         )
         exit_event = stores.events[-1]
-        self.assertEqual(exit_event.reason_code, "STRONG_OUTFLOW_AND_PRICE_BREAK")
+        self.assertEqual(
+            exit_event.reason_code,
+            "REPEATED_OUTFLOW_AND_STRUCTURE_BREAK",
+        )
         self.assertEqual(exit_event.payload["position"]["current_price"], 99)
         self.assertEqual(exit_event.payload["mark_source"], "feature_snapshot")
         self.assertEqual(coordinator.snapshot().exits, 1)

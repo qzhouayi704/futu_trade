@@ -18,6 +18,7 @@ from .candidate_scorer import CandidateScorer
 from .decision_builder import build_transition
 from .models import CandidateCoordinatorStats
 from .legacy_observations import LegacyObservationBook
+from .portfolio import StrategyPortfolio
 from .state_machine import CandidateStateMachine
 from .universe import UniversePolicy
 
@@ -66,6 +67,7 @@ class CandidateCoordinator:
         self._universe = UniversePolicy()
         self._scorer = CandidateScorer()
         self._machine = CandidateStateMachine()
+        self._portfolio = StrategyPortfolio()
         self._observations = LegacyObservationBook()
         self._observer = observer
         self._bus: EventBus | None = None
@@ -195,6 +197,7 @@ class CandidateCoordinator:
         snapshot = source.snapshot
         universe = self._universe.evaluate(snapshot)
         score = self._scorer.score(snapshot)
+        portfolio = self._portfolio.evaluate(snapshot, universe, score)
         state = await self._state_for(snapshot.stock_code)
         legacy = self._observations.latest(snapshot.stock_code, snapshot.computed_at)
         proposal = self._machine.evaluate(snapshot, state, universe, legacy)
@@ -207,6 +210,7 @@ class CandidateCoordinator:
                 proposal,
                 score,
                 universe,
+                portfolio,
                 strategy_version=self._strategy_version,
                 schema_version=self._schema_version,
             )
@@ -231,6 +235,7 @@ class CandidateCoordinator:
                         retry,
                         score,
                         universe,
+                        portfolio,
                         strategy_version=self._strategy_version,
                         schema_version=self._schema_version,
                     )
@@ -250,13 +255,13 @@ class CandidateCoordinator:
                     self._bus.publish_nowait(event)
 
         if proposal is None and status is StrategyStatus.IDLE:
-            await self._persist_rejection(source, universe, score)
+            await self._persist_rejection(source, universe, score, portfolio)
 
         candidate = TradeCandidate(
             stock_code=snapshot.stock_code,
             as_of=snapshot.computed_at,
             status=self._candidate_status(status),
-            score=score.total,
+            score=portfolio.ranking_score,
             quality=score.quality,
             reason_codes=(
                 (proposal.reason_code,)
@@ -269,11 +274,20 @@ class CandidateCoordinator:
                 "data quality becomes invalid",
             ),
             confirmation_price=(state.confirmed_price if state is not None else None),
+            strategy_sources=portfolio.strategy_sources,
+            consensus_count=portfolio.consensus_count,
+            alert_eligible=(
+                proposal.alert_eligible
+                if proposal is not None
+                else bool(state.metadata.get("alert_eligible", True))
+                if state is not None
+                else True
+            ),
         )
         with self._lock:
             self._latest[snapshot.stock_code] = candidate
 
-    async def _persist_rejection(self, source, universe, score) -> None:
+    async def _persist_rejection(self, source, universe, score, portfolio) -> None:
         reasons = list(universe.reason_codes)
         if source.snapshot.price_position.quality.value == "INVALID":
             reasons.append("DAILY_POSITION_INVALID")
@@ -304,6 +318,7 @@ class CandidateCoordinator:
                 "reason_codes": fingerprint,
                 "universe": to_primitive(universe),
                 "candidate_score": to_primitive(score),
+                "strategy_portfolio": to_primitive(portfolio),
                 "feature_snapshot": to_primitive(source.snapshot),
             },
         )

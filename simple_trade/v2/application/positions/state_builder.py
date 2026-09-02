@@ -82,6 +82,7 @@ def build_position_transition(
             "efficiency": to_primitive(efficiency),
             "decision": to_primitive(evaluation.decision),
             "rotation": to_primitive(evaluation.rotation) if evaluation.rotation else None,
+            "exit_context": to_primitive(evaluation.metadata_updates),
             "mark_source": (
                 "feature_snapshot"
                 if isinstance(source, FeatureSnapshotEvent)
@@ -213,11 +214,12 @@ def _state_values(
     )
     profit_ready_since = (
         (None if basis_changed else prior.profit_ready_since) or position.as_of
-        if efficiency.mfe_pct >= 1.5
+        if efficiency.mfe_pct >= 3.0
         else None
     )
     metadata = {
         **dict(prior.metadata),
+        **dict(evaluation.metadata_updates),
         "last_persisted_at": last_persisted_at,
         "broker_quantity": position.quantity,
         "broker_sellable_quantity": position.sellable_quantity,

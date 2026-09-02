@@ -5,6 +5,7 @@ from ...domain.enums import DataQuality, EventType, MarketRegime, StrategyStatus
 from ...domain.features import FeatureSnapshot
 from ...domain.market import TickAggregate
 from .models import LegacySignalContext, TransitionProposal, UniverseDecision
+from .portfolio import CandidateSignalRules
 
 
 class CandidateStateMachine:
@@ -15,10 +16,14 @@ class CandidateStateMachine:
     REENTRY_COOLDOWN_SECONDS = 3600
     SOFT_REENTRY_SECONDS = 300
     UNIVERSE_GRACE_SECONDS = 300
+    LOW_POSITION_MAX_PERCENTILE = CandidateSignalRules.LOW_POSITION_MAX_PERCENTILE
     SOFT_UNIVERSE_REASONS = {
         "TURNOVER_RANK_NOT_HOT",
         "SECTOR_BREADTH_WEAK",
         "RELATIVE_STRENGTH_LOW",
+    }
+    OBSERVATION_BYPASS_REASONS = SOFT_UNIVERSE_REASONS | {
+        "MARKET_CONTEXT_INCOMPLETE",
     }
 
     def evaluate(
@@ -30,10 +35,19 @@ class CandidateStateMachine:
     ) -> TransitionProposal | None:
         status = state.status if state is not None else StrategyStatus.IDLE
         if status is StrategyStatus.IDLE:
-            return self._enter_setup(snapshot, universe) or self._enter_legacy_watch(
-                snapshot, legacy, universe,
-                event_type=EventType.CANDIDATE_ENTERED,
-                reason="LEGACY_RALLY_STRONG_WATCH",
+            return (
+                self._enter_low_position_watch(
+                    snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
+                )
+                or self._enter_strict_momentum_watch(
+                    snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
+                )
+                or self._enter_setup(snapshot, universe)
+                or self._enter_legacy_watch(
+                    snapshot, legacy, universe,
+                    event_type=EventType.CANDIDATE_ENTERED,
+                    reason="LEGACY_RALLY_STRONG_WATCH",
+                )
             )
         if status is StrategyStatus.INVALIDATED:
             return self._reenter_setup(snapshot, state, universe, legacy)
@@ -44,6 +58,11 @@ class CandidateStateMachine:
                     universe,
                     reason="DATA_QUALITY_INVALID",
                 )
+            low_position_watch = self._enter_low_position_watch(
+                snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
+            )
+            if low_position_watch is not None:
+                return low_position_watch
             legacy_watch = self._enter_legacy_watch(
                 snapshot, legacy, universe,
                 event_type=EventType.CANDIDATE_UPDATED,
@@ -51,7 +70,9 @@ class CandidateStateMachine:
             )
             if legacy_watch is not None:
                 return legacy_watch
-            if not universe.eligible:
+            if not universe.eligible and not self._strict_momentum_context(
+                snapshot, universe
+            ):
                 if self._state_age(snapshot, state) <= self.UNIVERSE_GRACE_SECONDS:
                     return None
                 return self._invalidate(EventType.CANDIDATE_INVALIDATED, universe)
@@ -82,21 +103,49 @@ class CandidateStateMachine:
         fast = self._window(snapshot, self.FAST_WINDOW_SECONDS)
         slow = self._window(snapshot, self.SLOW_WINDOW_SECONDS)
         regime = snapshot.market_context.market_regime
-        if regime is not MarketRegime.EXTREME and self._fast_confirmed(fast):
-            return self._confirm(snapshot, state, "FAST_15M_MULTI_INFLOW_CONFIRMED")
-        if regime is MarketRegime.WEAK and self._slow_confirmed(slow, extreme=False):
+        low_position_watch = (
+            state.metadata.get("watch_kind") == "low_position_accumulation"
+        )
+        if (
+            low_position_watch
+            and self._low_position_market_confirmed(snapshot, universe)
+            and CandidateSignalRules.before_entry_cutoff(snapshot)
+            and self._low_position_accumulation(fast or slow)
+        ):
+            return self._confirm(
+                snapshot, state, "LOW_POSITION_15M_ACCUMULATION_CONFIRMED"
+            )
+        if (
+            self._strict_momentum_context(snapshot, universe)
+            and self._fast_confirmed(fast)
+        ):
+            return self._confirm(
+                snapshot,
+                state,
+                "STRICT_MOMENTUM_SHADOW_CONFIRMED",
+                alert_eligible=False,
+            )
+        if (
+            universe.eligible
+            and regime is MarketRegime.WEAK
+            and self._slow_confirmed(slow, extreme=False)
+        ):
             return self._confirm(
                 snapshot, state, "WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED"
             )
-        if regime is MarketRegime.EXTREME and self._slow_confirmed(slow, extreme=True):
+        if (
+            universe.eligible
+            and regime is MarketRegime.EXTREME
+            and self._slow_confirmed(slow, extreme=True)
+        ):
             return self._confirm(
                 snapshot, state, "EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED"
             )
 
         watch_seconds = (
-            self.FAST_WINDOW_SECONDS
-            if regime is MarketRegime.NORMAL
-            else self.SLOW_WINDOW_SECONDS
+            self.SLOW_WINDOW_SECONDS
+            if low_position_watch or regime is not MarketRegime.NORMAL
+            else self.FAST_WINDOW_SECONDS
         )
         if (snapshot.computed_at - state.updated_at).total_seconds() > watch_seconds:
             return TransitionProposal(
@@ -138,6 +187,16 @@ class CandidateStateMachine:
             elapsed >= self.SOFT_REENTRY_SECONDS
             and invalidation_reason in self.SOFT_UNIVERSE_REASONS
         ):
+            low_position_watch = self._enter_low_position_watch(
+                snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
+            )
+            if low_position_watch is not None:
+                return low_position_watch
+            momentum_watch = self._enter_strict_momentum_watch(
+                snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
+            )
+            if momentum_watch is not None:
+                return momentum_watch
             watch = self._enter_legacy_watch(
                 snapshot, legacy, universe,
                 event_type=EventType.CANDIDATE_ENTERED,
@@ -171,7 +230,11 @@ class CandidateStateMachine:
                 metadata={"cooldown_started_at": snapshot.computed_at},
             )
         fast = self._window(snapshot, self.FAST_WINDOW_SECONDS)
-        if fast is not None and self._outflow_offsets_inflow(fast):
+        slow = self._window(snapshot, self.SLOW_WINDOW_SECONDS)
+        if any(
+            window is not None and self._outflow_offsets_inflow(window)
+            for window in (fast, slow)
+        ):
             return TransitionProposal(
                 new_status=StrategyStatus.INVALIDATED,
                 event_type=EventType.BUY_INVALIDATED,
@@ -180,6 +243,11 @@ class CandidateStateMachine:
             )
         acceptance = snapshot.price_acceptance
         watch_price = self._number(state.metadata.get("watch_price")) if state else None
+        low_position_watch = bool(
+            state and state.metadata.get("watch_kind") == "low_position_accumulation"
+        )
+        vwap_floor = -1.0 if low_position_watch else -0.3
+        drawdown_floor = -1.5 if low_position_watch else -1.0
         watch_return = (
             (snapshot.quote.last_price / watch_price - 1.0) * 100.0
             if watch_price and snapshot.quote.last_price > 0
@@ -190,8 +258,14 @@ class CandidateStateMachine:
             or (
                 acceptance is not None
                 and (
-                    (acceptance.distance_to_vwap_pct is not None and acceptance.distance_to_vwap_pct < -0.3)
-                    or (acceptance.drawdown_from_peak_pct is not None and acceptance.drawdown_from_peak_pct < -1.0)
+                    (
+                        acceptance.distance_to_vwap_pct is not None
+                        and acceptance.distance_to_vwap_pct < vwap_floor
+                    )
+                    or (
+                        acceptance.drawdown_from_peak_pct is not None
+                        and acceptance.drawdown_from_peak_pct < drawdown_floor
+                    )
                 )
             )
         ):
@@ -206,6 +280,15 @@ class CandidateStateMachine:
             and state is not None
             and state.status is StrategyStatus.WATCHING
             and self._state_age(snapshot, state) > self.UNIVERSE_GRACE_SECONDS
+            and not self._strict_momentum_context(snapshot, universe)
+            and not (
+                low_position_watch
+                and bool(universe.reason_codes)
+                and set(universe.reason_codes).issubset(
+                    self.OBSERVATION_BYPASS_REASONS
+                )
+                and self._usable_global_context(snapshot)
+            )
         ):
             return TransitionProposal(
                 new_status=StrategyStatus.INVALIDATED,
@@ -214,6 +297,102 @@ class CandidateStateMachine:
                 metadata={"cooldown_started_at": snapshot.computed_at},
             )
         return None
+
+    @classmethod
+    def _enter_low_position_watch(
+        cls,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+        *,
+        event_type: EventType,
+    ) -> TransitionProposal | None:
+        hard_reasons = set(universe.reason_codes) - cls.OBSERVATION_BYPASS_REASONS
+        position = snapshot.price_position
+        acceptance = snapshot.price_acceptance
+        activity = snapshot.activity
+        liquidity = snapshot.liquidity
+        window = cls._window(snapshot, cls.FAST_WINDOW_SECONDS)
+        if window is None:
+            window = cls._window(snapshot, cls.SLOW_WINDOW_SECONDS)
+        if (
+            hard_reasons
+            or snapshot.quality is DataQuality.INVALID
+            or not cls._usable_global_context(snapshot)
+            or position.quality is DataQuality.INVALID
+            or position.daily_percentile > cls.LOW_POSITION_MAX_PERCENTILE
+            or snapshot.market_context.market_breadth < CandidateSignalRules.MIN_MARKET_BREADTH
+            or not CandidateSignalRules.before_entry_cutoff(snapshot)
+            or activity is None
+            or not activity.is_active
+            or liquidity is None
+            or liquidity.score < 30
+            or acceptance is None
+            or (
+                acceptance.distance_to_vwap_pct is not None
+                and acceptance.distance_to_vwap_pct < -1.0
+            )
+            or (
+                acceptance.drawdown_from_peak_pct is not None
+                and acceptance.drawdown_from_peak_pct < -1.5
+            )
+            or not cls._low_position_accumulation(window)
+        ):
+            return None
+        return TransitionProposal(
+            new_status=StrategyStatus.WATCHING,
+            event_type=event_type,
+            reason_code="LOW_POSITION_ACCUMULATION_WATCH",
+            confirmation_price=snapshot.quote.last_price,
+            metadata={
+                "watch_started_at": snapshot.computed_at,
+                "watch_price": snapshot.quote.last_price,
+                "watch_kind": "low_position_accumulation",
+                "first_flow_at": window.first_independent_buy_at,
+                "daily_percentile": position.daily_percentile,
+                "daily_structure": position.structure,
+            },
+        )
+
+    @classmethod
+    def _enter_strict_momentum_watch(
+        cls,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+        *,
+        event_type: EventType,
+    ) -> TransitionProposal | None:
+        window = cls._window(snapshot, cls.FAST_WINDOW_SECONDS)
+        if (
+            not cls._strict_momentum_context(snapshot, universe)
+            or window is None
+            or not cls._initial_inflow(window)
+        ):
+            return None
+        return TransitionProposal(
+            new_status=StrategyStatus.WATCHING,
+            event_type=event_type,
+            reason_code="STRICT_MOMENTUM_WATCH",
+            confirmation_price=snapshot.quote.last_price,
+            metadata={
+                "watch_started_at": snapshot.computed_at,
+                "watch_price": snapshot.quote.last_price,
+                "watch_kind": "strict_momentum",
+                "first_flow_at": window.first_independent_buy_at,
+            },
+        )
+
+    @staticmethod
+    def _usable_global_context(snapshot: FeatureSnapshot) -> bool:
+        context = snapshot.market_context
+        return bool(
+            context.quality is not DataQuality.INVALID
+            and context.market_sample_size >= 20
+            and context.turnover_rank_percentile is not None
+        )
+
+    @staticmethod
+    def _low_position_accumulation(window: TickAggregate | None) -> bool:
+        return CandidateSignalRules.repeated_absorption(window)
 
     @staticmethod
     def _initial_inflow(window: TickAggregate) -> bool:
@@ -227,16 +406,7 @@ class CandidateStateMachine:
 
     @staticmethod
     def _fast_confirmed(window: TickAggregate | None) -> bool:
-        if window is None:
-            return False
-        threshold = window.large_order_threshold or 100_000.0
-        scale = window.flow_scale or threshold
-        return bool(
-            window.independent_buy_events >= 2
-            and window.independent_buy_span_seconds >= 300
-            and window.main_net >= max(4.0 * threshold, 1.5 * scale)
-            and (window.buy_sell_ratio or 0.0) >= 0.80
-        )
+        return CandidateSignalRules.fast_momentum(window)
 
     @staticmethod
     def _slow_confirmed(
@@ -260,21 +430,41 @@ class CandidateStateMachine:
 
     @staticmethod
     def _outflow_offsets_inflow(window: TickAggregate) -> bool:
-        threshold = window.large_order_threshold or 100_000.0
-        hard_flip = window.main_net <= -threshold
-        material_offset = bool(
-            window.independent_sell_events > 0
-            and window.sell_amount > 0
-            and window.sell_amount >= window.buy_amount * 0.80
-            and (window.buy_sell_ratio or 0.0) < 0.55
+        return CandidateSignalRules.outflow_offsets_inflow(window)
+
+    @classmethod
+    def _low_position_market_confirmed(
+        cls,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+    ) -> bool:
+        hard_reasons = set(universe.reason_codes) - cls.OBSERVATION_BYPASS_REASONS
+        return bool(
+            not hard_reasons
+            and cls._usable_global_context(snapshot)
+            and snapshot.market_context.market_breadth
+            >= CandidateSignalRules.MIN_MARKET_BREADTH
         )
-        return hard_flip or material_offset
+
+    @classmethod
+    def _strict_momentum_context(
+        cls,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+    ) -> bool:
+        hard_reasons = set(universe.reason_codes) - cls.SOFT_UNIVERSE_REASONS
+        return bool(
+            not hard_reasons
+            and CandidateSignalRules.strict_momentum_context(snapshot)
+        )
 
     @staticmethod
     def _confirm(
         snapshot: FeatureSnapshot,
         state: StrategyState,
         reason: str,
+        *,
+        alert_eligible: bool = True,
     ) -> TransitionProposal | None:
         acceptance = snapshot.price_acceptance
         watch_price = CandidateStateMachine._number(state.metadata.get("watch_price"))
@@ -290,11 +480,15 @@ class CandidateStateMachine:
             event_type=EventType.BUY_CONFIRMED,
             reason_code=reason,
             confirmation_price=snapshot.quote.last_price,
+            alert_eligible=alert_eligible,
             metadata={
                 "confirmed_at": snapshot.computed_at,
                 "confirmed_price": snapshot.quote.last_price,
                 "protection_price": round(snapshot.quote.last_price * 0.99, 4),
-                "expected_window_minutes": 15 if "15M" in reason else 60,
+                "alert_eligible": alert_eligible,
+                "expected_window_minutes": (
+                    15 if "15M" in reason or "MOMENTUM" in reason else 60
+                ),
             },
         )
 

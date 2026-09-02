@@ -45,8 +45,17 @@ class V2ReadModelService:
         }
 
     async def candidates(self, limit: int = 50, stock_code: str | None = None) -> dict:
-        where = "WHERE s.stock_code=?" if stock_code else ""
-        params = (stock_code.strip().upper(), limit) if stock_code else (limit,)
+        conditions: list[str] = []
+        params: list[object] = []
+        strategy_version = self._strategy_version()
+        if strategy_version:
+            conditions.append("s.strategy_version=?")
+            params.append(strategy_version)
+        if stock_code:
+            conditions.append("s.stock_code=?")
+            params.append(stock_code.strip().upper())
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
         rows = await self._query(
             "SELECT s.stock_code, COALESCE(st.name, ''), s.status, s.version, "
             "s.confirmed_price, s.peak_price, s.updated_at, s.metadata_json, "
@@ -57,12 +66,15 @@ class V2ReadModelService:
             f"{where} ORDER BY CASE s.status "
             "WHEN 'CONFIRMED' THEN 0 WHEN 'WATCHING' THEN 1 "
             "WHEN 'SETUP' THEN 2 ELSE 3 END, s.updated_at DESC LIMIT ?",
-            params,
+            tuple(params),
         )
         items = [self._candidate_row(row) for row in rows]
         return {"items": items, "count": len(items)}
 
     async def positions(self) -> dict:
+        strategy_version = self._strategy_version()
+        version_filter = " AND p.strategy_version=?" if strategy_version else ""
+        params = (strategy_version,) if strategy_version else ()
         rows = await self._query(
             "SELECT p.stock_code, COALESCE(st.name, ''), p.status, p.opened_at, "
             "p.cost_price, p.peak_price, p.trough_price, p.mfe_pct, p.mae_pct, "
@@ -71,7 +83,9 @@ class V2ReadModelService:
             "FROM v2_position_states p "
             "LEFT JOIN v2_decision_events e ON e.event_id=p.last_event_id "
             "LEFT JOIN stocks st ON st.code=p.stock_code "
-            "WHERE p.status NOT IN ('FLAT','CLOSED') ORDER BY p.updated_at DESC"
+            "WHERE p.status NOT IN ('FLAT','CLOSED')"
+            f"{version_filter} ORDER BY p.updated_at DESC",
+            params,
         )
         items = [self._position_row(row) for row in rows]
         return {"items": items, "count": len(items)}
@@ -175,12 +189,18 @@ class V2ReadModelService:
     def _candidate_row(row: tuple) -> dict:
         payload = json.loads(row[9] or "{}")
         score = payload.get("candidate_score") or {}
+        portfolio = payload.get("strategy_portfolio") or {}
         feature = payload.get("feature_snapshot") or {}
         return {
             "stock_code": row[0], "stock_name": row[1], "status": row[2],
             "version": row[3], "confirmed_price": row[4], "peak_price": row[5],
             "updated_at": row[6], "reason_code": row[8],
             "score": score.get("total"), "quality": score.get("quality"),
+            "portfolio_score": portfolio.get("ranking_score"),
+            "strategy_sources": portfolio.get("strategy_sources", []),
+            "consensus_count": portfolio.get("consensus_count", 0),
+            "strategy_nominations": portfolio.get("nominations", []),
+            "alert_eligible": payload.get("alert_eligible", True),
             "market_context": feature.get("market_context"),
             "price_position": feature.get("price_position"),
             "price_acceptance": feature.get("price_acceptance"),

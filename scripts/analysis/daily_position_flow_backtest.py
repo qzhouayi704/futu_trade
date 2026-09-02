@@ -124,6 +124,8 @@ def load_hot_ai_semiconductor_universe(
     start_day: str,
     end_day: str,
     limit: int,
+    *,
+    include_screenshot_codes: bool = True,
 ) -> List[dict]:
     """按回测期逐笔分钟成交额选取港股 AI/半导体热门标的。"""
     rows = conn.execute(
@@ -156,26 +158,27 @@ def load_hot_ai_semiconductor_universe(
         for code, name, data_days, amount in rows
     }
 
-    placeholders = ",".join("?" for _ in SCREENSHOT_CODES)
-    forced_rows = conn.execute(
-        f"SELECT s.code, s.name, COUNT(DISTINCT tm.trade_date), "
-        f"SUM(COALESCE(tm.buy_amt,0)+COALESCE(tm.sell_amt,0)) "
-        f"FROM stocks s JOIN ticker_minute tm ON tm.stock_code=s.code "
-        f"WHERE s.code IN ({placeholders}) AND tm.trade_date BETWEEN ? AND ? "
-        f"GROUP BY s.code, s.name",
-        (*SCREENSHOT_CODES, start_day, end_day),
-    ).fetchall()
-    for code, name, data_days, amount in forced_rows:
-        code = str(code)
-        item = selected.setdefault(code, {
-            "code": code,
-            "name": str(name or ""),
-            "data_days": int(data_days or 0),
-            "amount": float(amount or 0.0),
-            "source": "截图强制纳入",
-        })
-        if item["source"] != "截图强制纳入":
-            item["source"] += "+截图"
+    if include_screenshot_codes:
+        placeholders = ",".join("?" for _ in SCREENSHOT_CODES)
+        forced_rows = conn.execute(
+            f"SELECT s.code, s.name, COUNT(DISTINCT tm.trade_date), "
+            f"SUM(COALESCE(tm.buy_amt,0)+COALESCE(tm.sell_amt,0)) "
+            f"FROM stocks s JOIN ticker_minute tm ON tm.stock_code=s.code "
+            f"WHERE s.code IN ({placeholders}) AND tm.trade_date BETWEEN ? AND ? "
+            f"GROUP BY s.code, s.name",
+            (*SCREENSHOT_CODES, start_day, end_day),
+        ).fetchall()
+        for code, name, data_days, amount in forced_rows:
+            code = str(code)
+            item = selected.setdefault(code, {
+                "code": code,
+                "name": str(name or ""),
+                "data_days": int(data_days or 0),
+                "amount": float(amount or 0.0),
+                "source": "截图强制纳入",
+            })
+            if item["source"] != "截图强制纳入":
+                item["source"] += "+截图"
     return sorted(selected.values(), key=lambda item: item["amount"], reverse=True)
 
 

@@ -11,7 +11,18 @@ export interface V2Candidate {
   updated_at: string;
   reason_code: string;
   score: number | null;
+  portfolio_score?: number | null;
   quality: string | null;
+  strategy_sources: string[];
+  consensus_count: number;
+  alert_eligible: boolean;
+  strategy_nominations?: Array<{
+    strategy_id: string;
+    eligible: boolean;
+    stage: "REJECTED" | "WATCH" | "CONFIRMED";
+    score: number;
+    reason_codes: string[];
+  }>;
   quote?: { last_price?: number; prev_close?: number };
   market_context?: { market_breadth?: number; sector_breadth?: number | null; market_regime?: string };
   price_position?: { daily_percentile?: number; structure?: string; distance_to_ma20?: number };

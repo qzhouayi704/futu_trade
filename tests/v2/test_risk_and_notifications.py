@@ -2,9 +2,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from simple_trade.v2.application.notifications import NotificationCoordinator, NotificationFormatter
-from simple_trade.v2.application.risk import ExecutionModeGate, RiskEngine
+from simple_trade.v2.application.risk import ExecutionModeGate, IntentFactory, RiskEngine
 from simple_trade.v2.config.defaults import EXECUTION_CONFIRMATION_TOKEN
-from simple_trade.v2.domain.decisions import NotificationEvent
+from simple_trade.v2.domain.decisions import DecisionEvent, NotificationEvent
 from simple_trade.v2.domain.enums import (
     DataQuality,
     EventType,
@@ -144,6 +144,22 @@ class RiskEngineTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             gate.require(RuntimeMode.ALERT)
 
+    def test_shadow_momentum_confirmation_cannot_create_alert_intent(self):
+        event = DecisionEvent(
+            event_type=EventType.BUY_CONFIRMED,
+            stock_code="HK.00100",
+            exchange_time=NOW,
+            received_time=NOW,
+            source="test",
+            strategy_version="test-v2",
+            reason_code="STRICT_MOMENTUM_SHADOW_CONFIRMED",
+            payload={"alert_eligible": False},
+        )
+
+        intent = IntentFactory(RuntimeMode.ALERT, RiskLimits()).build(event, context())
+
+        self.assertIsNone(intent)
+
 
 class AccountProviderTests(unittest.TestCase):
     def test_adapts_real_account_capacity_fields(self):
@@ -164,6 +180,45 @@ class AccountProviderTests(unittest.TestCase):
         self.assertEqual(snapshot.available_funds, 88_000)
         self.assertEqual(snapshot.total_assets, 500_000)
         self.assertIs(snapshot.quality, DataQuality.GOOD)
+
+
+class NotificationFormatterTests(unittest.TestCase):
+    def test_sell_notification_includes_strategy_reason(self):
+        intent = TradeIntent(
+            source_event_id="decision-exit",
+            intent_type=IntentType.SELL,
+            created_at=NOW,
+            mode=RuntimeMode.ALERT,
+            reason_codes=("REPEATED_OUTFLOW_AND_STRUCTURE_BREAK",),
+            sell_leg=OrderLeg(
+                stock_code="HK.00100",
+                side=OrderSide.SELL,
+                quantity=100,
+                reference_price=10,
+                lot_size=100,
+            ),
+        )
+        risk = RiskDecision(
+            intent_id=intent.intent_id,
+            result=RiskResult.APPROVED,
+            checked_at=NOW,
+            reason_codes=("RISK_CHECKS_PASSED",),
+        )
+        source = RiskAssessedEvent(
+            event_type=EventType.RISK_APPROVED,
+            stock_code="HK.00100",
+            exchange_time=NOW,
+            received_time=NOW,
+            source="test",
+            source_decision_event_id="decision-exit",
+            intent=intent,
+            risk=risk,
+        )
+
+        message = NotificationFormatter(expiry_seconds=300).build(source)[0].message
+
+        self.assertIn("多次大单流出且价格结构破位", message)
+        self.assertIn("RISK_CHECKS_PASSED", message)
 
 
 class FakeNotificationStore:

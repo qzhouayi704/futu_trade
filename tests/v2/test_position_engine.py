@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from simple_trade.v2.application.positions.decision_engine import PositionDecisionEngine
 from simple_trade.v2.application.positions.efficiency import PositionEfficiencyEngine
 from simple_trade.v2.application.positions.rotation import RotationEvaluator
+from simple_trade.v2.application.positions.structural_exit import StructuralExitPolicy
 from simple_trade.v2.domain.candidates import TradeCandidate
 from simple_trade.v2.domain.enums import (
     CandidateStatus,
@@ -71,7 +72,7 @@ class PositionEngineTests(unittest.TestCase):
         self.assertTrue(result.stalled)
         self.assertLessEqual(result.range_15m_pct, 0.8)
 
-    def test_strong_outflow_requires_price_break_for_exit(self) -> None:
+    def test_repeated_outflow_requires_price_break_for_exit(self) -> None:
         outflow = window(
             900, buys=1, sells=2, buy_amount=200_000, sell_amount=900_000, span=300
         )
@@ -83,31 +84,130 @@ class PositionEngineTests(unittest.TestCase):
             position(102.5), state(peak=103), stable_efficiency, stable_feature
         )
         self.assertIs(stable.decision.action, DecisionAction.HOLD)
-        self.assertEqual(stable.decision.reason_codes, ("OUTFLOW_ABSORBED_BY_PRICE",))
 
+        repeated = window(
+            900, buys=1, sells=3, buy_amount=200_000, sell_amount=1_200_000, span=300
+        )
+        repeated_feature = feature_snapshot(
+            as_of=NOW, windows=(repeated,), accepted=True
+        )
         broken_efficiency = replace(
             stable_efficiency, drawdown_from_peak_pct=-2.0
         )
         broken = PositionDecisionEngine().evaluate(
-            position(100.5), state(peak=103), broken_efficiency, stable_feature
+            position(100.5), state(peak=103), broken_efficiency, repeated_feature
         )
         self.assertIs(broken.decision.action, DecisionAction.EXIT)
-        self.assertEqual(broken.decision.reason_codes, ("STRONG_OUTFLOW_AND_PRICE_BREAK",))
+        self.assertEqual(
+            broken.decision.reason_codes,
+            ("REPEATED_OUTFLOW_AND_STRUCTURE_BREAK",),
+        )
 
-    def test_profit_protection_precedes_stall_rotation(self) -> None:
+    def test_trailing_protection_precedes_stall_rotation(self) -> None:
         feature = feature_snapshot(as_of=NOW)
         efficiency = PositionEfficiencyEngine().calculate(
             position(102), state(peak=103, mfe=3, stalled_minutes=20), feature, prices()
         )
         efficiency = replace(
-            efficiency, drawdown_from_peak_pct=-1.0, stalled=True, mfe_pct=3
+            efficiency, drawdown_from_peak_pct=-1.6, stalled=True, mfe_pct=3
         )
         result = PositionDecisionEngine().evaluate(
             position(102), state(peak=103, mfe=3, stalled_minutes=20), efficiency, feature
         )
 
-        self.assertIs(result.decision.action, DecisionAction.PROTECT_PROFIT)
-        self.assertIs(result.target_status, PositionStatus.PROFIT_READY)
+        self.assertIs(result.decision.action, DecisionAction.EXIT)
+        self.assertEqual(result.decision.reason_codes, ("TRAIL_AFTER_SUPPORT_LOST",))
+
+    def test_recent_inflow_support_blocks_trailing_exit(self) -> None:
+        inflow = window(900, buys=3, buy_amount=1_500_000, span=600)
+        inflow = replace(
+            inflow,
+            as_of=NOW,
+            first_independent_buy_at=NOW - timedelta(minutes=10),
+            last_independent_buy_at=NOW,
+        )
+        feature = feature_snapshot(as_of=NOW, windows=(inflow,), accepted=True)
+        efficiency = PositionEfficiencyEngine().calculate(
+            position(101), state(peak=103, mfe=3), feature, prices()
+        )
+        efficiency = replace(efficiency, drawdown_from_peak_pct=-2.0, mfe_pct=3)
+
+        result = PositionDecisionEngine().evaluate(
+            position(101), state(peak=103, mfe=3), efficiency, feature
+        )
+
+        self.assertIs(result.decision.action, DecisionAction.HOLD)
+        self.assertEqual(
+            result.metadata_updates["exit_last_support_at"],
+            NOW.isoformat(),
+        )
+
+    def test_structural_exit_hard_boundaries_and_vwap_minutes(self) -> None:
+        policy = StructuralExitPolicy()
+        feature = feature_snapshot(as_of=NOW)
+        base = PositionEfficiencyEngine().calculate(
+            position(101), state(peak=103, mfe=3), feature, prices()
+        )
+        self.assertEqual(
+            policy.assess(None, replace(base, current_return_pct=-3.0), feature).exit_reason,
+            "HARD_STOP_3_PCT",
+        )
+        self.assertEqual(
+            policy.assess(None, replace(base, current_return_pct=5.0), feature).exit_reason,
+            "TAKE_PROFIT_5_PCT",
+        )
+
+        metadata = {}
+        for minute in range(5):
+            observed_at = NOW + timedelta(minutes=minute)
+            below = replace(
+                feature,
+                computed_at=observed_at,
+                price_acceptance=replace(
+                    feature.price_acceptance,
+                    as_of=observed_at,
+                    distance_to_vwap_pct=-0.1,
+                ),
+            )
+            assessment = policy.assess(
+                replace(state(), metadata=metadata),
+                replace(base, as_of=observed_at, mfe_pct=1, drawdown_from_peak_pct=-0.2),
+                below,
+            )
+            metadata = dict(assessment.metadata_updates)
+        self.assertEqual(metadata["exit_vwap_below_minutes"], 5)
+
+    def test_buy_after_repeated_outflow_starts_support_grace(self) -> None:
+        mixed = window(
+            900,
+            buys=1,
+            sells=3,
+            buy_amount=300_000,
+            sell_amount=1_200_000,
+            span=600,
+        )
+        mixed = replace(
+            mixed,
+            as_of=NOW,
+            first_independent_sell_at=NOW - timedelta(minutes=10),
+            last_independent_sell_at=NOW - timedelta(minutes=5),
+            first_independent_buy_at=NOW,
+            last_independent_buy_at=NOW,
+        )
+        feature = feature_snapshot(as_of=NOW, windows=(mixed,), accepted=True)
+        base = PositionEfficiencyEngine().calculate(
+            position(101), state(peak=103, mfe=3), feature, prices()
+        )
+
+        assessment = StructuralExitPolicy().assess(
+            state(),
+            replace(base, drawdown_from_peak_pct=-2.0, mfe_pct=3),
+            feature,
+        )
+
+        self.assertTrue(assessment.strong_outflow)
+        self.assertTrue(assessment.fresh_support)
+        self.assertIsNone(assessment.exit_reason)
 
     def test_rotation_requires_confirmed_fresh_candidate_and_net_advantage(self) -> None:
         held_state = state(status=PositionStatus.STALLED, stalled_minutes=20)

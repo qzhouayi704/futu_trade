@@ -12,6 +12,8 @@ class IntentFactory:
         self._limits = limits
 
     def build(self, event: DecisionEvent, context: RiskContext) -> TradeIntent | None:
+        if event.payload.get("alert_eligible") is False:
+            return None
         if event.event_type is EventType.BUY_CONFIRMED:
             return self._buy(event, context)
         if event.event_type is EventType.EXIT_RISK_CONFIRMED:
@@ -43,6 +45,7 @@ class IntentFactory:
             intent_type=IntentType.BUY,
             created_at=event.exchange_time,
             mode=self._mode,
+            reason_codes=(event.reason_code,),
             buy_leg=OrderLeg(
                 stock_code=event.stock_code,
                 side=OrderSide.BUY,
@@ -64,6 +67,7 @@ class IntentFactory:
             intent_type=IntentType.SELL,
             created_at=event.exchange_time,
             mode=self._mode,
+            reason_codes=(event.reason_code,),
             sell_leg=OrderLeg(
                 stock_code=event.stock_code,
                 side=OrderSide.SELL,
@@ -90,6 +94,7 @@ class IntentFactory:
             intent_type=IntentType.ROTATE,
             created_at=event.exchange_time,
             mode=self._mode,
+            reason_codes=(event.reason_code,),
             sell_leg=OrderLeg(
                 stock_code=event.stock_code,
                 side=OrderSide.SELL,

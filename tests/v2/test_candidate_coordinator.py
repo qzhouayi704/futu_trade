@@ -61,9 +61,9 @@ class CandidateCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         coordinator.on_feature_snapshot(feature_event(
             snapshot(as_of=NOW + timedelta(seconds=1), windows=(one,)), "watch"
         ))
-        two = window(900, buys=2, buy_amount=1_200_000, span=301)
+        strict = window(900, buys=3, buy_amount=1_200_000, span=600)
         coordinator.on_feature_snapshot(feature_event(
-            snapshot(as_of=NOW + timedelta(seconds=301), windows=(two,)), "confirm"
+            snapshot(as_of=NOW + timedelta(seconds=600), windows=(strict,)), "confirm"
         ))
         await coordinator.stop(drain=True)
 
@@ -72,9 +72,11 @@ class CandidateCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             [EventType.CANDIDATE_ENTERED, EventType.CANDIDATE_UPDATED, EventType.BUY_CONFIRMED],
         )
         self.assertTrue(stores.events[-1].payload["shadow_only"])
+        self.assertFalse(stores.events[-1].payload["alert_eligible"])
         self.assertIn("feature_snapshot", stores.events[-1].payload)
         self.assertNotIn(EventType.NOTIFICATION_REQUESTED, [event.event_type for event in stores.events])
         self.assertEqual(coordinator.latest("HK.00100").status.value, "BUY_CONFIRMED")
+        self.assertFalse(coordinator.latest("HK.00100").alert_eligible)
         self.assertEqual(scoreboard.report().v2_confirmed, 1)
 
     async def test_restart_loads_persisted_state_and_does_not_duplicate_setup(self) -> None:

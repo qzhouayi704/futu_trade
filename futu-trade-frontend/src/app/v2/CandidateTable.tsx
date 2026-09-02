@@ -12,12 +12,22 @@ const statusTone: Record<string, string> = {
 const reasonLabel: Record<string, string> = {
   HOT_ACTIVE_DAILY_SETUP: "热门活跃，等待资金确认",
   FIRST_STRONG_INFLOW_WATCH: "首次强流入，继续观察",
+  LOW_POSITION_ACCUMULATION_WATCH: "低位多次吸收，等待环境确认",
+  LOW_POSITION_60M_ACCUMULATION_CONFIRMED: "低位60分钟吸收确认",
+  LOW_POSITION_15M_ACCUMULATION_CONFIRMED: "低位15分钟吸收确认",
   LEGACY_RALLY_STRONG_WATCH: "量价齐升，等待多次流入确认",
   LEGACY_RALLY_SETUP_WATCH: "量价齐升，升级观察",
   SOFT_GATE_STRONG_SIGNAL_REENTRY: "强信号恢复观察",
   FAST_15M_MULTI_INFLOW_CONFIRMED: "15分钟多次流入确认",
+  STRICT_MOMENTUM_WATCH: "严格动量，等待三次资金确认",
+  STRICT_MOMENTUM_SHADOW_CONFIRMED: "严格热门动量影子确认",
   WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED: "弱市60分钟强势确认",
   EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED: "极弱市60分钟多次确认",
+};
+
+const strategyLabel: Record<string, string> = {
+  capital_absorption: "低位吸收",
+  momentum_continuation: "严格动量",
 };
 
 function FlowCell({ item }: { item: V2Candidate }) {
@@ -43,7 +53,7 @@ export function CandidateTable({ items, compact = false }: { items: V2Candidate[
           <tr>
             <th className="px-3 py-2 font-medium">标的</th><th className="px-3 py-2 font-medium">状态</th>
             <th className="px-3 py-2 font-medium">评分</th><th className="px-3 py-2 font-medium">现价 / 确认价</th>
-            <th className="px-3 py-2 font-medium">资金净额 · 流入/流出次数</th><th className="px-3 py-2 font-medium">环境</th>
+            <th className="px-3 py-2 font-medium">资金净额 · 流入/流出次数</th><th className="px-3 py-2 font-medium">位置 / 环境</th>
             <th className="px-3 py-2 font-medium">更新时间</th>
           </tr>
         </thead>
@@ -51,14 +61,29 @@ export function CandidateTable({ items, compact = false }: { items: V2Candidate[
           {items.slice(0, compact ? 6 : undefined).map((item) => {
             const current = item.quote?.last_price;
             const fromConfirm = current && item.confirmed_price ? (current / item.confirmed_price - 1) * 100 : null;
+            const shadowConfirmed = item.status === "CONFIRMED" && item.alert_eligible === false;
+            const displayStatus = shadowConfirmed ? "影子确认" : item.status;
+            const displayTone = shadowConfirmed
+              ? statusTone.WATCHING
+              : statusTone[item.status] || "bg-muted text-muted-foreground";
             return (
               <tr key={item.stock_code} className="h-14 hover:bg-muted/25">
                 <td className="px-3 py-2"><div className="font-semibold">{item.stock_name || item.stock_code}</div><div className="text-muted-foreground">{item.stock_code}</div></td>
-                <td className="max-w-52 px-3 py-2"><span className={`inline-flex rounded px-2 py-1 font-medium ${statusTone[item.status] || "bg-muted text-muted-foreground"}`}>{item.status}</span><div className="mt-1 truncate text-[11px] text-muted-foreground" title={reasonLabel[item.reason_code] || item.reason_code}>{reasonLabel[item.reason_code] || item.reason_code}</div></td>
-                <td className="px-3 py-2 text-base font-semibold tabular-nums">{item.score?.toFixed(1) ?? "--"}</td>
+                <td className="max-w-52 px-3 py-2"><span className={`inline-flex rounded px-2 py-1 font-medium ${displayTone}`}>{displayStatus}</span><div className="mt-1 truncate text-[11px] text-muted-foreground" title={reasonLabel[item.reason_code] || item.reason_code}>{reasonLabel[item.reason_code] || item.reason_code}</div></td>
+                <td className="px-3 py-2">
+                  <div className="text-base font-semibold tabular-nums">{(item.portfolio_score ?? item.score)?.toFixed(1) ?? "--"}</div>
+                  <div className="mt-1 flex max-w-48 flex-wrap gap-1">
+                    {item.strategy_sources?.map((source) => (
+                      <span key={source} className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-400">
+                        {strategyLabel[source] || source}
+                      </span>
+                    ))}
+                    {!item.strategy_sources?.length && <span className="text-[10px] text-muted-foreground">条件组合观察</span>}
+                  </div>
+                </td>
                 <td className="px-3 py-2 tabular-nums"><div>{current?.toFixed(3) ?? "--"} / {item.confirmed_price?.toFixed(3) ?? "--"}</div><div className={tone(fromConfirm)}>{pct(fromConfirm)}</div></td>
                 <td className="px-3 py-2"><FlowCell item={item} /></td>
-                <td className="px-3 py-2"><div>{item.market_context?.market_regime || "--"}</div><div className="text-muted-foreground">全市 {pct((item.market_context?.market_breadth ?? 0) * 100, 0)} · 板块 {item.market_context?.sector_breadth == null ? "--" : pct(item.market_context.sector_breadth * 100, 0)}</div></td>
+                <td className="px-3 py-2"><div>日线 {item.price_position?.daily_percentile == null ? "--" : pct(item.price_position.daily_percentile * 100, 0)} · {item.market_context?.market_regime || "--"}</div><div className="text-muted-foreground">全市 {pct((item.market_context?.market_breadth ?? 0) * 100, 0)} · 板块 {item.market_context?.sector_breadth == null ? "--" : pct(item.market_context.sector_breadth * 100, 0)}</div></td>
                 <td className="px-3 py-2 text-muted-foreground">{clock(item.updated_at)}</td>
               </tr>
             );

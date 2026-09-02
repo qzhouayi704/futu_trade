@@ -17,6 +17,9 @@ class TradeCandidate:
     reason_codes: tuple[str, ...]
     invalidation_conditions: tuple[str, ...]
     confirmation_price: float | None = None
+    strategy_sources: tuple[str, ...] = ()
+    consensus_count: int = 0
+    alert_eligible: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stock_code", require_stock_code(self.stock_code))
@@ -25,5 +28,9 @@ class TradeCandidate:
             raise ValueError("score 必须在 0 到 100 之间")
         if self.confirmation_price is not None and self.confirmation_price <= 0:
             raise ValueError("confirmation_price 必须大于 0")
+        if self.consensus_count != len(self.strategy_sources):
+            raise ValueError("consensus_count 必须与 strategy_sources 数量一致")
+        if not isinstance(self.alert_eligible, bool):
+            raise ValueError("alert_eligible 必须是布尔值")
         if not self.reason_codes:
             raise ValueError("候选必须包含 reason_codes")
