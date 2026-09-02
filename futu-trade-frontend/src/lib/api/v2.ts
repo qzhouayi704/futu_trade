@@ -155,6 +155,51 @@ export interface V2Outcome {
   rotation_return_pct: number | null;
 }
 
+export interface V2AlertPeriodResult {
+  status: "READY" | "PENDING" | "OBSERVING";
+  trading_day: string | null;
+  close_return_pct: number | null;
+  max_return_pct: number | null;
+  max_drawdown_pct: number | null;
+}
+
+export interface V2AlertPerformanceItem {
+  event_id: string;
+  event_type: string;
+  stock_code: string;
+  stock_name: string;
+  signal_time: string;
+  last_alert_time: string;
+  signal_date: string;
+  signal_price: number;
+  reason_code: string;
+  strategy_version: string;
+  action: "BUY" | "SELL" | "ROTATE";
+  direction: "BUY" | "SELL";
+  risk_result: string;
+  delivered_at: string | null;
+  alert_count: number;
+  same_day: V2AlertPeriodResult;
+  periods: Record<"1" | "3" | "5" | "10", V2AlertPeriodResult>;
+  completed_horizon: number;
+}
+
+export interface V2AlertPerformance {
+  trade_date: string;
+  items: V2AlertPerformanceItem[];
+  count: number;
+  available_kline_through: string | null;
+  summary: {
+    alert_count: number;
+    periods: Record<"1" | "3" | "5" | "10", {
+      completed_count: number;
+      win_count: number;
+      win_ratio: number | null;
+      mean_return_pct: number | null;
+    }>;
+  };
+}
+
 interface DistributionMetric {
   count: number;
   percentiles: Record<string, number | null>;
@@ -277,6 +322,10 @@ export const v2Api = {
   positions: () => getData<{ items: V2Position[]; count: number }>("/v2/positions"),
   decisions: () => getData<{ items: V2Decision[]; count: number }>("/v2/decisions?limit=200"),
   distribution: () => getData<V2Distribution>("/v2/outcomes/distribution"),
+  alertPerformance: (tradeDate: string) =>
+    getData<V2AlertPerformance>(
+      `/v2/outcomes/alert-performance?trade_date=${encodeURIComponent(tradeDate)}`,
+    ),
   shadowAcceptance: () => getData<V2ShadowAcceptance>("/v2/outcomes/shadow-acceptance?days=10"),
   health: () => getData<V2Health>("/v2/system/health"),
 };

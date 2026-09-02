@@ -215,7 +215,8 @@ class V2RouteContractTests(unittest.TestCase):
         for path in (
             "/cockpit", "/candidates", "/candidates/history",
             "/candidates/{stock_code}/timeline", "/positions", "/decisions",
-            "/outcomes/distribution", "/outcomes/shadow-acceptance",
+            "/outcomes/distribution", "/outcomes/alert-performance",
+            "/outcomes/shadow-acceptance",
             "/system/health", "/system/runtime",
         ):
             self.assertIn(f'@router.get("{path}"', backend)

@@ -6,6 +6,7 @@ import json
 from typing import Protocol
 
 from ...domain.serialization import to_primitive
+from .alert_performance import AlertPerformanceReader
 from .candidate_history import CandidateHistoryReader
 from .cohorts import build_shadow_acceptance
 from .distribution import histogram, summary
@@ -19,6 +20,7 @@ class V2ReadModelService:
     def __init__(self, db: ReadDatabasePort, runtime=None) -> None:
         self._db = db
         self._runtime = runtime
+        self._alert_performance = AlertPerformanceReader(db)
         self._candidate_history = CandidateHistoryReader(db)
 
     async def cockpit(self) -> dict:
@@ -97,6 +99,9 @@ class V2ReadModelService:
         return await self._candidate_history.timeline(
             stock_code, trade_date=trade_date
         )
+
+    async def alert_performance(self, *, trade_date: str | None = None) -> dict:
+        return await self._alert_performance.history(trade_date=trade_date)
 
     async def positions(self) -> dict:
         strategy_version = self._strategy_version()

@@ -1,0 +1,272 @@
+"""Delivered-alert performance across later trading sessions."""
+
+import asyncio
+from collections import defaultdict
+from datetime import date
+import json
+
+
+HORIZONS = (1, 3, 5, 10)
+
+
+class AlertPerformanceReader:
+    def __init__(self, db) -> None:
+        self._db = db
+
+    async def history(self, *, trade_date: str | None = None) -> dict:
+        selected_date = self._validated_date(trade_date)
+        rows = await self._query(
+            "SELECT e.event_id, e.event_type, e.stock_code, e.exchange_time, "
+            "e.reason_code, e.strategy_version, i.intent_type, i.risk_result, "
+            "i.buy_leg_json, i.sell_leg_json, n.delivered_at, "
+            "o.mfe_pct, o.mae_pct, o.close_return_pct "
+            "FROM v2_notification_log n "
+            "JOIN v2_decision_events e ON e.event_id=n.decision_event_id "
+            "JOIN v2_trade_intents i ON i.source_event_id=e.event_id "
+            "LEFT JOIN v2_outcomes o ON o.decision_event_id=e.event_id "
+            "WHERE n.channel='WECHAT' AND n.status='DELIVERED' "
+            "AND substr(e.exchange_time,1,10)=? "
+            "ORDER BY e.exchange_time, e.id",
+            (selected_date,),
+        )
+        alerts = self._collapse(rows)
+        if not alerts:
+            return self._empty(selected_date)
+
+        codes = sorted({item["stock_code"] for item in alerts})
+        names, klines = await asyncio.gather(
+            self._names(codes), self._klines(codes, selected_date)
+        )
+        items = [self._evaluate(item, names, klines) for item in alerts]
+        return {
+            "trade_date": selected_date,
+            "items": items,
+            "count": len(items),
+            "available_kline_through": max(
+                (day for stock_days in klines.values() for day in stock_days),
+                default=None,
+            ),
+            "summary": self._summary(items),
+        }
+
+    async def _names(self, codes: list[str]) -> dict[str, str]:
+        placeholders = ",".join("?" for _ in codes)
+        rows = await self._query(
+            f"SELECT code, COALESCE(name, '') FROM stocks WHERE code IN ({placeholders})",
+            tuple(codes),
+        )
+        return {str(row[0]): str(row[1] or "") for row in rows}
+
+    async def _klines(self, codes: list[str], start_date: str) -> dict[str, dict[str, tuple]]:
+        placeholders = ",".join("?" for _ in codes)
+        rows = await self._query(
+            "SELECT stock_code, substr(time_key,1,10), close_price, high_price, low_price "
+            f"FROM kline_data WHERE stock_code IN ({placeholders}) "
+            "AND substr(time_key,1,10)>=? ORDER BY stock_code, time_key LIMIT 20000",
+            (*codes, start_date),
+        )
+        result: dict[str, dict[str, tuple]] = defaultdict(dict)
+        for row in rows:
+            if row[2] is None:
+                continue
+            result[str(row[0])][str(row[1])] = (
+                float(row[2]),
+                float(row[3]) if row[3] is not None else float(row[2]),
+                float(row[4]) if row[4] is not None else float(row[2]),
+            )
+        return dict(result)
+
+    async def _query(self, sql: str, params: tuple = ()) -> list:
+        return await asyncio.to_thread(self._db.execute_query, sql, params)
+
+    @staticmethod
+    def _collapse(rows: list[tuple]) -> list[dict]:
+        collapsed: dict[tuple[str, str, str], dict] = {}
+        for row in rows:
+            intent_type = str(row[6])
+            leg_json = row[9] if intent_type == "SELL" else row[8]
+            try:
+                leg = json.loads(leg_json or "{}")
+                stock_code = str(leg.get("stock_code") or row[2]).strip().upper()
+                signal_price = float(leg.get("reference_price") or 0)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not stock_code or signal_price <= 0:
+                continue
+            signal_date = str(row[3])[:10]
+            key = (signal_date, stock_code, intent_type)
+            if key in collapsed:
+                collapsed[key]["alert_count"] += 1
+                collapsed[key]["last_alert_time"] = row[3]
+                continue
+            collapsed[key] = {
+                "event_id": row[0],
+                "event_type": row[1],
+                "stock_code": stock_code,
+                "signal_time": row[3],
+                "last_alert_time": row[3],
+                "signal_date": signal_date,
+                "signal_price": signal_price,
+                "reason_code": row[4],
+                "strategy_version": row[5],
+                "action": intent_type,
+                "direction": "SELL" if intent_type == "SELL" else "BUY",
+                "risk_result": row[7],
+                "delivered_at": row[10],
+                "intraday_mfe_pct": AlertPerformanceReader._number(row[11]),
+                "intraday_mae_pct": AlertPerformanceReader._number(row[12]),
+                "outcome_close_return_pct": AlertPerformanceReader._number(row[13]),
+                "alert_count": 1,
+            }
+        return list(collapsed.values())
+
+    @classmethod
+    def _evaluate(cls, alert: dict, names: dict, klines: dict) -> dict:
+        basis = alert["signal_price"]
+        direction = alert["direction"]
+        stock_days = klines.get(alert["stock_code"], {})
+        same_day = stock_days.get(alert["signal_date"])
+        later_days = [day for day in sorted(stock_days) if day > alert["signal_date"]]
+
+        outcome_close = alert["outcome_close_return_pct"]
+        same_close = None
+        price_scale = 1.0
+        if outcome_close is not None:
+            same_close = cls._directional_value(
+                outcome_close, direction
+            )
+            if same_day and same_day[0] > 0:
+                actual_close = basis * (1.0 + outcome_close / 100.0)
+                price_scale = actual_close / same_day[0]
+        elif same_day:
+            same_close = cls._directional_return(same_day[0], basis, direction)
+        same_best = cls._directional_value(alert["intraday_mfe_pct"], direction)
+        same_worst = cls._directional_value(alert["intraday_mae_pct"], direction)
+        if direction == "SELL":
+            same_best, same_worst = (
+                cls._directional_value(alert["intraday_mae_pct"], direction),
+                cls._directional_value(alert["intraday_mfe_pct"], direction),
+            )
+
+        periods = {
+            str(horizon): cls._period(
+                horizon, later_days, stock_days, basis, direction, price_scale
+            )
+            for horizon in HORIZONS
+        }
+        return {
+            **alert,
+            "stock_name": names.get(alert["stock_code"], ""),
+            "same_day": {
+                "status": "READY" if same_close is not None else "OBSERVING",
+                "trading_day": alert["signal_date"],
+                "close_return_pct": same_close,
+                "max_return_pct": same_best,
+                "max_drawdown_pct": same_worst,
+            },
+            "periods": periods,
+            "completed_horizon": max(
+                (horizon for horizon in HORIZONS if periods[str(horizon)]["status"] == "READY"),
+                default=0,
+            ),
+        }
+
+    @classmethod
+    def _period(
+        cls,
+        horizon: int,
+        later_days: list[str],
+        stock_days: dict[str, tuple],
+        basis: float,
+        direction: str,
+        price_scale: float,
+    ) -> dict:
+        if len(later_days) < horizon:
+            return {
+                "status": "PENDING",
+                "trading_day": None,
+                "close_return_pct": None,
+                "max_return_pct": None,
+                "max_drawdown_pct": None,
+            }
+        window = [stock_days[day] for day in later_days[:horizon]]
+        close_price = window[-1][0] * price_scale
+        if direction == "SELL":
+            favorable_price = min(row[2] for row in window) * price_scale
+            adverse_price = max(row[1] for row in window) * price_scale
+        else:
+            favorable_price = max(row[1] for row in window) * price_scale
+            adverse_price = min(row[2] for row in window) * price_scale
+        return {
+            "status": "READY",
+            "trading_day": later_days[horizon - 1],
+            "close_return_pct": cls._directional_return(close_price, basis, direction),
+            "max_return_pct": cls._directional_return(favorable_price, basis, direction),
+            "max_drawdown_pct": cls._directional_return(adverse_price, basis, direction),
+        }
+
+    @staticmethod
+    def _summary(items: list[dict]) -> dict:
+        periods = {}
+        for horizon in HORIZONS:
+            ready = [
+                item["periods"][str(horizon)]["close_return_pct"]
+                for item in items
+                if item["periods"][str(horizon)]["status"] == "READY"
+            ]
+            periods[str(horizon)] = {
+                "completed_count": len(ready),
+                "win_count": sum(value > 0 for value in ready),
+                "win_ratio": round(sum(value > 0 for value in ready) / len(ready), 4)
+                if ready else None,
+                "mean_return_pct": round(sum(ready) / len(ready), 4) if ready else None,
+            }
+        return {"alert_count": len(items), "periods": periods}
+
+    @staticmethod
+    def _directional_return(price: float, basis: float, direction: str) -> float:
+        raw = (float(price) / basis - 1.0) * 100.0
+        return AlertPerformanceReader._directional_value(raw, direction)
+
+    @staticmethod
+    def _directional_value(value: float | None, direction: str) -> float | None:
+        if value is None:
+            return None
+        return round(-value if direction == "SELL" else value, 4)
+
+    @staticmethod
+    def _number(value) -> float | None:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _validated_date(value: str | None) -> str:
+        if value is None:
+            return date.today().isoformat()
+        try:
+            return date.fromisoformat(value).isoformat()
+        except ValueError as error:
+            raise ValueError("交易日期必须是 YYYY-MM-DD") from error
+
+    @staticmethod
+    def _empty(trade_date: str) -> dict:
+        return {
+            "trade_date": trade_date,
+            "items": [],
+            "count": 0,
+            "available_kline_through": None,
+            "summary": {
+                "alert_count": 0,
+                "periods": {
+                    str(horizon): {
+                        "completed_count": 0,
+                        "win_count": 0,
+                        "win_ratio": None,
+                        "mean_return_pct": None,
+                    }
+                    for horizon in HORIZONS
+                },
+            },
+        }

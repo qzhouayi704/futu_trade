@@ -119,6 +119,18 @@ async def get_outcome_distribution(container=Depends(get_container)):
     return await _respond(service.outcome_distribution, "V2收益分布读取成功")
 
 
+@router.get("/outcomes/alert-performance", response_model=APIResponse)
+async def get_alert_performance(
+    trade_date: str | None = Query(default=None),
+    container=Depends(get_container),
+):
+    service = _service(container)
+    return await _respond(
+        lambda: service.alert_performance(trade_date=trade_date),
+        "V2预警后续表现读取成功",
+    )
+
+
 @router.get("/outcomes/shadow-acceptance", response_model=APIResponse)
 async def get_shadow_acceptance(
     days: int = Query(default=10, ge=1, le=60),

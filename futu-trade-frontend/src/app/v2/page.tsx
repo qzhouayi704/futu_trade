@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSocket } from "@/lib/socket";
 import { v2Api } from "@/lib/api/v2";
+import { AlertPerformance } from "./AlertPerformance";
 import { CandidateTable } from "./CandidateTable";
 import { CandidateWorkspace } from "./CandidateWorkspace";
 import { DecisionStream } from "./DecisionStream";
@@ -61,7 +62,7 @@ export default function V2WorkbenchPage() {
         {tab === "cockpit" && <div className="space-y-6"><MetricStrip data={cockpit.data} /><section><h2 className="mb-2 text-sm font-semibold">优先候选</h2><CandidateTable items={cockpit.data?.candidates || []} compact /></section><section><h2 className="mb-2 text-sm font-semibold">持仓效率</h2><PositionTable items={cockpit.data?.positions || []} compact /></section><section><h2 className="mb-2 text-sm font-semibold">最新决策</h2><DecisionStream items={cockpit.data?.decisions || []} compact /></section></div>}
         {tab === "candidates" && <CandidateWorkspace currentItems={candidates.data?.items || []} />}
         {tab === "positions" && <PositionTable items={positions.data?.items || []} />}
-        {tab === "review" && <div className="space-y-10"><ShadowAcceptance data={acceptance.data} /><OutcomeDistribution data={distribution.data} /><section><h2 className="mb-2 text-sm font-semibold">事件回放</h2><DecisionStream items={decisions.data?.items || []} /></section></div>}
+        {tab === "review" && <div className="space-y-10"><AlertPerformance /><ShadowAcceptance data={acceptance.data} /><OutcomeDistribution data={distribution.data} /><section><h2 className="mb-2 text-sm font-semibold">事件回放</h2><DecisionStream items={decisions.data?.items || []} /></section></div>}
         {tab === "system" && <SystemPanel data={health.data} />}
       </main>
     </div>
