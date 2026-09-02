@@ -7,6 +7,22 @@ from simple_trade.v2.application.read_models.alert_performance import (
 
 class FakeAlertDatabase:
     def __init__(self) -> None:
+        self.candidate_rows = [
+            (
+                "setup-1", "CANDIDATE_ENTERED", "HK.00100",
+                "2026-09-02T09:40:00+08:00", "LOW_POSITION_SETUP",
+                "v2", "SETUP",
+                '{"feature_snapshot":{"quote":{"last_price":98}}}',
+                None, None, None,
+            ),
+            (
+                "watch-1", "CANDIDATE_UPDATED", "HK.00100",
+                "2026-09-02T10:05:00+08:00", "FAST_15M_MULTI_INFLOW_WATCHING",
+                "v2", "WATCHING",
+                '{"feature_snapshot":{"quote":{"last_price":100}}}',
+                2.5, -1.0, 1.0,
+            ),
+        ]
         self.alert_rows = [
             (
                 "buy-1", "BUY_CONFIRMED", "HK.00100",
@@ -47,6 +63,9 @@ class FakeAlertDatabase:
         ])
 
     def execute_query(self, query: str, params: tuple = ()) -> list:
+        if "FROM v2_decision_events e LEFT JOIN v2_outcomes" in query:
+            states = set(params[:-1])
+            return [row for row in self.candidate_rows if row[6] in states]
         if "FROM v2_notification_log" in query:
             self.last_alert_params = params
             return self.alert_rows
@@ -61,7 +80,7 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
     async def test_tracks_trading_day_horizons_and_collapses_repeat_alerts(self) -> None:
         database = FakeAlertDatabase()
         result = await AlertPerformanceReader(database).history(
-            trade_date="2026-09-02"
+            trade_date="2026-09-02", scope="alerts"
         )
 
         self.assertEqual(result["count"], 2)
@@ -78,7 +97,7 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sell_direction_treats_post_alert_decline_as_profit(self) -> None:
         result = await AlertPerformanceReader(FakeAlertDatabase()).history(
-            trade_date="2026-09-02"
+            trade_date="2026-09-02", scope="alerts"
         )
         sell = next(item for item in result["items"] if item["action"] == "SELL")
 
@@ -92,7 +111,7 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         database = FakeAlertDatabase()
         database.alert_rows = []
         result = await AlertPerformanceReader(database).history(
-            trade_date="2026-09-01"
+            trade_date="2026-09-01", scope="alerts"
         )
         self.assertEqual(result["items"], [])
         self.assertIsNone(result["summary"]["periods"]["1"]["win_ratio"])
@@ -108,12 +127,44 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
             ("HK.00100", "2026-09-03", 51.5, 52, 50.5),
         ]
         result = await AlertPerformanceReader(database).history(
-            trade_date="2026-09-02"
+            trade_date="2026-09-02", scope="alerts"
         )
 
         item = result["items"][0]
         self.assertEqual(item["same_day"]["close_return_pct"], 1)
         self.assertEqual(item["periods"]["1"]["close_return_pct"], 3)
+
+    async def test_candidates_use_first_stage_price_and_merge_stage_upgrades(self) -> None:
+        result = await AlertPerformanceReader(FakeAlertDatabase()).history(
+            trade_date="2026-09-02"
+        )
+
+        self.assertEqual(result["scope"], "candidates")
+        self.assertEqual(result["count"], 1)
+        item = result["items"][0]
+        self.assertEqual(item["action"], "CANDIDATE")
+        self.assertEqual(item["signal_price"], 98)
+        self.assertEqual(item["entry_stage"], "SETUP")
+        self.assertEqual(item["max_stage"], "WATCHING")
+        self.assertEqual(item["alert_count"], 2)
+
+    async def test_watching_scope_starts_at_first_fund_confirmation(self) -> None:
+        result = await AlertPerformanceReader(FakeAlertDatabase()).history(
+            trade_date="2026-09-02", scope="watching"
+        )
+
+        item = result["items"][0]
+        self.assertEqual(result["scope"], "watching")
+        self.assertEqual(item["signal_price"], 100)
+        self.assertEqual(item["entry_stage"], "WATCHING")
+        self.assertEqual(item["max_stage"], "WATCHING")
+        self.assertEqual(item["alert_count"], 1)
+
+    async def test_invalid_scope_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "复盘范围"):
+            await AlertPerformanceReader(FakeAlertDatabase()).history(
+                trade_date="2026-09-02", scope="rejected"
+            )
 
 
 if __name__ == "__main__":

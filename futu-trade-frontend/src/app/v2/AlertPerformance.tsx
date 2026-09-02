@@ -10,9 +10,24 @@ import { clock, pct, tone } from "./format";
 const horizons = ["1", "3", "5", "10"] as const;
 
 const actionLabel: Record<string, string> = {
+  CANDIDATE: "进入候选",
   BUY: "买入提醒",
   SELL: "卖出提醒",
   ROTATE: "换入提醒",
+};
+
+const scopes = [
+  { id: "candidates", label: "候选池" },
+  { id: "watching", label: "资金观察" },
+  { id: "alerts", label: "正式预警" },
+] as const;
+
+type PerformanceScope = (typeof scopes)[number]["id"];
+
+const stageLabel: Record<string, string> = {
+  SETUP: "候选准备",
+  WATCHING: "资金观察",
+  CONFIRMED: "买点确认",
 };
 
 const reasonLabel: Record<string, string> = {
@@ -66,9 +81,10 @@ function PeriodCell({ value }: { value: V2AlertPeriodResult }) {
 
 export function AlertPerformance() {
   const [tradeDate, setTradeDate] = useState(localDateKey);
+  const [scope, setScope] = useState<PerformanceScope>("candidates");
   const query = useQuery({
-    queryKey: ["v2", "alert-performance", tradeDate],
-    queryFn: () => v2Api.alertPerformance(tradeDate),
+    queryKey: ["v2", "alert-performance", tradeDate, scope],
+    queryFn: () => v2Api.alertPerformance(tradeDate, scope),
     refetchInterval: 60_000,
   });
   const data = query.data;
@@ -80,10 +96,18 @@ export function AlertPerformance() {
           <TrendingUp className="h-4 w-4 text-emerald-500" />预警后续表现
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          按预警价计算方向收益，卖出后下跌记为正；同股同类当日提醒合并统计。
+          按首次进入所选阶段时的价格计算；同一股票当天后续升级合并统计。
         </p>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="flex h-9 border border-border bg-muted/25 p-0.5" aria-label="复盘样本范围">
+          {scopes.map((item) => <button
+            key={item.id}
+            type="button"
+            onClick={() => setScope(item.id)}
+            className={`px-3 text-xs font-medium ${scope === item.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+          >{item.label}</button>)}
+        </div>
         <label className="flex h-9 items-center gap-2 border border-border bg-background px-2 text-xs">
           <CalendarDays className="h-4 w-4 text-muted-foreground" />
           <input
@@ -115,7 +139,7 @@ export function AlertPerformance() {
 
     {data && <>
       <div className="grid grid-cols-2 border-y border-border md:grid-cols-5">
-        <div className="px-3 py-3"><div className="text-[11px] text-muted-foreground">当日提醒</div><div className="mt-1 text-lg font-semibold tabular-nums">{data.count}</div></div>
+        <div className="px-3 py-3"><div className="text-[11px] text-muted-foreground">当日样本</div><div className="mt-1 text-lg font-semibold tabular-nums">{data.count}</div></div>
         {horizons.map((horizon) => {
           const metric = data.summary.periods[horizon];
           return <div key={horizon} className="border-l border-border px-3 py-3">
@@ -137,14 +161,14 @@ export function AlertPerformance() {
           <tbody className="divide-y divide-border/70 text-xs">
             {data.items.map((item) => <tr key={`${item.signal_date}-${item.stock_code}-${item.action}`} className="align-top">
               <td className="px-3 py-3"><div className="font-semibold">{item.stock_name || item.stock_code}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{item.stock_code}</div></td>
-              <td className="px-3 py-3"><div className="font-medium">{actionLabel[item.action] || "交易提醒"}</div><div className="mt-1 max-w-52 text-[11px] text-muted-foreground" title={reasonLabel[item.reason_code] || item.reason_code}>{reasonLabel[item.reason_code] || "系统交易条件确认"}</div></td>
-              <td className="px-3 py-3 tabular-nums"><div className="font-semibold">{item.signal_price.toFixed(3)}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{clock(item.signal_time)} · {item.alert_count}次</div><div className="text-[11px] text-muted-foreground">风控 {item.risk_result === "APPROVED" ? "通过" : "受限"}</div></td>
+              <td className="px-3 py-3"><div className="font-medium">{actionLabel[item.action] || "交易提醒"}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{stageLabel[item.entry_stage]} → {stageLabel[item.max_stage]}</div><div className="mt-1 max-w-52 text-[11px] text-muted-foreground" title={reasonLabel[item.reason_code] || item.reason_code}>{reasonLabel[item.reason_code] || "系统交易条件确认"}</div></td>
+              <td className="px-3 py-3 tabular-nums"><div className="font-semibold">{item.signal_price.toFixed(3)}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{clock(item.signal_time)} · {item.alert_count}次</div><div className="text-[11px] text-muted-foreground">{item.risk_result === "NOT_REQUIRED" ? "候选跟踪" : `风控 ${item.risk_result === "APPROVED" ? "通过" : "受限"}`}</div></td>
               <td className="px-3 py-3"><PeriodCell value={item.same_day} /></td>
               {horizons.map((horizon) => <td key={horizon} className="px-3 py-3"><PeriodCell value={item.periods[horizon]} /></td>)}
             </tr>)}
           </tbody>
         </table>
-        {!data.items.length && <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">所选日期没有已送达微信的 V2 交易预警</div>}
+        {!data.items.length && <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">所选日期没有符合当前范围的复盘样本</div>}
       </div>
       <div className="mt-2 text-right text-[11px] text-muted-foreground">日线数据更新至 {data.available_kline_through || "尚无可用交易日"}</div>
     </>}

@@ -7,14 +7,49 @@ import json
 
 
 HORIZONS = (1, 3, 5, 10)
+VALID_SCOPES = {"candidates", "watching", "alerts"}
+STAGE_RANK = {"SETUP": 1, "WATCHING": 2, "CONFIRMED": 3}
 
 
 class AlertPerformanceReader:
     def __init__(self, db) -> None:
         self._db = db
 
-    async def history(self, *, trade_date: str | None = None) -> dict:
+    async def history(
+        self,
+        *,
+        trade_date: str | None = None,
+        scope: str = "candidates",
+    ) -> dict:
         selected_date = self._validated_date(trade_date)
+        if scope not in VALID_SCOPES:
+            raise ValueError("复盘范围必须是 candidates、watching 或 alerts")
+        alerts = (
+            await self._delivered_alerts(selected_date)
+            if scope == "alerts"
+            else await self._candidate_alerts(selected_date, scope=scope)
+        )
+        if not alerts:
+            return self._empty(selected_date, scope)
+
+        codes = sorted({item["stock_code"] for item in alerts})
+        names, klines = await asyncio.gather(
+            self._names(codes), self._klines(codes, selected_date)
+        )
+        items = [self._evaluate(item, names, klines) for item in alerts]
+        return {
+            "trade_date": selected_date,
+            "scope": scope,
+            "items": items,
+            "count": len(items),
+            "available_kline_through": max(
+                (day for stock_days in klines.values() for day in stock_days),
+                default=None,
+            ),
+            "summary": self._summary(items),
+        }
+
+    async def _delivered_alerts(self, selected_date: str) -> list[dict]:
         rows = await self._query(
             "SELECT e.event_id, e.event_type, e.stock_code, e.exchange_time, "
             "e.reason_code, e.strategy_version, i.intent_type, i.risk_result, "
@@ -29,25 +64,27 @@ class AlertPerformanceReader:
             "ORDER BY e.exchange_time, e.id",
             (selected_date,),
         )
-        alerts = self._collapse(rows)
-        if not alerts:
-            return self._empty(selected_date)
+        return self._collapse_delivered(rows)
 
-        codes = sorted({item["stock_code"] for item in alerts})
-        names, klines = await asyncio.gather(
-            self._names(codes), self._klines(codes, selected_date)
+    async def _candidate_alerts(self, selected_date: str, *, scope: str) -> list[dict]:
+        states = ("WATCHING", "CONFIRMED") if scope == "watching" else (
+            "SETUP", "WATCHING", "CONFIRMED"
         )
-        items = [self._evaluate(item, names, klines) for item in alerts]
-        return {
-            "trade_date": selected_date,
-            "items": items,
-            "count": len(items),
-            "available_kline_through": max(
-                (day for stock_days in klines.values() for day in stock_days),
-                default=None,
-            ),
-            "summary": self._summary(items),
-        }
+        placeholders = ",".join("?" for _ in states)
+        rows = await self._query(
+            "SELECT e.event_id, e.event_type, e.stock_code, e.exchange_time, "
+            "e.reason_code, e.strategy_version, e.new_state, e.payload_json, "
+            "o.mfe_pct, o.mae_pct, o.close_return_pct "
+            "FROM v2_decision_events e LEFT JOIN v2_outcomes o "
+            "ON o.decision_event_id=e.event_id "
+            "WHERE e.event_type IN "
+            "('CANDIDATE_ENTERED','CANDIDATE_UPDATED','BUY_CONFIRMED') "
+            f"AND e.new_state IN ({placeholders}) "
+            "AND substr(e.exchange_time,1,10)=? "
+            "ORDER BY e.exchange_time, e.id",
+            (*states, selected_date),
+        )
+        return self._collapse_candidates(rows)
 
     async def _names(self, codes: list[str]) -> dict[str, str]:
         placeholders = ",".join("?" for _ in codes)
@@ -80,7 +117,7 @@ class AlertPerformanceReader:
         return await asyncio.to_thread(self._db.execute_query, sql, params)
 
     @staticmethod
-    def _collapse(rows: list[tuple]) -> list[dict]:
+    def _collapse_delivered(rows: list[tuple]) -> list[dict]:
         collapsed: dict[tuple[str, str, str], dict] = {}
         for row in rows:
             intent_type = str(row[6])
@@ -112,10 +149,67 @@ class AlertPerformanceReader:
                 "action": intent_type,
                 "direction": "SELL" if intent_type == "SELL" else "BUY",
                 "risk_result": row[7],
+                "entry_stage": "CONFIRMED",
+                "max_stage": "CONFIRMED",
                 "delivered_at": row[10],
                 "intraday_mfe_pct": AlertPerformanceReader._number(row[11]),
                 "intraday_mae_pct": AlertPerformanceReader._number(row[12]),
                 "outcome_close_return_pct": AlertPerformanceReader._number(row[13]),
+                "alert_count": 1,
+            }
+        return list(collapsed.values())
+
+    @staticmethod
+    def _collapse_candidates(rows: list[tuple]) -> list[dict]:
+        collapsed: dict[tuple[str, str], dict] = {}
+        for row in rows:
+            try:
+                payload = json.loads(row[7] or "{}")
+                feature = payload.get("feature_snapshot") or {}
+                quote = feature.get("quote") or {}
+                signal_price = float(quote.get("last_price") or 0)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            stock_code = str(row[2]).strip().upper()
+            stage = str(row[6] or "SETUP")
+            if not stock_code or signal_price <= 0 or stage not in STAGE_RANK:
+                continue
+            signal_date = str(row[3])[:10]
+            key = (signal_date, stock_code)
+            if key in collapsed:
+                item = collapsed[key]
+                item["alert_count"] += 1
+                item["last_alert_time"] = row[3]
+                if STAGE_RANK[stage] > STAGE_RANK[item["max_stage"]]:
+                    item["max_stage"] = stage
+                item["intraday_mfe_pct"] = AlertPerformanceReader._max_number(
+                    item["intraday_mfe_pct"], row[8]
+                )
+                item["intraday_mae_pct"] = AlertPerformanceReader._min_number(
+                    item["intraday_mae_pct"], row[9]
+                )
+                if row[10] is not None:
+                    item["outcome_close_return_pct"] = float(row[10])
+                continue
+            collapsed[key] = {
+                "event_id": row[0],
+                "event_type": row[1],
+                "stock_code": stock_code,
+                "signal_time": row[3],
+                "last_alert_time": row[3],
+                "signal_date": signal_date,
+                "signal_price": signal_price,
+                "reason_code": row[4],
+                "strategy_version": row[5],
+                "action": "CANDIDATE",
+                "direction": "BUY",
+                "risk_result": "NOT_REQUIRED",
+                "entry_stage": stage,
+                "max_stage": stage,
+                "delivered_at": None,
+                "intraday_mfe_pct": AlertPerformanceReader._number(row[8]),
+                "intraday_mae_pct": AlertPerformanceReader._number(row[9]),
+                "outcome_close_return_pct": AlertPerformanceReader._number(row[10]),
                 "alert_count": 1,
             }
         return list(collapsed.values())
@@ -242,6 +336,20 @@ class AlertPerformanceReader:
             return None
 
     @staticmethod
+    def _max_number(current: float | None, candidate) -> float | None:
+        value = AlertPerformanceReader._number(candidate)
+        if value is None:
+            return current
+        return value if current is None else max(current, value)
+
+    @staticmethod
+    def _min_number(current: float | None, candidate) -> float | None:
+        value = AlertPerformanceReader._number(candidate)
+        if value is None:
+            return current
+        return value if current is None else min(current, value)
+
+    @staticmethod
     def _validated_date(value: str | None) -> str:
         if value is None:
             return date.today().isoformat()
@@ -251,9 +359,10 @@ class AlertPerformanceReader:
             raise ValueError("交易日期必须是 YYYY-MM-DD") from error
 
     @staticmethod
-    def _empty(trade_date: str) -> dict:
+    def _empty(trade_date: str, scope: str) -> dict:
         return {
             "trade_date": trade_date,
+            "scope": scope,
             "items": [],
             "count": 0,
             "available_kline_through": None,

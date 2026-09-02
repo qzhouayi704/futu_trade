@@ -100,8 +100,15 @@ class V2ReadModelService:
             stock_code, trade_date=trade_date
         )
 
-    async def alert_performance(self, *, trade_date: str | None = None) -> dict:
-        return await self._alert_performance.history(trade_date=trade_date)
+    async def alert_performance(
+        self,
+        *,
+        trade_date: str | None = None,
+        scope: str = "candidates",
+    ) -> dict:
+        return await self._alert_performance.history(
+            trade_date=trade_date, scope=scope
+        )
 
     async def positions(self) -> dict:
         strategy_version = self._strategy_version()

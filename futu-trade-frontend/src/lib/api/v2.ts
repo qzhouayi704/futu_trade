@@ -174,9 +174,11 @@ export interface V2AlertPerformanceItem {
   signal_price: number;
   reason_code: string;
   strategy_version: string;
-  action: "BUY" | "SELL" | "ROTATE";
+  action: "CANDIDATE" | "BUY" | "SELL" | "ROTATE";
   direction: "BUY" | "SELL";
   risk_result: string;
+  entry_stage: "SETUP" | "WATCHING" | "CONFIRMED";
+  max_stage: "SETUP" | "WATCHING" | "CONFIRMED";
   delivered_at: string | null;
   alert_count: number;
   same_day: V2AlertPeriodResult;
@@ -186,6 +188,7 @@ export interface V2AlertPerformanceItem {
 
 export interface V2AlertPerformance {
   trade_date: string;
+  scope: "candidates" | "watching" | "alerts";
   items: V2AlertPerformanceItem[];
   count: number;
   available_kline_through: string | null;
@@ -322,9 +325,12 @@ export const v2Api = {
   positions: () => getData<{ items: V2Position[]; count: number }>("/v2/positions"),
   decisions: () => getData<{ items: V2Decision[]; count: number }>("/v2/decisions?limit=200"),
   distribution: () => getData<V2Distribution>("/v2/outcomes/distribution"),
-  alertPerformance: (tradeDate: string) =>
+  alertPerformance: (
+    tradeDate: string,
+    scope: "candidates" | "watching" | "alerts",
+  ) =>
     getData<V2AlertPerformance>(
-      `/v2/outcomes/alert-performance?trade_date=${encodeURIComponent(tradeDate)}`,
+      `/v2/outcomes/alert-performance?trade_date=${encodeURIComponent(tradeDate)}&scope=${scope}`,
     ),
   shadowAcceptance: () => getData<V2ShadowAcceptance>("/v2/outcomes/shadow-acceptance?days=10"),
   health: () => getData<V2Health>("/v2/system/health"),
