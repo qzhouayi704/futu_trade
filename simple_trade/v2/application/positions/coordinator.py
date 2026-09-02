@@ -43,6 +43,8 @@ class PositionStateStorePort(Protocol):
 
     async def list_open(self, strategy_version: str) -> tuple[PositionState, ...]: ...
 
+    async def list_latest_open(self) -> tuple[PositionState, ...]: ...
+
 
 class CandidateReadPort(Protocol):
     def ranked(self, limit: int = 20): ...
@@ -279,7 +281,12 @@ class PositionCoordinator:
                 evaluation = rotation_evaluation(position, proposal)
                 analytical_state = evolve_state(position, state, efficiency, evaluation)
 
-        if should_persist(position.as_of, state, evaluation, self.PERSIST_INTERVAL):
+        migrating = bool(
+            state is not None and state.strategy_version != self._strategy_version
+        )
+        if migrating or should_persist(
+            position.as_of, state, evaluation, self.PERSIST_INTERVAL
+        ):
             event, persisted = build_position_transition(
                 source,
                 position,
@@ -291,7 +298,9 @@ class PositionCoordinator:
             )
             try:
                 inserted = await self._event_store.append_with_position_state(
-                    event, persisted, state.version if state else 0
+                    event,
+                    persisted,
+                    state.version if state is not None and not migrating else 0,
                 )
             except StateConflictError:
                 state = await self._state_store.get(position.stock_code, self._strategy_version)
@@ -331,8 +340,15 @@ class PositionCoordinator:
         if self._loaded:
             return
         states = await self._state_store.list_open(self._strategy_version)
+        latest = await self._state_store.list_latest_open()
+        current_codes = {state.stock_code for state in states}
+        recovered = tuple(
+            state for state in latest if state.stock_code not in current_codes
+        )
         with self._lock:
-            self._states.update({state.stock_code: state for state in states})
+            self._states.update(
+                {state.stock_code: state for state in (*recovered, *states)}
+            )
             self._loaded = True
 
     def _publish(self, event: DecisionEvent) -> None:

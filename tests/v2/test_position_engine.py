@@ -8,13 +8,18 @@ from simple_trade.v2.application.positions.rotation import RotationEvaluator
 from simple_trade.v2.application.positions.structural_exit import StructuralExitPolicy
 from simple_trade.v2.domain.candidates import TradeCandidate
 from simple_trade.v2.domain.enums import (
+    CapitalMemoryState,
     CandidateStatus,
     DataQuality,
     DecisionAction,
     PositionStatus,
 )
 from simple_trade.v2.domain.positions import PositionSnapshot, PositionState
-from tests.v2.test_candidate_strategy import snapshot as feature_snapshot, window
+from tests.v2.test_candidate_strategy import (
+    capital_memory,
+    snapshot as feature_snapshot,
+    window,
+)
 
 
 NOW = datetime(2026, 8, 31, 11, 0, tzinfo=timezone(timedelta(hours=8)))
@@ -57,6 +62,85 @@ def prices(flat: bool = True):
 
 
 class PositionEngineTests(unittest.TestCase):
+    def test_medium_term_distribution_survives_empty_15m_window(self) -> None:
+        empty_15m = window(900)
+        outflow_30m = window(
+            1800, buys=1, sells=7, buy_amount=500_000,
+            sell_amount=5_000_000, span=900,
+        )
+        memory = replace(
+            capital_memory(state=CapitalMemoryState.DISTRIBUTING),
+            score=18,
+            decayed_buy_amount=1_000_000,
+            decayed_sell_amount=6_000_000,
+            decayed_main_net=-5_000_000,
+            decayed_buy_events=1.0,
+            decayed_sell_events=7.0,
+            reason_codes=("CAPITAL_MEMORY_DISTRIBUTING",),
+        )
+        feature = feature_snapshot(
+            as_of=NOW, windows=(empty_15m, outflow_30m), memory=memory
+        )
+
+        efficiency = PositionEfficiencyEngine().calculate(
+            position(102), state(peak=103), feature, prices()
+        )
+        decision = PositionDecisionEngine().evaluate(
+            position(102), state(peak=103), efficiency, feature
+        )
+
+        self.assertEqual(efficiency.flow_current, -5_000_000)
+        self.assertEqual(efficiency.flow_drawdown_ratio, 1)
+        self.assertLess(efficiency.score, 65)
+        self.assertEqual(
+            decision.decision.reason_codes,
+            ("REPEATED_OUTFLOW_ABSORBED_OR_SUPPORTED",),
+        )
+
+    def test_medium_term_distribution_exits_after_vwap_structure_break(self) -> None:
+        medium = window(
+            1800, buys=1, sells=7, buy_amount=500_000,
+            sell_amount=5_000_000, span=900,
+        )
+        memory = replace(
+            capital_memory(state=CapitalMemoryState.DISTRIBUTING),
+            score=18,
+            decayed_buy_amount=1_000_000,
+            decayed_sell_amount=6_000_000,
+            decayed_main_net=-5_000_000,
+            decayed_buy_events=1.0,
+            decayed_sell_events=7.0,
+            reason_codes=("CAPITAL_MEMORY_DISTRIBUTING",),
+        )
+        feature = feature_snapshot(
+            as_of=NOW, windows=(window(900), medium), accepted=False, memory=memory
+        )
+        base = PositionEfficiencyEngine().calculate(
+            position(102), state(peak=103), feature, prices()
+        )
+        metadata = {}
+        assessment = None
+        for minute in range(5):
+            observed_at = NOW + timedelta(minutes=minute)
+            observed = replace(
+                feature,
+                computed_at=observed_at,
+                price_acceptance=replace(feature.price_acceptance, as_of=observed_at),
+            )
+            assessment = StructuralExitPolicy().assess(
+                replace(state(peak=103), metadata=metadata),
+                replace(base, as_of=observed_at),
+                observed,
+            )
+            metadata = dict(assessment.metadata_updates)
+
+        self.assertIsNotNone(assessment)
+        self.assertTrue(assessment.strong_outflow)
+        self.assertEqual(
+            assessment.exit_reason,
+            "REPEATED_OUTFLOW_AND_STRUCTURE_BREAK",
+        )
+
     def test_efficiency_tracks_mfe_mae_flow_decay_and_sustained_stall(self) -> None:
         feature = feature_snapshot(
             as_of=NOW,

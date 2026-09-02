@@ -3,7 +3,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from simple_trade.v2.application.positions.coordinator import PositionCoordinator
-from simple_trade.v2.domain.enums import DataQuality, EventType
+from simple_trade.v2.domain.enums import DataQuality, EventType, PositionStatus
 from simple_trade.v2.domain.events import FeatureSnapshotEvent, PositionReconciledEvent
 from simple_trade.v2.domain.positions import PositionReconciliation, PositionSnapshot
 from tests.v2.test_candidate_strategy import snapshot as feature_snapshot, window
@@ -24,6 +24,17 @@ class MemoryPositionStores:
         return tuple(
             state for (version, _), state in self.states.items()
             if version == strategy_version and state.status.value != "CLOSED"
+        )
+
+    async def list_latest_open(self):
+        latest = {}
+        for state in self.states.values():
+            prior = latest.get(state.stock_code)
+            if prior is None or state.updated_at > prior.updated_at:
+                latest[state.stock_code] = state
+        return tuple(
+            state for state in latest.values()
+            if state.status is not PositionStatus.CLOSED
         )
 
     async def append_with_position_state(self, event, state, expected_version):
@@ -110,6 +121,42 @@ def feature_event(*, as_of: datetime, price: float) -> FeatureSnapshotEvent:
 
 
 class PositionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_strategy_upgrade_recovers_open_position_analytics(self) -> None:
+        stores = MemoryPositionStores()
+        old = PositionCoordinator(
+            stores, stores, EmptyCandidates(), EmptyFeatures(),
+            strategy_version="old-v2",
+        )
+        await old.start()
+        old.on_reconciliation(event((position(),), suffix="old"))
+        await old.stop(drain=True)
+        prior = stores.states[("old-v2", "HK.00100")]
+        stores.states[("old-v2", "HK.00100")] = replace(
+            prior,
+            peak_price=110,
+            mfe_pct=10,
+            flow_peak=2_000_000,
+            opened_at=NOW - timedelta(hours=2),
+            updated_at=NOW - timedelta(minutes=1),
+        )
+
+        upgraded = PositionCoordinator(
+            stores, stores, EmptyCandidates(), EmptyFeatures(),
+            strategy_version="test-v2",
+        )
+        await upgraded.start()
+        upgraded.on_reconciliation(event(
+            (position(),), as_of=NOW + timedelta(minutes=1), suffix="upgrade"
+        ))
+        await upgraded.stop(drain=True)
+
+        recovered = stores.states[("test-v2", "HK.00100")]
+        self.assertEqual(recovered.version, 1)
+        self.assertEqual(recovered.peak_price, 110)
+        self.assertEqual(recovered.mfe_pct, 10)
+        self.assertEqual(recovered.flow_peak, 2_000_000)
+        self.assertEqual(recovered.opened_at, NOW - timedelta(hours=2))
+
     async def test_broker_position_opens_and_authoritative_absence_closes(self) -> None:
         stores = MemoryPositionStores()
         coordinator = PositionCoordinator(

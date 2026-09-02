@@ -105,6 +105,22 @@ class SqlitePositionStateStore:
         )
         return tuple(self._from_row(row) for row in rows)
 
+    async def list_latest_open(self) -> tuple[PositionState, ...]:
+        rows = await asyncio.to_thread(
+            self._db.execute_query,
+            self._select_sql(""),
+        )
+        latest: dict[str, PositionState] = {}
+        for row in rows:
+            state = self._from_row(row)
+            prior = latest.get(state.stock_code)
+            if prior is None or state.updated_at > prior.updated_at:
+                latest[state.stock_code] = state
+        return tuple(
+            state for state in latest.values()
+            if state.status is not PositionStatus.CLOSED
+        )
+
     async def save(self, state: PositionState, expected_version: int) -> None:
         await submit_write(
             self._db,

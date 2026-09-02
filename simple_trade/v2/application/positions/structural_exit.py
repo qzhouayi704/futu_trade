@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Mapping
 
+from ...domain.enums import CapitalMemoryState, DataQuality
 from ...domain.features import FeatureSnapshot
+from ...domain.market import TickAggregate
 from ...domain.positions import PositionEfficiency, PositionState
 from ...domain.serialization import JsonValue
 
@@ -135,8 +137,35 @@ class StructuralExitPolicy:
     def _repeated_outflow(self, feature: FeatureSnapshot | None) -> bool:
         if feature is None:
             return False
-        window = next((item for item in feature.tick_windows if item.window_seconds == 900), None)
-        if window is None:
+        recent = next(
+            (item for item in feature.tick_windows if item.window_seconds == 900),
+            None,
+        )
+        if recent is not None and self._window_has_repeated_outflow(recent):
+            return True
+        memory = feature.capital_memory
+        distributing = bool(
+            memory is not None
+            and memory.quality is not DataQuality.INVALID
+            and memory.state is CapitalMemoryState.DISTRIBUTING
+            and memory.decayed_main_net < 0
+            and memory.decayed_sell_events >= max(3.0, memory.decayed_buy_events * 1.5)
+        )
+        if not distributing:
+            return False
+        return any(
+            self._window_has_repeated_outflow(window, threshold_multiple=2.0)
+            for window in feature.tick_windows
+            if window.window_seconds in {1800, 3600}
+        )
+
+    def _window_has_repeated_outflow(
+        self,
+        window: TickAggregate,
+        *,
+        threshold_multiple: float = 1.0,
+    ) -> bool:
+        if window.quality is DataQuality.INVALID:
             return False
         threshold = window.large_order_threshold or 100_000.0
         span = (
@@ -147,7 +176,7 @@ class StructuralExitPolicy:
         return bool(
             window.independent_sell_events >= self.OUTFLOW_EVENTS
             and span >= self.OUTFLOW_SPAN_SECONDS
-            and window.main_net <= -threshold
+            and window.main_net <= -(threshold * threshold_multiple)
             and window.sell_amount >= max(threshold, window.buy_amount * 1.2)
         )
 

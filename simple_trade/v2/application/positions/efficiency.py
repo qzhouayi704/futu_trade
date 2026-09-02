@@ -45,16 +45,33 @@ class PositionEfficiencyEngine:
         flow_threshold = 1.0
         feature_quality = DataQuality.INVALID
         if feature is not None:
-            window = next(
-                (item for item in feature.tick_windows if item.window_seconds == 900),
-                None,
+            risk_windows = tuple(
+                item for item in feature.tick_windows
+                if item.window_seconds in {900, 1800, 3600}
+                and item.quality is not DataQuality.INVALID
             )
-            if window is not None:
-                flow_current = window.main_net
-                flow_threshold = window.large_order_threshold or 1.0
-                feature_quality = window.quality
+            flow_values = [item.main_net for item in risk_windows]
+            if (
+                feature.capital_memory is not None
+                and feature.capital_memory.quality is not DataQuality.INVALID
+            ):
+                flow_values.append(feature.capital_memory.decayed_main_net)
+            if flow_values:
+                flow_current = min(flow_values)
+            if risk_windows:
+                flow_threshold = max(
+                    item.large_order_threshold or 1.0 for item in risk_windows
+                )
+                feature_quality = worst_quality(
+                    *(item.quality for item in risk_windows)
+                )
         prior_flow_peak = analytics_state.flow_peak if analytics_state is not None else flow_current
-        flow_peak = max(prior_flow_peak, flow_current, 0.0)
+        memory_peak = (
+            feature.capital_memory.day_peak
+            if feature is not None and feature.capital_memory is not None
+            else 0.0
+        )
+        flow_peak = max(prior_flow_peak, memory_peak, flow_current, 0.0)
         flow_drawdown = clamp(
             (flow_peak - flow_current) / max(flow_peak, flow_threshold),
             0.0,

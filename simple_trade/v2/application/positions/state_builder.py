@@ -95,15 +95,19 @@ def build_position_transition(
             ),
         },
     )
+    current_prior = bool(
+        prior is not None and prior.strategy_version == strategy_version
+    )
     placeholder = prior or _initial_state(position, strategy_version, event.event_id)
     state = _state_values(
         position,
         placeholder,
         efficiency,
         evaluation,
-        version=(prior.version if prior is not None else 0) + 1,
+        version=(prior.version if current_prior else 0) + 1,
         last_event_id=event.event_id,
         last_persisted_at=position.as_of,
+        strategy_version=strategy_version,
     )
     return event, state
 
@@ -204,6 +208,7 @@ def _state_values(
     version: int,
     last_event_id: str,
     last_persisted_at: object,
+    strategy_version: str | None = None,
 ) -> PositionState:
     basis_changed = "COST_BASIS_CHANGED" in efficiency.reason_codes
     new_high = position.current_price > prior.peak_price
@@ -229,7 +234,7 @@ def _state_values(
     }
     return PositionState(
         stock_code=position.stock_code,
-        strategy_version=prior.strategy_version,
+        strategy_version=strategy_version or prior.strategy_version,
         status=evaluation.target_status,
         version=version,
         last_event_id=last_event_id,
