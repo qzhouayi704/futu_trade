@@ -380,6 +380,42 @@ class CandidateStrategyTests(unittest.TestCase):
             state(StrategyStatus.WATCHING, metadata={"watch_price": 100}), ELIGIBLE,
         )
         self.assertEqual(price_break.reason_code, "PRICE_ACCEPTANCE_BROKEN")
+        self.assertEqual(
+            price_break.metadata["invalidation_reason"],
+            "PRICE_ACCEPTANCE_BROKEN",
+        )
+
+    def test_high_atr_watch_uses_adaptive_price_acceptance_floor(self) -> None:
+        item = snapshot(
+            as_of=NOW + timedelta(minutes=1),
+            price=99.6,
+            atr_percent=8.0,
+        )
+        normal_pullback = replace(
+            item,
+            price_acceptance=replace(
+                item.price_acceptance,
+                accepted=False,
+                distance_to_vwap_pct=0.7,
+                drawdown_from_peak_pct=-1.01,
+            ),
+        )
+        watching = state(
+            StrategyStatus.WATCHING,
+            metadata={"watch_price": 100},
+        )
+
+        self.assertIsNone(self.machine.evaluate(normal_pullback, watching, ELIGIBLE))
+
+        broken = replace(
+            normal_pullback,
+            price_acceptance=replace(
+                normal_pullback.price_acceptance,
+                drawdown_from_peak_pct=-2.01,
+            ),
+        )
+        invalidated = self.machine.evaluate(broken, watching, ELIGIBLE)
+        self.assertEqual(invalidated.reason_code, "PRICE_ACCEPTANCE_BROKEN")
 
     def test_invalidated_state_respects_one_hour_reentry_cooldown(self) -> None:
         invalid = state(StrategyStatus.INVALIDATED, updated_at=NOW)
@@ -615,6 +651,123 @@ class CandidateStrategyTests(unittest.TestCase):
         )
         self.assertEqual(reentered.new_status, StrategyStatus.WATCHING)
         self.assertEqual(reentered.reason_code, "SOFT_GATE_STRONG_SIGNAL_REENTRY")
+
+    def test_high_position_second_inflow_reconfirms_after_price_invalidation(self) -> None:
+        as_of = NOW + timedelta(minutes=3)
+        fast = window(
+            900,
+            buys=5,
+            buy_amount=56_000_000,
+            span=300,
+        )
+        memory = replace(
+            capital_memory(as_of=as_of, state=CapitalMemoryState.ACCUMULATING),
+            score=86,
+            day_main_net=189_000_000,
+            day_peak=195_000_000,
+            recent_15m_main_net=56_000_000,
+            recent_15m_buy_events=5,
+        )
+        item = snapshot(
+            as_of=as_of,
+            regime=MarketRegime.EXTREME,
+            windows=(fast,),
+            price=169,
+            sector_breadth=0.22,
+            relative_strength=4.8,
+            atr_percent=8.0,
+            distance_to_ma20=17.0,
+            memory=memory,
+        )
+        item = replace(
+            item,
+            market_context=replace(item.market_context, market_breadth=0.19),
+            price_position=replace(
+                item.price_position,
+                daily_percentile=0.82,
+                structure="HIGH",
+            ),
+        )
+        invalid = state(
+            StrategyStatus.INVALIDATED,
+            updated_at=NOW,
+            metadata={"invalidation_reason": "PRICE_ACCEPTANCE_BROKEN"},
+        )
+
+        reconfirmed = self.machine.evaluate(item, invalid, SOFT_INELIGIBLE)
+
+        self.assertEqual(reconfirmed.new_status, StrategyStatus.CONFIRMED)
+        self.assertEqual(reconfirmed.event_type, EventType.BUY_CONFIRMED)
+        self.assertEqual(
+            reconfirmed.reason_code,
+            "STRONG_TREND_SECOND_INFLOW_CONFIRMED",
+        )
+        self.assertTrue(reconfirmed.alert_eligible)
+        self.assertEqual(reconfirmed.metadata["protection_price"], 165.62)
+        restart_recovered = self.machine.evaluate(item, None, SOFT_INELIGIBLE)
+        self.assertEqual(restart_recovered.new_status, StrategyStatus.CONFIRMED)
+        self.assertEqual(
+            restart_recovered.reason_code,
+            "STRONG_TREND_SECOND_INFLOW_CONFIRMED",
+        )
+        portfolio = StrategyPortfolio().evaluate(
+            item,
+            SOFT_INELIGIBLE,
+            CandidateScorer().score(item),
+        )
+        self.assertIn("strong_trend_reentry", portfolio.strategy_sources)
+
+    def test_high_position_reentry_rejects_overextension_and_offsetting_outflow(self) -> None:
+        as_of = NOW + timedelta(minutes=3)
+        memory = replace(
+            capital_memory(as_of=as_of, state=CapitalMemoryState.ACCUMULATING),
+            score=86,
+            day_main_net=100_000_000,
+            recent_15m_main_net=30_000_000,
+            recent_15m_buy_events=5,
+        )
+        fast = window(
+            900,
+            buys=5,
+            buy_amount=56_000_000,
+            span=300,
+        )
+        base = snapshot(
+            as_of=as_of,
+            windows=(fast,),
+            price=169,
+            relative_strength=4.8,
+            atr_percent=8.0,
+            distance_to_ma20=21.0,
+            memory=memory,
+        )
+        base = replace(
+            base,
+            price_position=replace(base.price_position, daily_percentile=0.82),
+        )
+        invalid = state(
+            StrategyStatus.INVALIDATED,
+            updated_at=NOW,
+            metadata={"invalidation_reason": "PRICE_ACCEPTANCE_BROKEN"},
+        )
+        self.assertIsNone(self.machine.evaluate(base, invalid, SOFT_INELIGIBLE))
+
+        offset = window(
+            900,
+            buys=5,
+            sells=3,
+            buy_amount=56_000_000,
+            sell_amount=50_000_000,
+            span=300,
+        )
+        not_extended = replace(
+            base,
+            tick_windows=(offset,),
+            price_position=replace(base.price_position, distance_to_ma20=17.0),
+        )
+        self.assertIsNone(
+            self.machine.evaluate(not_extended, invalid, SOFT_INELIGIBLE)
+        )
 
 
 if __name__ == "__main__":

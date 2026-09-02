@@ -22,6 +22,13 @@ class CandidateSignalRules:
     MOMENTUM_MIN_RELATIVE_STRENGTH = 1.5
     MOMENTUM_MIN_ACTIVITY_PERCENTILE = 0.70
     MOMENTUM_MAX_EXTENSION_ATR = 1.0
+    STRONG_TREND_MIN_DAILY_PERCENTILE = 0.50
+    STRONG_TREND_MAX_EXTENSION_ATR = 2.5
+    STRONG_TREND_MIN_RELATIVE_STRENGTH = 2.0
+    STRONG_TREND_MIN_ACTIVITY_PERCENTILE = 0.70
+    STRONG_TREND_MIN_MEMORY_SCORE = 65.0
+    STRONG_TREND_MIN_EVENT_SPAN_SECONDS = 120
+    STRONG_TREND_MIN_BUY_RATIO = 0.72
     MOMENTUM_SOFT_UNIVERSE_REASONS = {
         "TURNOVER_RANK_NOT_HOT",
         "SECTOR_BREADTH_WEAK",
@@ -62,6 +69,90 @@ class CandidateSignalRules:
             and (window.buy_sell_ratio or 0.0) >= 0.80
             and not CandidateSignalRules.outflow_offsets_inflow(window)
         )
+
+    @staticmethod
+    def fast_reaccumulation(window: TickAggregate | None) -> bool:
+        if window is None:
+            return False
+        threshold = window.large_order_threshold or 100_000.0
+        scale = window.flow_scale or threshold
+        return bool(
+            window.independent_buy_events >= 3
+            and window.independent_buy_span_seconds
+            >= CandidateSignalRules.STRONG_TREND_MIN_EVENT_SPAN_SECONDS
+            and window.main_net >= max(4.0 * threshold, 1.5 * scale)
+            and (window.buy_sell_ratio or 0.0)
+            >= CandidateSignalRules.STRONG_TREND_MIN_BUY_RATIO
+            and not CandidateSignalRules.outflow_offsets_inflow(window)
+        )
+
+    @classmethod
+    def strong_trend_reentry_context(cls, snapshot: FeatureSnapshot) -> bool:
+        memory = snapshot.capital_memory
+        context = snapshot.market_context
+        position = snapshot.price_position
+        acceptance = snapshot.price_acceptance
+        activity = snapshot.activity
+        liquidity = snapshot.liquidity
+        extension_atr = (
+            position.distance_to_ma20 / position.atr_percent
+            if position.atr_percent > 0
+            else None
+        )
+        max_vwap_extension = min(3.0, max(1.5, position.atr_percent * 0.35))
+        return bool(
+            memory is not None
+            and memory.quality is not DataQuality.INVALID
+            and memory.state in {
+                CapitalMemoryState.ABSORBING,
+                CapitalMemoryState.REVERSING,
+                CapitalMemoryState.ACCUMULATING,
+            }
+            and memory.score >= cls.STRONG_TREND_MIN_MEMORY_SCORE
+            and memory.day_main_net > 0
+            and memory.recent_15m_buy_events >= 3
+            and memory.recent_15m_main_net > 0
+            and snapshot.computed_at.timetz().replace(tzinfo=None)
+            <= cls.MEMORY_WATCH_CUTOFF
+            and snapshot.quality is not DataQuality.INVALID
+            and position.quality is not DataQuality.INVALID
+            and position.daily_percentile > cls.STRONG_TREND_MIN_DAILY_PERCENTILE
+            and extension_atr is not None
+            and extension_atr <= cls.STRONG_TREND_MAX_EXTENSION_ATR
+            and context.quality is not DataQuality.INVALID
+            and context.market_sample_size >= 20
+            and context.turnover_rank_percentile is not None
+            and context.turnover_rank_percentile
+            >= cls.STRONG_TREND_MIN_ACTIVITY_PERCENTILE
+            and context.relative_strength is not None
+            and context.relative_strength >= cls.STRONG_TREND_MIN_RELATIVE_STRENGTH
+            and activity is not None
+            and activity.is_active
+            and liquidity is not None
+            and liquidity.score >= 30
+            and acceptance is not None
+            and acceptance.accepted
+            and (
+                acceptance.distance_to_vwap_pct is None
+                or -0.3 <= acceptance.distance_to_vwap_pct <= max_vwap_extension
+            )
+        )
+
+    @classmethod
+    def strong_trend_reentry_ready(cls, snapshot: FeatureSnapshot) -> bool:
+        return bool(
+            cls.strong_trend_reentry_context(snapshot)
+            and cls.fast_reaccumulation(cls.window(snapshot, 900))
+        )
+
+    @staticmethod
+    def adaptive_pullback_limit_pct(
+        snapshot: FeatureSnapshot,
+        *,
+        minimum: float,
+    ) -> float:
+        atr_limit = max(0.0, snapshot.price_position.atr_percent) * 0.25
+        return min(2.5, max(minimum, atr_limit))
 
     @classmethod
     def strict_momentum_context(cls, snapshot: FeatureSnapshot) -> bool:
@@ -183,6 +274,7 @@ class StrategyPortfolio:
         nominations = (
             self._capital_absorption(snapshot, base_score),
             self._capital_memory_reversal(snapshot, universe, base_score),
+            self._strong_trend_reentry(snapshot, universe, base_score),
             self._momentum(snapshot, universe, base_score),
         )
         eligible = tuple(item for item in nominations if item.eligible)
@@ -300,5 +392,40 @@ class StrategyPortfolio:
                 ("STRICT_MOMENTUM_SHADOW_READY",)
                 if eligible
                 else tuple(hard_reasons) or ("STRICT_MOMENTUM_CONTEXT_NOT_READY",)
+            ),
+        )
+
+    @staticmethod
+    def _strong_trend_reentry(
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+        base: CandidateScore,
+    ) -> StrategyNomination:
+        hard_reasons = set(universe.reason_codes) - (
+            CandidateSignalRules.MOMENTUM_SOFT_UNIVERSE_REASONS
+        )
+        context_ok = bool(
+            not hard_reasons
+            and CandidateSignalRules.strong_trend_reentry_context(snapshot)
+        )
+        eligible = bool(
+            context_ok and CandidateSignalRules.strong_trend_reentry_ready(snapshot)
+        )
+        memory_score = snapshot.capital_memory.score if snapshot.capital_memory else 0.0
+        score = clamp(
+            memory_score * 0.35
+            + base.capital_flow * 0.30
+            + base.price_acceptance * 0.20
+            + base.relative_strength * 0.15
+        )
+        return StrategyNomination(
+            strategy_id="strong_trend_reentry",
+            eligible=eligible,
+            stage="CONFIRMED" if eligible else "WATCH" if context_ok else "REJECTED",
+            score=round(score, 4),
+            reason_codes=(
+                ("STRONG_TREND_SECOND_INFLOW_READY",)
+                if eligible
+                else tuple(hard_reasons) or ("STRONG_TREND_REENTRY_CONTEXT_NOT_READY",)
             ),
         )

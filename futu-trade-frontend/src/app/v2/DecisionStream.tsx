@@ -64,6 +64,7 @@ const reasonLabel: Record<string, string> = {
   LEGACY_RALLY_SETUP_WATCH: "量价齐升，升级为重点观察",
   STRICT_MOMENTUM_WATCH: "强势动量，等待多次资金确认",
   STRICT_MOMENTUM_SHADOW_CONFIRMED: "强势动量影子确认",
+  STRONG_TREND_SECOND_INFLOW_CONFIRMED: "强势股二次大单资金确认",
   FAST_15M_MULTI_INFLOW_CONFIRMED: "15分钟多次流入确认",
   WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED: "弱市中60分钟强势资金确认",
   EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED: "极弱市场中60分钟多次流入确认",

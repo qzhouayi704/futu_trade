@@ -24,10 +24,13 @@ def build_transition(
     schema_version: int,
 ) -> tuple[DecisionEvent, StrategyState]:
     old_status = state.status if state is not None else StrategyStatus.IDLE
+    proposal_metadata = dict(proposal.metadata)
+    if proposal.new_status is StrategyStatus.INVALIDATED:
+        proposal_metadata["invalidation_reason"] = proposal.reason_code
     merged_metadata = (
-        dict(proposal.metadata)
+        proposal_metadata
         if proposal.new_status is StrategyStatus.SETUP
-        else {**(dict(state.metadata) if state is not None else {}), **dict(proposal.metadata)}
+        else {**(dict(state.metadata) if state is not None else {}), **proposal_metadata}
     )
     event = DecisionEvent(
         event_type=proposal.event_type,

@@ -12,6 +12,7 @@ class NotificationFormatter:
         "LOW_POSITION_15M_ACCUMULATION_CONFIRMED": "低位15分钟多次大单吸收确认",
         "FAST_15M_MULTI_INFLOW_CONFIRMED": "15分钟多次主力流入确认",
         "STRICT_MOMENTUM_SHADOW_CONFIRMED": "严格热门动量影子确认",
+        "STRONG_TREND_SECOND_INFLOW_CONFIRMED": "强势股二次大单资金确认",
         "WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED": "弱市60分钟强股资金确认",
         "EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED": "极弱市60分钟多次流入确认",
         "HARD_STOP_3_PCT": "亏损达到3%硬止损",

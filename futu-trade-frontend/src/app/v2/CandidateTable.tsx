@@ -32,6 +32,7 @@ const reasonLabel: Record<string, string> = {
   FAST_15M_MULTI_INFLOW_CONFIRMED: "15分钟多次流入确认",
   STRICT_MOMENTUM_WATCH: "严格动量，等待三次资金确认",
   STRICT_MOMENTUM_SHADOW_CONFIRMED: "严格热门动量影子确认",
+  STRONG_TREND_SECOND_INFLOW_CONFIRMED: "强势股二次大单资金确认",
   WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED: "弱市60分钟强势确认",
   EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED: "极弱市60分钟多次确认",
   MARKET_CONTEXT_INCOMPLETE: "市场环境数据不完整",
@@ -54,6 +55,7 @@ const strategyLabel: Record<string, string> = {
   capital_absorption: "低位吸收",
   capital_memory_reversal: "资金转强",
   momentum_continuation: "严格动量",
+  strong_trend_reentry: "强势回流",
 };
 
 const memoryStateLabel: Record<string, string> = {

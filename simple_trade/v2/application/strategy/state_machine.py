@@ -21,6 +21,7 @@ class CandidateStateMachine:
     MIN_SLOW_EVENT_SPAN_SECONDS = 600
     REENTRY_COOLDOWN_SECONDS = 3600
     SOFT_REENTRY_SECONDS = 300
+    FLOW_REENTRY_SECONDS = 120
     UNIVERSE_GRACE_SECONDS = 300
     LOW_POSITION_MAX_PERCENTILE = CandidateSignalRules.LOW_POSITION_MAX_PERCENTILE
     SOFT_UNIVERSE_REASONS = {
@@ -42,7 +43,8 @@ class CandidateStateMachine:
         status = state.status if state is not None else StrategyStatus.IDLE
         if status is StrategyStatus.IDLE:
             return (
-                self._enter_capital_memory_watch(
+                self._confirm_strong_trend_reentry(snapshot, universe)
+                or self._enter_capital_memory_watch(
                     snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
                 )
                 or self._enter_low_position_watch(
@@ -67,6 +69,9 @@ class CandidateStateMachine:
                     universe,
                     reason="DATA_QUALITY_INVALID",
                 )
+            strong_trend = self._confirm_strong_trend_reentry(snapshot, universe)
+            if strong_trend is not None:
+                return strong_trend
             memory_watch = self._enter_capital_memory_watch(
                 snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
             )
@@ -105,6 +110,10 @@ class CandidateStateMachine:
                 )
             return None
 
+        if status is StrategyStatus.WATCHING:
+            strong_trend = self._confirm_strong_trend_reentry(snapshot, universe)
+            if strong_trend is not None:
+                return strong_trend
         if status in {StrategyStatus.WATCHING, StrategyStatus.CONFIRMED}:
             invalid = self._active_invalidation(snapshot, state, universe)
             if invalid is not None:
@@ -217,6 +226,10 @@ class CandidateStateMachine:
     ) -> TransitionProposal | None:
         elapsed = (snapshot.computed_at - state.updated_at).total_seconds()
         invalidation_reason = str(state.metadata.get("invalidation_reason") or "")
+        if elapsed >= self.FLOW_REENTRY_SECONDS:
+            strong_trend = self._confirm_strong_trend_reentry(snapshot, universe)
+            if strong_trend is not None:
+                return strong_trend
         if (
             elapsed >= self.SOFT_REENTRY_SECONDS
             and invalidation_reason in self.SOFT_UNIVERSE_REASONS
@@ -262,12 +275,7 @@ class CandidateStateMachine:
         universe: UniverseDecision,
     ) -> TransitionProposal | None:
         if snapshot.quality is DataQuality.INVALID:
-            return TransitionProposal(
-                new_status=StrategyStatus.INVALIDATED,
-                event_type=EventType.BUY_INVALIDATED,
-                reason_code="DATA_QUALITY_INVALID",
-                metadata={"cooldown_started_at": snapshot.computed_at},
-            )
+            return self._active_invalidated(snapshot, "DATA_QUALITY_INVALID")
         memory = snapshot.capital_memory
         if (
             state is not None
@@ -275,11 +283,8 @@ class CandidateStateMachine:
             and memory is not None
             and memory.state is CapitalMemoryState.DISTRIBUTING
         ):
-            return TransitionProposal(
-                new_status=StrategyStatus.INVALIDATED,
-                event_type=EventType.BUY_INVALIDATED,
-                reason_code="CAPITAL_MEMORY_TURNED_DISTRIBUTING",
-                metadata={"cooldown_started_at": snapshot.computed_at},
+            return self._active_invalidated(
+                snapshot, "CAPITAL_MEMORY_TURNED_DISTRIBUTING"
             )
         fast = self._window(snapshot, self.FAST_WINDOW_SECONDS)
         slow = self._window(snapshot, self.SLOW_WINDOW_SECONDS)
@@ -287,12 +292,7 @@ class CandidateStateMachine:
             window is not None and self._outflow_offsets_inflow(window)
             for window in (fast, slow)
         ):
-            return TransitionProposal(
-                new_status=StrategyStatus.INVALIDATED,
-                event_type=EventType.BUY_INVALIDATED,
-                reason_code="LARGE_OUTFLOW_OFFSETS_INFLOW",
-                metadata={"cooldown_started_at": snapshot.computed_at},
-            )
+            return self._active_invalidated(snapshot, "LARGE_OUTFLOW_OFFSETS_INFLOW")
         acceptance = snapshot.price_acceptance
         watch_price = self._number(state.metadata.get("watch_price")) if state else None
         low_position_watch = bool(
@@ -303,14 +303,19 @@ class CandidateStateMachine:
         )
         tolerant_watch = low_position_watch or capital_memory_watch
         vwap_floor = -1.0 if tolerant_watch else -0.3
-        drawdown_floor = -1.5 if tolerant_watch else -1.0
+        pullback_limit = CandidateSignalRules.adaptive_pullback_limit_pct(
+            snapshot,
+            minimum=1.5 if tolerant_watch else 1.0,
+        )
+        drawdown_floor = -pullback_limit
+        watch_return_floor = -pullback_limit
         watch_return = (
             (snapshot.quote.last_price / watch_price - 1.0) * 100.0
             if watch_price and snapshot.quote.last_price > 0
             else None
         )
         if (
-            (watch_return is not None and watch_return < -1.0)
+            (watch_return is not None and watch_return < watch_return_floor)
             or (
                 acceptance is not None
                 and (
@@ -325,12 +330,7 @@ class CandidateStateMachine:
                 )
             )
         ):
-            return TransitionProposal(
-                new_status=StrategyStatus.INVALIDATED,
-                event_type=EventType.BUY_INVALIDATED,
-                reason_code="PRICE_ACCEPTANCE_BROKEN",
-                metadata={"cooldown_started_at": snapshot.computed_at},
-            )
+            return self._active_invalidated(snapshot, "PRICE_ACCEPTANCE_BROKEN")
         if (
             not universe.eligible
             and state is not None
@@ -353,13 +353,63 @@ class CandidateStateMachine:
                 )
             )
         ):
-            return TransitionProposal(
-                new_status=StrategyStatus.INVALIDATED,
-                event_type=EventType.BUY_INVALIDATED,
-                reason_code="HOT_UNIVERSE_EXITED",
-                metadata={"cooldown_started_at": snapshot.computed_at},
-            )
+            return self._active_invalidated(snapshot, "HOT_UNIVERSE_EXITED")
         return None
+
+    @classmethod
+    def _confirm_strong_trend_reentry(
+        cls,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+    ) -> TransitionProposal | None:
+        hard_reasons = set(universe.reason_codes) - cls.SOFT_UNIVERSE_REASONS
+        memory = snapshot.capital_memory
+        if (
+            hard_reasons
+            or memory is None
+            or not CandidateSignalRules.strong_trend_reentry_ready(snapshot)
+        ):
+            return None
+        protection_pct = CandidateSignalRules.adaptive_pullback_limit_pct(
+            snapshot,
+            minimum=1.2,
+        )
+        return TransitionProposal(
+            new_status=StrategyStatus.CONFIRMED,
+            event_type=EventType.BUY_CONFIRMED,
+            reason_code="STRONG_TREND_SECOND_INFLOW_CONFIRMED",
+            confirmation_price=snapshot.quote.last_price,
+            alert_eligible=True,
+            metadata={
+                "confirmed_at": snapshot.computed_at,
+                "confirmed_price": snapshot.quote.last_price,
+                "protection_price": round(
+                    snapshot.quote.last_price * (1.0 - protection_pct / 100.0), 4
+                ),
+                "alert_eligible": True,
+                "expected_window_minutes": 15,
+                "watch_kind": "strong_trend_reentry",
+                "capital_memory_score": memory.score,
+                "day_main_net": memory.day_main_net,
+                "recent_15m_main_net": memory.recent_15m_main_net,
+                "recent_15m_buy_events": memory.recent_15m_buy_events,
+            },
+        )
+
+    @staticmethod
+    def _active_invalidated(
+        snapshot: FeatureSnapshot,
+        reason: str,
+    ) -> TransitionProposal:
+        return TransitionProposal(
+            new_status=StrategyStatus.INVALIDATED,
+            event_type=EventType.BUY_INVALIDATED,
+            reason_code=reason,
+            metadata={
+                "cooldown_started_at": snapshot.computed_at,
+                "invalidation_reason": reason,
+            },
+        )
 
     @classmethod
     def _enter_capital_memory_watch(
