@@ -254,10 +254,11 @@ class AlertPerformanceReader:
         same_day = stock_days.get(alert["signal_date"])
         later_days = [day for day in sorted(stock_days) if day > alert["signal_date"]]
         signal_minute = cls._signal_minute(alert["signal_time"])
-        minute_rows = [
-            row for row in intraday.get(alert["stock_code"], [])
-            if row[0] >= signal_minute
-        ]
+        stock_minute_rows = intraday.get(alert["stock_code"], [])
+        minute_rows = [row for row in stock_minute_rows if row[0] >= signal_minute]
+        if not minute_rows and stock_minute_rows:
+            # No later trade means the latest traded price remains the market close.
+            minute_rows = [stock_minute_rows[-1]]
 
         outcome_close = alert["outcome_close_return_pct"]
         same_close = None

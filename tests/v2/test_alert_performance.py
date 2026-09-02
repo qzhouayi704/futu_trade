@@ -191,6 +191,24 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["same_day"]["max_return_pct"], 6.1224)
         self.assertEqual(item["same_day"]["max_drawdown_pct"], -1.0204)
 
+    async def test_carries_last_trade_when_there_is_no_post_signal_trade(self) -> None:
+        database = FakeAlertDatabase()
+        database.candidate_rows = [database.candidate_rows[0]]
+        database.kline_rows = []
+        database.ticker_rows = [
+            ("HK.00100", "09:39", 97, 97, 97),
+        ]
+
+        result = await AlertPerformanceReader(database).history(
+            trade_date="2026-09-02"
+        )
+
+        same_day = result["items"][0]["same_day"]
+        self.assertEqual(same_day["source"], "TICKER_MINUTE")
+        self.assertEqual(same_day["close_return_pct"], -1.0204)
+        self.assertEqual(same_day["max_return_pct"], -1.0204)
+        self.assertEqual(same_day["max_drawdown_pct"], -1.0204)
+
 
 if __name__ == "__main__":
     unittest.main()
