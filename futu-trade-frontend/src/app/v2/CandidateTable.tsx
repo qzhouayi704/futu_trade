@@ -9,6 +9,14 @@ const statusTone: Record<string, string> = {
   INVALIDATED: "bg-rose-500/12 text-rose-700 dark:text-rose-400",
 };
 
+const statusLabel: Record<string, string> = {
+  IDLE: "未进入候选",
+  SETUP: "候选准备中",
+  WATCHING: "观察确认中",
+  CONFIRMED: "信号已确认",
+  INVALIDATED: "信号已失效",
+};
+
 const reasonLabel: Record<string, string> = {
   HOT_ACTIVE_DAILY_SETUP: "热门活跃，等待资金确认",
   FIRST_STRONG_INFLOW_WATCH: "首次强流入，继续观察",
@@ -26,7 +34,21 @@ const reasonLabel: Record<string, string> = {
   STRICT_MOMENTUM_SHADOW_CONFIRMED: "严格热门动量影子确认",
   WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED: "弱市60分钟强势确认",
   EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED: "极弱市60分钟多次确认",
+  MARKET_CONTEXT_INCOMPLETE: "市场环境数据不完整",
+  SNAPSHOT_INVALID: "行情特征数据无效",
+  DATA_QUALITY_INVALID: "关键行情数据无效",
+  PRICE_ACCEPTANCE_BROKEN: "价格承接已经破坏",
+  LARGE_OUTFLOW_OFFSETS_INFLOW: "大单流出已经抵消前期流入",
+  FLOW_CONFIRMATION_EXPIRED: "资金确认等待时间已过",
+  HOT_UNIVERSE_EXITED: "已不符合热门活跃股票范围",
+  TURNOVER_RANK_NOT_HOT: "成交额热度不足",
+  SECTOR_BREADTH_WEAK: "所属板块宽度偏弱",
+  RELATIVE_STRENGTH_LOW: "相对强度不足",
 };
+
+function candidateReasonText(value: string): string {
+  return reasonLabel[value] || "其他系统判断原因";
+}
 
 const strategyLabel: Record<string, string> = {
   capital_absorption: "低位吸收",
@@ -86,14 +108,14 @@ export function CandidateTable({ items, compact = false }: { items: V2Candidate[
             const current = item.quote?.last_price;
             const fromConfirm = current && item.confirmed_price ? (current / item.confirmed_price - 1) * 100 : null;
             const shadowConfirmed = item.status === "CONFIRMED" && item.alert_eligible === false;
-            const displayStatus = shadowConfirmed ? "影子确认" : item.status;
+            const displayStatus = shadowConfirmed ? "影子确认" : statusLabel[item.status] || "其他状态";
             const displayTone = shadowConfirmed
               ? statusTone.WATCHING
               : statusTone[item.status] || "bg-muted text-muted-foreground";
             return (
               <tr key={item.stock_code} className="h-14 hover:bg-muted/25">
                 <td className="px-3 py-2"><div className="font-semibold">{item.stock_name || item.stock_code}</div><div className="text-muted-foreground">{item.stock_code}</div></td>
-                <td className="max-w-52 px-3 py-2"><span className={`inline-flex rounded px-2 py-1 font-medium ${displayTone}`}>{displayStatus}</span><div className="mt-1 truncate text-[11px] text-muted-foreground" title={reasonLabel[item.reason_code] || item.reason_code}>{reasonLabel[item.reason_code] || item.reason_code}</div></td>
+                <td className="max-w-52 px-3 py-2"><span className={`inline-flex rounded px-2 py-1 font-medium ${displayTone}`}>{displayStatus}</span><div className="mt-1 truncate text-[11px] text-muted-foreground" title={candidateReasonText(item.reason_code)}>{candidateReasonText(item.reason_code)}</div></td>
                 <td className="px-3 py-2">
                   <div className="text-base font-semibold tabular-nums">{(item.portfolio_score ?? item.score)?.toFixed(1) ?? "--"}</div>
                   <div className="mt-1 flex max-w-48 flex-wrap gap-1">
