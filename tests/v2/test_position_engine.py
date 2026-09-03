@@ -286,6 +286,27 @@ class PositionEngineTests(unittest.TestCase):
 
         self.assertEqual(result.minutes_since_high, 30)
 
+    def test_utc_reconciliation_uses_hong_kong_trading_session(self) -> None:
+        hk_as_of = NOW.replace(hour=10, minute=30)
+        utc_as_of = hk_as_of.astimezone(timezone.utc)
+        overnight = replace(
+            state(),
+            opened_at=(hk_as_of - timedelta(days=1)).astimezone(timezone.utc),
+            last_high_at=hk_as_of.replace(hour=9, minute=30).astimezone(timezone.utc),
+        )
+        result = PositionEfficiencyEngine().calculate(
+            replace(position(), as_of=utc_as_of),
+            overnight,
+            feature_snapshot(as_of=hk_as_of, windows=(window(900),)),
+            (
+                (utc_as_of - timedelta(minutes=15), 101.0),
+                (utc_as_of, 101.0),
+            ),
+        )
+
+        self.assertEqual(result.minutes_since_high, 60)
+        self.assertTrue(result.stalled)
+
     def test_trailing_protection_precedes_stall_rotation(self) -> None:
         feature = feature_snapshot(as_of=NOW)
         efficiency = PositionEfficiencyEngine().calculate(

@@ -1,6 +1,6 @@
 """Position MFE/MAE, price stagnation, and capital-decay calculator."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from ...domain.enums import DataQuality
 from ...domain.features import FeatureSnapshot
@@ -9,6 +9,7 @@ from ..features.quality import clamp, worst_quality
 
 
 PricePoint = tuple[datetime, float]
+HK_TIMEZONE = timezone(timedelta(hours=8))
 
 
 class PositionEfficiencyEngine:
@@ -191,6 +192,8 @@ class PositionEfficiencyEngine:
 
     @staticmethod
     def _trading_minutes_between(start: datetime, end: datetime) -> float:
+        start = start.astimezone(HK_TIMEZONE)
+        end = end.astimezone(HK_TIMEZONE)
         if end <= start:
             return 0.0
         if start.date() != end.date():
