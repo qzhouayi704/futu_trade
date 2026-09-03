@@ -423,33 +423,45 @@ class V2Runtime:
             return 0
 
     async def _restore_capital(self) -> None:
+        replayed_codes: set[str] = set()
         try:
             now = datetime.now(timezone(timedelta(hours=8)))
             trade_date = now.date().isoformat()
             replay_rows = await self.ticker_replay_loader.load(trade_date, now)
             replayed = 0
             for row in replay_rows:
-                for event in self.market_adapter.adapt_ticker(
+                events = self.market_adapter.adapt_ticker(
                     row,
                     stock_code=str(row["stock_code"]),
                     received_time=datetime.now(timezone.utc),
-                ):
+                )
+                for event in events:
                     while not self.event_bus.publish_nowait(event):
                         await self.event_bus.join()
                     replayed += 1
+                    replayed_codes.add(event.stock_code)
             if replayed:
                 await self.event_bus.join()
-                logging.info("V2 replayed recent ticker events: %s", replayed)
+                logging.info(
+                    "V2 replayed capital recovery ticks: events=%s stocks=%s",
+                    replayed,
+                    len(replayed_codes),
+                )
         except Exception as error:
             logging.warning("V2 recent ticker replay skipped: %s", error)
         try:
             now = datetime.now(timezone(timedelta(hours=8)))
             trade_date = now.date().isoformat()
             aggregates = await self.capital_seed_loader.load(trade_date)
-            self.market_projector.restore_capital(aggregates)
-            self.feature_engine.seed_capital(aggregates)
-            if aggregates:
-                logging.info("V2 restored tick capital snapshots: %s", len(aggregates))
+            fallback = tuple(
+                item for item in aggregates if item.stock_code not in replayed_codes
+            )
+            self.market_projector.restore_capital(fallback)
+            self.feature_engine.seed_capital(fallback)
+            if fallback:
+                logging.info(
+                    "V2 restored fallback tick capital snapshots: %s", len(fallback)
+                )
         except Exception as error:
             logging.warning("V2 cumulative capital restore skipped: %s", error)
 

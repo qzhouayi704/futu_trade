@@ -18,7 +18,7 @@ class ReplayDatabase:
 
 
 class TickerReplayLoaderTests(unittest.IsolatedAsyncioTestCase):
-    async def test_only_recent_ticks_are_loaded_without_unstable_sequence(self) -> None:
+    async def test_recent_tape_and_older_large_ticks_are_loaded(self) -> None:
         hk = timezone(timedelta(hours=8))
         as_of = datetime(2026, 9, 1, 14, 0, tzinfo=hk)
         recent_ms = int((as_of - timedelta(minutes=30)).timestamp() * 1000)
@@ -36,9 +36,13 @@ class TickerReplayLoaderTests(unittest.IsolatedAsyncioTestCase):
                     "INSERT INTO ticker_data VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         (1, "HK.02706", "2026-09-01 12:30:00.000", 10, 100,
-                         1000, "SELL", 8, stale_ms, "2026-09-01"),
+                         150_000, "SELL", 8, stale_ms, "2026-09-01"),
                         (2, "HK.02706", "2026-09-01 13:30:00.000", 11, 200,
                          2200, "BUY", 2, recent_ms, "2026-09-01"),
+                        (3, "HK.02706", "2026-09-01 12:31:00.000", 10, 100,
+                         50_000, "BUY", 9, stale_ms, "2026-09-01"),
+                        (4, "HK.02706", "2026-09-01 13:31:00.000", 11, 200,
+                         2200, "NEUTRAL", 3, recent_ms, "2026-09-01"),
                     ),
                 )
                 connection.commit()
@@ -46,10 +50,9 @@ class TickerReplayLoaderTests(unittest.IsolatedAsyncioTestCase):
                 "2026-09-01", as_of
             )
 
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["direction"], "BUY")
-        self.assertEqual(rows[0]["time"], "2026-09-01 13:30:00.000")
-        self.assertIsNone(rows[0]["sequence"])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row["direction"] for row in rows], ["SELL", "BUY"])
+        self.assertTrue(all(row["sequence"] is None for row in rows))
 
 
 if __name__ == "__main__":

@@ -54,6 +54,7 @@ V2_TABLE_SQL = (
     BusinessTables.V2_NOTIFICATION_LOG_TABLE,
     BusinessTables.V2_OUTCOMES_TABLE,
     BusinessTables.TICK_CAPITAL_FLOW_TABLE,
+    BusinessTables.TICKER_DATA_TABLE,
 )
 
 
@@ -331,6 +332,42 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.snapshot().tasks[0].name, "v2-event-bus")
         await runtime.stop()
         self.assertFalse(runtime.snapshot().started)
+
+    async def test_ticker_replay_is_not_overwritten_by_legacy_capital_seed(self) -> None:
+        hk = timezone(timedelta(hours=8))
+        now = datetime.now(hk)
+        trade_date = now.date().isoformat()
+        trade_time = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        timestamp = int(now.timestamp() * 1000)
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO ticker_data "
+                "(stock_code, price, volume, turnover, direction, timestamp, "
+                "trade_date, sequence, trade_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "HK.00100", 100, 5_000, 500_000, "BUY", timestamp,
+                    trade_date, 1, trade_time,
+                ),
+            )
+            cursor.execute(
+                "INSERT INTO tick_capital_flow "
+                "(stock_code, trade_date, timestamp, cum_main_net, window_main_net, "
+                "cum_peak, cum_trough, big_buy_count, big_sell_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "HK.00100", trade_date, now.isoformat(), -900_000, -900_000,
+                    0, -900_000, 0, 1,
+                ),
+            )
+
+        runtime = V2Runtime(self.db, V2Config(enabled=True, mode=RuntimeMode.SHADOW))
+        await runtime.start()
+        try:
+            memory = runtime.feature_engine.capital.memory("HK.00100", now)
+            self.assertEqual(memory.day_main_net, 500_000)
+            self.assertEqual(memory.recent_15m_buy_events, 1)
+        finally:
+            await runtime.stop()
 
     async def test_ticker_ingress_is_safe_from_sdk_thread(self) -> None:
         runtime = V2Runtime(self.db, V2Config(enabled=True, mode=RuntimeMode.SHADOW))

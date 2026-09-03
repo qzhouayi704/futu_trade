@@ -87,12 +87,9 @@ class PositionEfficiencyEngine:
             if analytics_state is None or position.current_price > analytics_state.peak_price
             else analytics_state.last_high_at
         )
-        minutes_since_high = max(
-            0.0,
-            (position.as_of - last_high).total_seconds() / 60.0,
-        )
+        minutes_since_high = self._trading_minutes_between(last_high, position.as_of)
         held_minutes = (
-            (position.as_of - analytics_state.opened_at).total_seconds() / 60.0
+            self._trading_minutes_between(analytics_state.opened_at, position.as_of)
             if analytics_state is not None
             else 0.0
         )
@@ -191,3 +188,24 @@ class PositionEfficiencyEngine:
         if len(values) < 2:
             return None
         return round((max(values) / min(values) - 1.0) * 100.0, 6)
+
+    @staticmethod
+    def _trading_minutes_between(start: datetime, end: datetime) -> float:
+        if end <= start:
+            return 0.0
+        if start.date() != end.date():
+            start = end.replace(hour=9, minute=30, second=0, microsecond=0)
+        sessions = ((9, 30, 12, 0), (13, 0, 16, 0))
+        seconds = 0.0
+        for start_hour, start_minute, end_hour, end_minute in sessions:
+            session_start = end.replace(
+                hour=start_hour, minute=start_minute, second=0, microsecond=0
+            )
+            session_end = end.replace(
+                hour=end_hour, minute=end_minute, second=0, microsecond=0
+            )
+            overlap_start = max(start, session_start)
+            overlap_end = min(end, session_end)
+            if overlap_end > overlap_start:
+                seconds += (overlap_end - overlap_start).total_seconds()
+        return seconds / 60.0

@@ -187,6 +187,105 @@ class PositionEngineTests(unittest.TestCase):
             ("REPEATED_OUTFLOW_AND_STRUCTURE_BREAK",),
         )
 
+    def test_fast_decline_under_active_sell_pressure_does_not_look_efficient(self) -> None:
+        pressured = window(
+            900,
+            buys=2,
+            sells=2,
+            buy_amount=10_300_000,
+            sell_amount=12_000_000,
+            active_buy_amount=19_100_000,
+            active_sell_amount=40_770_000,
+        )
+        feature = feature_snapshot(as_of=NOW, windows=(pressured,), accepted=False)
+        efficiency = replace(
+            PositionEfficiencyEngine().calculate(
+                position(101.04), state(peak=102.98, mfe=2.98), feature, prices()
+            ),
+            slope_15m_pct=-0.70,
+            drawdown_from_peak_pct=-1.89,
+            flow_current=-1_700_000,
+            score=28.2,
+            stalled=False,
+        )
+        metadata = {
+            "exit_vwap_below_minutes": 9,
+            "exit_last_vwap_minute": (NOW - timedelta(minutes=1)).isoformat(),
+        }
+        result = PositionDecisionEngine().evaluate(
+            position(101.04), replace(state(peak=102.98, mfe=2.98), metadata=metadata),
+            efficiency, feature,
+        )
+
+        self.assertIs(result.decision.action, DecisionAction.EXIT)
+        self.assertEqual(
+            result.decision.reason_codes,
+            ("SUSTAINED_DOWNTREND_AND_VWAP_BREAK",),
+        )
+
+    def test_sell_pressure_waits_while_recent_support_is_fresh(self) -> None:
+        support_time = NOW - timedelta(minutes=5)
+        pressured = replace(
+            window(
+                900,
+                buys=1,
+                sells=1,
+                buy_amount=5_200_000,
+                sell_amount=6_500_000,
+                active_buy_amount=19_100_000,
+                active_sell_amount=40_770_000,
+            ),
+            first_independent_buy_at=support_time,
+            last_independent_buy_at=support_time,
+            first_independent_sell_at=NOW - timedelta(minutes=10),
+            last_independent_sell_at=NOW - timedelta(minutes=10),
+        )
+        feature = feature_snapshot(as_of=NOW, windows=(pressured,), accepted=False)
+        efficiency = replace(
+            PositionEfficiencyEngine().calculate(
+                position(101.04), state(peak=102.98, mfe=2.98), feature, prices()
+            ),
+            slope_15m_pct=-0.70,
+            drawdown_from_peak_pct=-1.89,
+            flow_current=-1_300_000,
+            score=28.2,
+            stalled=False,
+        )
+        metadata = {
+            "exit_vwap_below_minutes": 9,
+            "exit_last_vwap_minute": (NOW - timedelta(minutes=1)).isoformat(),
+        }
+        result = PositionDecisionEngine().evaluate(
+            position(101.04), replace(state(peak=102.98, mfe=2.98), metadata=metadata),
+            efficiency, feature,
+        )
+
+        self.assertIs(result.decision.action, DecisionAction.HOLD)
+        self.assertIs(result.decision.status, PositionStatus.STALLED)
+        self.assertEqual(
+            result.decision.reason_codes,
+            ("DOWNTREND_UNDER_SELL_PRESSURE",),
+        )
+
+    def test_premarket_time_is_not_counted_as_stalled_trading_time(self) -> None:
+        as_of = NOW.replace(hour=10, minute=0)
+        overnight = replace(
+            state(),
+            opened_at=NOW - timedelta(days=1),
+            last_high_at=as_of.replace(hour=9, minute=1),
+        )
+        result = PositionEfficiencyEngine().calculate(
+            replace(position(), as_of=as_of),
+            overnight,
+            feature_snapshot(as_of=as_of, windows=(window(900),)),
+            (
+                (as_of - timedelta(minutes=15), 101.0),
+                (as_of, 101.0),
+            ),
+        )
+
+        self.assertEqual(result.minutes_since_high, 30)
+
     def test_trailing_protection_precedes_stall_rotation(self) -> None:
         feature = feature_snapshot(as_of=NOW)
         efficiency = PositionEfficiencyEngine().calculate(

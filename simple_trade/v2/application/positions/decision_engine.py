@@ -43,6 +43,14 @@ class PositionDecisionEngine:
                 "REPEATED_OUTFLOW_ABSORBED_OR_SUPPORTED",
                 metadata_updates=structural.metadata_updates,
             )
+        if structural.weakening:
+            return self._hold(
+                position,
+                state,
+                "DOWNTREND_UNDER_SELL_PRESSURE",
+                status=PositionStatus.STALLED,
+                metadata_updates=structural.metadata_updates,
+            )
 
         profit_ready = max(efficiency.mfe_pct, state.mfe_pct if state else 0.0) >= self.PROFIT_READY_PCT
         if efficiency.stalled:

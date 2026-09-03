@@ -18,6 +18,7 @@ class NotificationFormatter:
         "HARD_STOP_3_PCT": "亏损达到3%硬止损",
         "TAKE_PROFIT_5_PCT": "收益达到5%止盈",
         "REPEATED_OUTFLOW_AND_STRUCTURE_BREAK": "多次大单流出且价格结构破位",
+        "SUSTAINED_DOWNTREND_AND_VWAP_BREAK": "持续下跌、主动卖压占优且VWAP失守",
         "TRAIL_AFTER_SUPPORT_LOST": "浮盈超过3%后回撤1.5%，且20分钟无新承接",
         "PROFIT_FLOOR_AFTER_SUPPORT_LOST": "浮盈超过3%后回落至0.5%，且20分钟无新承接",
         "CONFIRMED_CANDIDATE_NET_ADVANTAGE": "新候选相对持仓具备净优势",

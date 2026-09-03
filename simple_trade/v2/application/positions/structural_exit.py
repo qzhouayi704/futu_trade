@@ -16,6 +16,8 @@ class StructuralExitAssessment:
     exit_reason: str | None
     strong_outflow: bool
     fresh_support: bool
+    weakening: bool
+    active_sell_pressure: bool
     metadata_updates: Mapping[str, JsonValue]
 
 
@@ -29,6 +31,13 @@ class StructuralExitPolicy:
     SUPPORT_GRACE_MINUTES = 20
     OUTFLOW_EVENTS = 3
     OUTFLOW_SPAN_SECONDS = 300
+    WEAKENING_VWAP_MINUTES = 5
+    WEAKENING_SLOPE_PCT = -0.45
+    WEAKENING_DRAWDOWN_PCT = -1.0
+    DOWNTREND_EXIT_VWAP_MINUTES = 10
+    DOWNTREND_EXIT_DRAWDOWN_PCT = -1.5
+    DOWNTREND_EXIT_MAX_SCORE = 35.0
+    ACTIVE_SELL_MULTIPLE = 1.5
 
     def assess(
         self,
@@ -45,11 +54,22 @@ class StructuralExitPolicy:
             and timedelta(0) <= as_of - support_at <= timedelta(minutes=self.SUPPORT_GRACE_MINUTES)
         )
         strong_outflow = self._repeated_outflow(feature)
+        active_sell_pressure = self._active_sell_pressure(feature)
+        weakening = bool(
+            active_sell_pressure
+            and vwap_count >= self.WEAKENING_VWAP_MINUTES
+            and efficiency.slope_15m_pct is not None
+            and efficiency.slope_15m_pct <= self.WEAKENING_SLOPE_PCT
+            and efficiency.drawdown_from_peak_pct <= self.WEAKENING_DRAWDOWN_PCT
+            and efficiency.flow_current < 0
+        )
         updates: dict[str, JsonValue] = {
             "exit_vwap_below_minutes": vwap_count,
             "exit_last_vwap_minute": vwap_minute,
             "exit_last_support_at": self._iso(support_at),
             "exit_repeated_outflow": strong_outflow,
+            "exit_active_sell_pressure": active_sell_pressure,
+            "exit_weakening": weakening,
         }
 
         reason = None
@@ -67,6 +87,14 @@ class StructuralExitPolicy:
         ):
             reason = "REPEATED_OUTFLOW_AND_STRUCTURE_BREAK"
         elif (
+            weakening
+            and not fresh_support
+            and vwap_count >= self.DOWNTREND_EXIT_VWAP_MINUTES
+            and efficiency.drawdown_from_peak_pct <= self.DOWNTREND_EXIT_DRAWDOWN_PCT
+            and efficiency.score <= self.DOWNTREND_EXIT_MAX_SCORE
+        ):
+            reason = "SUSTAINED_DOWNTREND_AND_VWAP_BREAK"
+        elif (
             efficiency.mfe_pct >= self.TRAIL_ACTIVATION_PCT
             and efficiency.drawdown_from_peak_pct <= self.TRAIL_PULLBACK_PCT
             and not fresh_support
@@ -82,7 +110,27 @@ class StructuralExitPolicy:
             exit_reason=reason,
             strong_outflow=strong_outflow,
             fresh_support=fresh_support,
+            weakening=weakening,
+            active_sell_pressure=active_sell_pressure,
             metadata_updates=updates,
+        )
+
+    def _active_sell_pressure(self, feature: FeatureSnapshot | None) -> bool:
+        if feature is None:
+            return False
+        window = next(
+            (item for item in feature.tick_windows if item.window_seconds == 900),
+            None,
+        )
+        if window is None or window.quality is DataQuality.INVALID:
+            return False
+        threshold = window.large_order_threshold or 100_000.0
+        total = window.active_buy_amount + window.active_sell_amount
+        return bool(
+            total >= threshold * 2.0
+            and window.active_sell_amount
+            >= max(threshold, window.active_buy_amount * self.ACTIVE_SELL_MULTIPLE)
+            and window.active_net <= -threshold
         )
 
     def _vwap_break_state(

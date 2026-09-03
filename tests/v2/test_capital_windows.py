@@ -139,6 +139,35 @@ class CapitalWindowTests(unittest.TestCase):
         self.assertIs(window.net_direction, TickDirection.BUY)
         self.assertEqual(window.buy_sell_ratio, 0.625)
 
+    def test_active_tape_pressure_includes_orders_below_large_threshold(self) -> None:
+        engine = CapitalWindowEngine(large_order_threshold=100_000)
+        engine.on_tick(tick(0, amount=80_000, sequence=1))
+        engine.on_tick(tick(
+            10, amount=90_000, direction=TickDirection.SELL, sequence=2
+        ))
+        engine.on_tick(tick(
+            20, amount=70_000, direction=TickDirection.SELL, sequence=3
+        ))
+
+        window = engine.snapshots("HK.00100", NOW + timedelta(seconds=21))[0]
+
+        self.assertEqual(window.sample_count, 0)
+        self.assertEqual(window.active_buy_amount, 80_000)
+        self.assertEqual(window.active_sell_amount, 160_000)
+        self.assertEqual(window.active_net, -80_000)
+        self.assertAlmostEqual(window.active_buy_ratio, 1 / 3, places=6)
+
+    def test_replay_duplicate_ignores_unstable_sequence(self) -> None:
+        engine = CapitalWindowEngine()
+        replayed = tick(0, sequence=None)
+        live = tick(0, sequence=999)
+
+        self.assertTrue(engine.on_tick(replayed).accepted)
+        self.assertFalse(engine.on_tick(live).accepted)
+        window = engine.snapshots("HK.00100", NOW + timedelta(seconds=1))[0]
+        self.assertEqual(window.sample_count, 1)
+        self.assertEqual(window.active_buy_amount, 200_000)
+
     def test_business_duplicate_is_rejected_even_without_adapter(self) -> None:
         engine = CapitalWindowEngine()
         source = tick(0, sequence=None)

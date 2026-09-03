@@ -39,6 +39,7 @@ const reasonLabel: Record<string, string> = {
   HARD_STOP_3_PCT: "触及3%硬止损",
   TAKE_PROFIT_5_PCT: "达到5%止盈目标",
   REPEATED_OUTFLOW_AND_STRUCTURE_BREAK: "多次流出且价格结构破位",
+  SUSTAINED_DOWNTREND_AND_VWAP_BREAK: "持续下跌且VWAP失守",
   TRAIL_AFTER_SUPPORT_LOST: "失去资金支撑，触发回撤保护",
   PROFIT_FLOOR_AFTER_SUPPORT_LOST: "失去资金支撑，跌破利润保护线",
   CONFIRMED_CANDIDATE_NET_ADVANTAGE: "新候选相对当前持仓优势明确",

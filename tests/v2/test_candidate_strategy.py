@@ -37,6 +37,8 @@ def window(
     buy_amount: float = 0,
     sell_amount: float = 0,
     span: int = 0,
+    active_buy_amount: float = 0,
+    active_sell_amount: float = 0,
 ) -> TickAggregate:
     total = buy_amount + sell_amount
     return TickAggregate(
@@ -63,6 +65,14 @@ def window(
         last_independent_buy_at=NOW + timedelta(seconds=span) if buys else None,
         first_independent_sell_at=NOW if sells else None,
         last_independent_sell_at=NOW + timedelta(seconds=span) if sells else None,
+        active_buy_amount=active_buy_amount,
+        active_sell_amount=active_sell_amount,
+        active_net=active_buy_amount - active_sell_amount,
+        active_buy_ratio=(
+            active_buy_amount / (active_buy_amount + active_sell_amount)
+            if active_buy_amount + active_sell_amount
+            else None
+        ),
     )
 
 

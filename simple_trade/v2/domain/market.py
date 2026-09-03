@@ -121,6 +121,10 @@ class TickAggregate:
     last_independent_buy_at: datetime | None = None
     first_independent_sell_at: datetime | None = None
     last_independent_sell_at: datetime | None = None
+    active_buy_amount: float = 0.0
+    active_sell_amount: float = 0.0
+    active_net: float = 0.0
+    active_buy_ratio: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stock_code", require_stock_code(self.stock_code))
@@ -144,6 +148,10 @@ class TickAggregate:
             raise ValueError("large_order_threshold 必须大于 0")
         if self.flow_scale is not None and self.flow_scale <= 0:
             raise ValueError("flow_scale 必须大于 0")
+        if self.active_buy_amount < 0 or self.active_sell_amount < 0:
+            raise ValueError("全量主动买卖金额不能小于 0")
+        if self.active_buy_ratio is not None and not 0 <= self.active_buy_ratio <= 1:
+            raise ValueError("active_buy_ratio 必须在 0 到 1 之间")
         for field_name in (
             "first_independent_buy_at",
             "last_independent_buy_at",

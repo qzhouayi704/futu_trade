@@ -33,6 +33,13 @@ class _FlowSample:
     event_group: int
 
 
+@dataclass(frozen=True, slots=True)
+class _ActiveSample:
+    exchange_time: datetime
+    amount: float
+    direction: TickDirection
+
+
 @dataclass(slots=True)
 class _FlowEvent:
     started_at: datetime
@@ -46,6 +53,7 @@ class _FlowEvent:
 class _StockState:
     trade_date: object
     samples: deque[_FlowSample] = field(default_factory=deque)
+    active_samples: deque[_ActiveSample] = field(default_factory=deque)
     events: deque[_FlowEvent] = field(default_factory=deque)
     seen_keys: set[tuple[object, ...]] = field(default_factory=set)
     seen_order: deque[tuple[object, ...]] = field(default_factory=deque)
@@ -112,7 +120,10 @@ class CapitalWindowEngine:
             state.quality = worst_quality(state.quality, tick.quality)
             if tick.sequence is not None:
                 state.last_sequence = tick.sequence
-            if not self.qualifies(tick):
+
+            is_directional = tick.direction in {TickDirection.BUY, TickDirection.SELL}
+            is_large = self.qualifies(tick)
+            if not is_directional:
                 self._prune(state, tick.exchange_time)
                 return CapitalFlowUpdate(True, False, False, None)
 
@@ -121,14 +132,23 @@ class CapitalWindowEngine:
                 round(tick.price, 6),
                 tick.volume,
                 tick.direction.value,
-                tick.sequence,
             )
             if key in state.seen_keys:
-                return CapitalFlowUpdate(False, True, False, None)
+                return CapitalFlowUpdate(False, is_large, False, None)
             state.seen_keys.add(key)
             state.seen_order.append(key)
             while len(state.seen_order) > self._dedupe_capacity:
                 state.seen_keys.discard(state.seen_order.popleft())
+            state.active_samples.append(
+                _ActiveSample(
+                    exchange_time=tick.exchange_time,
+                    amount=tick.turnover,
+                    direction=tick.direction,
+                )
+            )
+            if not is_large:
+                self._prune(state, tick.exchange_time)
+                return CapitalFlowUpdate(True, False, False, None)
 
             independent = not self._same_split_group(state.last_flow, tick)
             if independent:
@@ -311,6 +331,11 @@ class CapitalWindowEngine:
         cutoff = as_of.timestamp() - self._windows[-1]
         while state.samples and state.samples[0].exchange_time.timestamp() < cutoff:
             state.samples.popleft()
+        while (
+            state.active_samples
+            and state.active_samples[0].exchange_time.timestamp() < cutoff
+        ):
+            state.active_samples.popleft()
 
     def _aggregate(
         self,
@@ -330,6 +355,22 @@ class CapitalWindowEngine:
         buy_amount = sum(sample.amount for sample in buys)
         sell_amount = sum(sample.amount for sample in sells)
         total = buy_amount + sell_amount
+        active_samples = [
+            sample
+            for sample in state.active_samples
+            if sample.exchange_time.timestamp() >= cutoff
+        ]
+        active_buy_amount = sum(
+            sample.amount
+            for sample in active_samples
+            if sample.direction is TickDirection.BUY
+        )
+        active_sell_amount = sum(
+            sample.amount
+            for sample in active_samples
+            if sample.direction is TickDirection.SELL
+        )
+        active_total = active_buy_amount + active_sell_amount
         return TickAggregate(
             stock_code=stock_code,
             as_of=as_of,
@@ -357,6 +398,14 @@ class CapitalWindowEngine:
             last_independent_buy_at=buy_groups[-1] if buy_groups else None,
             first_independent_sell_at=sell_groups[0] if sell_groups else None,
             last_independent_sell_at=sell_groups[-1] if sell_groups else None,
+            active_buy_amount=round(active_buy_amount, 4),
+            active_sell_amount=round(active_sell_amount, 4),
+            active_net=round(active_buy_amount - active_sell_amount, 4),
+            active_buy_ratio=(
+                round(active_buy_amount / active_total, 6)
+                if active_total > 0
+                else None
+            ),
         )
 
     def _empty(self, stock_code: str, as_of: datetime, window: int) -> TickAggregate:
