@@ -122,10 +122,13 @@ class CandidateSignalRules:
             and context.quality is not DataQuality.INVALID
             and context.market_sample_size >= 20
             and context.turnover_rank_percentile is not None
-            and context.turnover_rank_percentile
-            >= cls.STRONG_TREND_MIN_ACTIVITY_PERCENTILE
             and context.relative_strength is not None
             and context.relative_strength >= cls.STRONG_TREND_MIN_RELATIVE_STRENGTH
+            and (
+                context.turnover_rank_percentile
+                >= cls.STRONG_TREND_MIN_ACTIVITY_PERCENTILE
+                or context.relative_strength >= 3.0
+            )
             and activity is not None
             and activity.is_active
             and liquidity is not None
@@ -143,6 +146,39 @@ class CandidateSignalRules:
         return bool(
             cls.strong_trend_reentry_context(snapshot)
             and cls.fast_reaccumulation(cls.window(snapshot, 900))
+        )
+
+    @classmethod
+    def strong_trend_discovery_context(cls, snapshot: FeatureSnapshot) -> bool:
+        """Identify strong high-position stocks before tick enrichment is available."""
+        context = snapshot.market_context
+        position = snapshot.price_position
+        activity = snapshot.activity
+        liquidity = snapshot.liquidity
+        extension_atr = (
+            position.distance_to_ma20 / position.atr_percent
+            if position.atr_percent > 0
+            else None
+        )
+        return bool(
+            position.quality is not DataQuality.INVALID
+            and position.daily_percentile > cls.STRONG_TREND_MIN_DAILY_PERCENTILE
+            and extension_atr is not None
+            and extension_atr <= cls.STRONG_TREND_MAX_EXTENSION_ATR
+            and context.quality is not DataQuality.INVALID
+            and context.market_sample_size >= 20
+            and context.turnover_rank_percentile is not None
+            and context.relative_strength is not None
+            and context.relative_strength >= cls.STRONG_TREND_MIN_RELATIVE_STRENGTH
+            and (
+                context.turnover_rank_percentile
+                >= cls.STRONG_TREND_MIN_ACTIVITY_PERCENTILE
+                or context.relative_strength >= 3.0
+            )
+            and activity is not None
+            and activity.is_active
+            and liquidity is not None
+            and liquidity.score >= 30
         )
 
     @staticmethod

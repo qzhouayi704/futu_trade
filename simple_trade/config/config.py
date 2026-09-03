@@ -62,6 +62,14 @@ class RealtimeActivityFilterConfig(_ConfigMixin):
     min_turnover_rate: float = 0.2
     min_turnover_amount: int = 5000000
     low_activity_recheck_days: int = 7
+    active_cache_ttl_seconds: int = 300
+    inactive_cache_ttl_seconds: int = 120
+    failed_cache_ttl_seconds: int = 30
+    opening_refilter_interval_seconds: int = 120
+    regular_refilter_interval_seconds: int = 300
+    discovery_score_threshold: float = 0.65
+    emerging_liquidity_floor_ratio: float = 0.35
+    demotion_confirmation_cycles: int = 2
 
 
 @dataclass

@@ -685,7 +685,12 @@ class CandidateStrategyTests(unittest.TestCase):
             high,
             price_position=replace(high.price_position, daily_percentile=0.80),
         )
-        self.assertIsNone(self.machine.evaluate(high, None, SOFT_INELIGIBLE))
+        high_proposal = self.machine.evaluate(high, None, SOFT_INELIGIBLE)
+        self.assertEqual(high_proposal.new_status, StrategyStatus.SETUP)
+        self.assertEqual(
+            high_proposal.reason_code,
+            "STRONG_TREND_DISCOVERY_SETUP",
+        )
 
         offset = window(
             3600,
@@ -843,6 +848,53 @@ class CandidateStrategyTests(unittest.TestCase):
             CandidateScorer().score(item),
         )
         self.assertIn("strong_trend_reentry", portfolio.strategy_sources)
+
+    def test_high_position_strong_quote_enters_setup_before_tick_enrichment(self) -> None:
+        item = snapshot(
+            quality=DataQuality.INVALID,
+            missing_fields=(
+                "capital_windows.tick_stream",
+                "capital_memory.event_stream",
+            ),
+            rank=0.55,
+            relative_strength=3.2,
+            atr_percent=4.0,
+            distance_to_ma20=7.0,
+        )
+        item = replace(
+            item,
+            tick_windows=(),
+            capital_memory=None,
+            price_position=replace(item.price_position, daily_percentile=0.82),
+        )
+        universe = UniversePolicy().evaluate(item)
+
+        proposal = self.machine.evaluate(item, None, universe)
+
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal.new_status, StrategyStatus.SETUP)
+        self.assertEqual(proposal.reason_code, "STRONG_TREND_DISCOVERY_SETUP")
+
+    def test_overextended_high_position_quote_reports_real_blocker(self) -> None:
+        item = snapshot(
+            quality=DataQuality.INVALID,
+            missing_fields=("capital_windows.tick_stream",),
+            rank=0.90,
+            relative_strength=4.0,
+            atr_percent=3.0,
+            distance_to_ma20=9.0,
+        )
+        item = replace(
+            item,
+            price_position=replace(item.price_position, daily_percentile=0.90),
+        )
+        universe = UniversePolicy().evaluate(item)
+
+        self.assertIsNone(self.machine.evaluate(item, None, universe))
+        self.assertIn(
+            "PRICE_TOO_EXTENDED_FOR_ENTRY",
+            self.machine.setup_blockers(item, universe),
+        )
 
     def test_high_position_reentry_rejects_overextension_and_offsetting_outflow(self) -> None:
         as_of = NOW + timedelta(minutes=3)

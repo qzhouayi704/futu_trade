@@ -3,6 +3,7 @@
 """订阅管理辅助模块 - 负责股票订阅的核心逻辑（含活跃度筛选、Pipeline 集成）"""
 
 import logging
+import threading
 from typing import Dict, Any, List, Optional
 
 from ...database.core.db_manager import DatabaseManager
@@ -31,6 +32,8 @@ class SubscriptionHelper:
         self.config = config
         self.container = container
         self.priority_stocks = set()
+        self._subscription_refresh_lock = threading.Lock()
+        self._inactive_refresh_counts: Dict[str, int] = {}
 
         # P5-2: GlobalSubscriptionCoordinator 已精简，不再侜为订阅入口
         # 统一使用 subscription_manager 订阅
@@ -95,6 +98,26 @@ class SubscriptionHelper:
 
     def subscribe_target_stocks(self, markets: Optional[List[str]] = None) -> Dict[str, Any]:
         """订阅目标板块的所有股票行情 - 支持实时活跃度筛选和按市场数量限制"""
+        if not self._subscription_refresh_lock.acquire(blocking=False):
+            existing_count = (
+                len(self.subscription_manager.subscribed_stocks)
+                if self.subscription_manager else 0
+            )
+            logging.info("【订阅刷新】已有刷新任务运行，复用现有订阅")
+            return {
+                'success': existing_count > 0,
+                'message': f'订阅刷新正在进行，复用现有 {existing_count} 只订阅',
+                'subscribed_count': existing_count,
+                'market_info': {},
+                'errors': [],
+            }
+        try:
+            return self._subscribe_target_stocks(markets)
+        finally:
+            self._subscription_refresh_lock.release()
+
+    def _subscribe_target_stocks(self, markets: Optional[List[str]] = None) -> Dict[str, Any]:
+        """执行一次完整订阅刷新。"""
         result = {'success': False, 'message': '', 'subscribed_count': 0, 'market_info': {}, 'errors': []}
         try:
             if not self.futu_client.is_available():
@@ -187,15 +210,38 @@ class SubscriptionHelper:
             MIN_SUBSCRIPTION_SECONDS = 65  # 富途要求至少 1 分钟，留 5 秒余量
 
             currently_subscribed = self.subscription_manager.subscribed_stocks
+            for code in active_codes | self.priority_stocks:
+                self._inactive_refresh_counts.pop(code, None)
+
             inactive_codes = currently_subscribed - active_codes - self.priority_stocks
 
             if not inactive_codes:
                 return 0
 
+            af_config = self._get_config_attr('realtime_activity_filter', {}) or {}
+            confirmation_cycles = max(
+                1, int(af_config.get('demotion_confirmation_cycles', 2))
+            )
+            confirmed_inactive = set()
+            pending_confirmation = set()
+            for code in inactive_codes:
+                misses = self._inactive_refresh_counts.get(code, 0) + 1
+                self._inactive_refresh_counts[code] = misses
+                if misses >= confirmation_cycles:
+                    confirmed_inactive.add(code)
+                else:
+                    pending_confirmation.add(code)
+
+            if pending_confirmation:
+                logging.info(
+                    f"【订阅降级保护】{len(pending_confirmation)} 只股票等待连续"
+                    f" {confirmation_cycles} 轮不活跃确认"
+                )
+
             # 过滤掉订阅不满 65 秒的股票（尊重富途 API 限制）
             eligible_to_clean = set()
             too_recent = set()
-            for code in inactive_codes:
+            for code in confirmed_inactive:
                 sub_time = self.subscription_manager.get_subscribe_time(code)
                 if sub_time > 0 and (now - sub_time) < MIN_SUBSCRIPTION_SECONDS:
                     too_recent.add(code)
@@ -214,6 +260,8 @@ class SubscriptionHelper:
             success = self.subscription_manager.unsubscribe(list(eligible_to_clean))
             if success:
                 cleaned = len(eligible_to_clean)
+                for code in eligible_to_clean:
+                    self._inactive_refresh_counts.pop(code, None)
                 logging.info(
                     f"【订阅清理】已取消 {cleaned} 只不活跃股票的订阅，"
                     f"当前剩余 {len(self.subscription_manager.subscribed_stocks)} 只，"

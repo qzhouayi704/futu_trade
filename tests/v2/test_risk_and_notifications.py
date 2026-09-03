@@ -67,12 +67,12 @@ def context(*, positions=(), orders=(), market=True, account_snapshot=None):
     )
 
 
-def buy_intent(quantity=100, lot=100):
+def buy_intent(quantity=100, lot=100, mode=RuntimeMode.SEMI):
     return TradeIntent(
         source_event_id="decision-1",
         intent_type=IntentType.BUY,
         created_at=NOW,
-        mode=RuntimeMode.ALERT,
+        mode=mode,
         buy_leg=OrderLeg(
             stock_code="HK.00200",
             side=OrderSide.BUY,
@@ -159,6 +159,39 @@ class RiskEngineTests(unittest.TestCase):
         intent = IntentFactory(RuntimeMode.ALERT, RiskLimits()).build(event, context())
 
         self.assertIsNone(intent)
+
+    def test_alert_buy_does_not_require_lot_size_or_account_capacity(self):
+        event = DecisionEvent(
+            event_type=EventType.BUY_CONFIRMED,
+            stock_code="HK.00100",
+            exchange_time=NOW,
+            received_time=NOW,
+            source="test",
+            strategy_version="test-v2",
+            reason_code="FAST_15M_MULTI_INFLOW_CONFIRMED",
+            payload={
+                "feature_snapshot": {
+                    "quote": {"last_price": 12.34, "lot_size": None}
+                }
+            },
+        )
+        invalid_account = context(
+            account_snapshot=account(
+                available=0,
+                assets=0,
+                quality=DataQuality.INVALID,
+            )
+        )
+
+        intent = IntentFactory(RuntimeMode.ALERT, RiskLimits()).build(
+            event, invalid_account
+        )
+
+        self.assertIsNotNone(intent)
+        self.assertIsNone(intent.buy_leg.lot_size)
+        decision = self.engine.evaluate(intent, invalid_account)
+        self.assertIs(decision.result, RiskResult.APPROVED)
+        self.assertNotIn("ACCOUNT_CAPACITY_UNAVAILABLE", decision.reason_codes)
 
 
 class AccountProviderTests(unittest.TestCase):

@@ -5,8 +5,8 @@
 
 Property 2: Preservation - 未过期缓存行为不变
 
-目标：验证对于所有 created_at 在 10 分钟以内的缓存记录，
-check_activity_cache 的分类结果（活跃/不活跃/检查失败）与修复前一致。
+目标：验证分层 TTL 内的缓存分类行为：活跃5分钟、非活跃2分钟，
+检查失败超过30秒后重新检查。
 
 在未修复代码上运行，预期 PASS（确认基线行为）。
 
@@ -58,8 +58,8 @@ class FakeDbManager:
 
 # ── hypothesis 策略 ──────────────────────────────────────────────
 
-# 未过期时间：0-9 分钟前（确保在 10 分钟阈值以内）
-fresh_minutes_st = st.integers(min_value=0, max_value=9)
+# 活跃缓存未过期时间：0-4 分钟前
+fresh_active_minutes_st = st.integers(min_value=0, max_value=4)
 
 # 股票数量：1-5 只
 num_stocks_st = st.integers(min_value=1, max_value=5)
@@ -101,16 +101,18 @@ def preservation_scenario(draw):
                 'cache_type': cache_type,
             })
         else:
-            minutes_ago = draw(fresh_minutes_st)
             if cache_type == "active":
                 score = draw(positive_score_st)
                 is_active = 1
+                minutes_ago = draw(fresh_active_minutes_st)
             elif cache_type == "inactive":
                 score = 0.0
                 is_active = 0
+                minutes_ago = draw(st.integers(min_value=0, max_value=1))
             else:  # check_failed
                 score = -1.0
                 is_active = 0
+                minutes_ago = 1
 
             cache_records.append({
                 'code': code,
@@ -128,11 +130,10 @@ def preservation_scenario(draw):
 
 
 class TestProperty2PreservationFreshCache:
-    """Property 2: 对于任意未过期缓存记录（created_at 在 10 分钟以内），
-    check_activity_cache 的分类结果与修复前一致：
+    """Property 2: 对于分层 TTL 内的缓存记录：
     - is_active=1 → 出现在 cached_active 列表
     - is_active=0 → 被跳过（不在 cached_active 也不在 uncached）
-    - activity_score=-1 → 出现在 uncached 列表
+    - activity_score=-1 且超过30秒 → 出现在 uncached 列表
     - 无缓存记录 → 出现在 uncached 列表
 
     在未修复代码上运行，预期 PASS（确认基线行为）。

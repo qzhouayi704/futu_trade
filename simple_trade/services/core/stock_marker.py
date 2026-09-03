@@ -10,6 +10,7 @@
 """
 
 import logging
+from datetime import date, datetime
 from typing import List
 
 
@@ -84,7 +85,7 @@ class StockMarkerService:
             activity_scores: 股票代码到活跃度评分的映射 {code: score}
 
         Note:
-            - 增加 low_activity_count 计数器，达到阈值后临时排除
+            - 每个交易日最多增加一次 low_activity_count，达到阈值后临时排除
             - 已达阈值的股票不再递增，等待 recheck_days 过期后自动恢复
         """
         if not stock_codes:
@@ -96,31 +97,36 @@ class StockMarkerService:
 
             for code in stock_codes:
                 result = self.db_manager.execute_query(
-                    'SELECT low_activity_count FROM stocks WHERE code = ?',
+                    'SELECT low_activity_count, last_activity_check FROM stocks WHERE code = ?',
                     (code,)
                 )
 
                 current_count = result[0][0] if result and result[0][0] is not None else 0
+                last_check = result[0][1] if result and len(result[0]) > 1 else None
 
                 # 已达排除阈值的股票，跳过，不再递增
                 if current_count >= self.LOW_ACTIVITY_THRESHOLD:
                     already_excluded_count += 1
                     continue
 
-                new_count = current_count + 1
                 score = activity_scores.get(code, 0) if activity_scores else 0
+                checked_today = self._is_today(last_check)
+                new_count = current_count if checked_today else current_count + 1
 
                 self.db_manager.execute_update('''
                     UPDATE stocks
-                    SET is_low_activity = 1,
+                    SET is_low_activity = CASE WHEN ? >= ? THEN 1 ELSE 0 END,
                         low_activity_checked_at = datetime('now', 'localtime'),
                         low_activity_count = ?,
                         activity_score = ?,
                         last_activity_check = datetime('now', 'localtime')
                     WHERE code = ?
-                ''', (new_count, score, code))
+                ''', (
+                    new_count, self.LOW_ACTIVITY_THRESHOLD,
+                    new_count, score, code,
+                ))
 
-                if new_count == self.LOW_ACTIVITY_THRESHOLD:
+                if not checked_today and new_count == self.LOW_ACTIVITY_THRESHOLD:
                     threshold_reached_count += 1
 
             if threshold_reached_count > 0:
@@ -188,7 +194,7 @@ class StockMarkerService:
     def decrement_low_activity_count(self, stock_codes: List[str]):
         """衰减低活跃度计数（股票通过活跃度检查时调用）
 
-        每次通过活跃度检查时 count-1（最低为0），实现渐进恢复。
+        每个交易日首次通过活跃度检查时 count-1（最低为0），实现渐进恢复。
         同时清除 is_low_activity 标记。
 
         Args:
@@ -199,13 +205,34 @@ class StockMarkerService:
 
         try:
             for code in stock_codes:
+                result = self.db_manager.execute_query(
+                    'SELECT last_activity_check FROM stocks WHERE code = ?',
+                    (code,)
+                )
+                last_check = result[0][0] if result else None
+                decrement = 0 if self._is_today(last_check) else 1
                 self.db_manager.execute_update('''
                     UPDATE stocks
                     SET is_low_activity = 0,
                         low_activity_checked_at = NULL,
-                        low_activity_count = MAX(0, COALESCE(low_activity_count, 0) - 1),
+                        low_activity_count = MAX(
+                            0, COALESCE(low_activity_count, 0) - ?
+                        ),
                         last_activity_check = datetime('now', 'localtime')
                     WHERE code = ?
-                ''', (code,))
+                ''', (decrement, code))
         except Exception as e:
             self.logger.error(f"衰减低活跃度计数失败: {e}")
+
+    @staticmethod
+    def _is_today(value) -> bool:
+        if not value:
+            return False
+        if isinstance(value, datetime):
+            checked_date = value.date()
+        else:
+            try:
+                checked_date = datetime.fromisoformat(str(value)).date()
+            except ValueError:
+                return False
+        return checked_date == date.today()

@@ -6,18 +6,15 @@
 作为订阅状态的唯一数据源，统一管理股票订阅状态。
 解决之前 futu_client、realtime_service、state_manager 三处状态不同步的问题。
 
-合并自：
-- subscription_core.py（核心订阅逻辑和状态管理）
-- subscription_optimizer.py（批处理和额度优化，作为内部依赖）
-- subscription_validator.py（错误检测和无效股票处理，作为内部依赖）
+合并自 subscription_core.py，并保留订阅验证器处理无效股票。
 """
 
 import logging
+import threading
 import time
 from typing import List, Set, Dict, Any, Callable
 
 from .subscription_validator import SubscriptionValidator
-from .subscription_optimizer import SubscriptionOptimizer
 
 try:
     from futu import SubType, RET_OK
@@ -87,14 +84,14 @@ class SubscriptionManager:
         self._on_change_callbacks: List[Callable] = []
         # 异步回调任务引用（防止 GC 回收和异常丢失）
         self._pending_tasks: set = set()
+        self._subscription_lock = threading.RLock()
         self.logger = logging.getLogger(__name__)
 
         # P1-1: 订阅动作埋点
         self._sub_logger = None
 
-        # 初始化验证器和优化器
+        # 初始化订阅验证器
         self._validator = SubscriptionValidator(futu_client, db_manager)
-        self._optimizer = SubscriptionOptimizer(futu_client, self._validator)
 
     def switch_market(self, new_markets: List[str]) -> Dict[str, Any]:
         """市场切换时取消所有旧订阅
@@ -214,17 +211,19 @@ class SubscriptionManager:
             result['successful_stocks'] = list(stock_codes)
             return result
 
-        # 分批处理订阅
+        # 统一走按类型订阅入口，确保 QUOTE 不会占用 TICKER 保底额度。
+        previous_quote_subscribed = self._quote_subscribed.copy()
         t0 = time.time()
-        self._optimizer.process_batches(new_stocks, result)
+        type_result = self._subscribe_by_type(new_stocks, SubType.QUOTE)
+        result['successful_stocks'].extend(type_result['success'])
+        result['failed_stocks'].extend(type_result['failed'])
         duration_ms = (time.time() - t0) * 1000
 
         # 更新内部状态
         if result['successful_stocks']:
-            new_successful = set(result['successful_stocks']) - self._subscribed_stocks
-            self._subscribed_stocks.update(new_successful)
-            # 同步更新 QUOTE 订阅集合（subscribe 方法默认订阅 QUOTE 类型）
-            self._quote_subscribed.update(new_successful)
+            new_successful = (
+                set(result['successful_stocks']) - previous_quote_subscribed
+            )
             # 记录订阅时间
             now = time.time()
             for code in new_successful:
@@ -588,6 +587,15 @@ class SubscriptionManager:
     _SUBSCRIBE_BATCH_SIZE = 10
 
     def _subscribe_by_type(self, stock_codes: List[str], sub_type) -> Dict[str, List[str]]:
+        """Serialize shared-quota accounting across quote and candidate subscriptions."""
+        with self._subscription_lock:
+            return self._subscribe_by_type_locked(stock_codes, sub_type)
+
+    def _subscribe_by_type_locked(
+        self,
+        stock_codes: List[str],
+        sub_type,
+    ) -> Dict[str, List[str]]:
         """按类型分批订阅（内置频率控制）
 
         所有订阅调用（主进程/子进程/个股分析）都经过此方法，
@@ -651,18 +659,20 @@ class SubscriptionManager:
             )
             return {'success': [], 'failed': to_subscribe}
 
+        quota_blocked = []
         if len(to_subscribe) > available_quota:
             self.logger.warning(
                 f"{type_name} 订阅额度不足: 需要 {len(to_subscribe)} 只，"
                 f"可用 {available_quota} 只 (总额度 {total_used}/{self._total_quota})"
             )
+            quota_blocked = to_subscribe[available_quota:]
             to_subscribe = to_subscribe[:available_quota]
 
         # 分批订阅（内置频率控制）
         from ..utils.rate_limiter import wait_for_api
 
         success_stocks = []
-        failed_stocks = []
+        failed_stocks = list(quota_blocked)
 
         for i in range(0, len(to_subscribe), self._SUBSCRIBE_BATCH_SIZE):
             batch = to_subscribe[i:i + self._SUBSCRIBE_BATCH_SIZE]

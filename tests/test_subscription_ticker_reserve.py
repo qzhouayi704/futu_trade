@@ -65,6 +65,18 @@ def test_reserve_zero_when_ticker_full_keeps_legacy_behavior():
     assert len(result['success']) == 10, 'TICKER 满员后 QUOTE 不应再被预留挡住'
 
 
+def test_legacy_subscribe_entry_also_keeps_ticker_reserve():
+    """旧 subscribe() 入口也必须走同一份共享额度计算。"""
+    manager = _make_manager()
+
+    result = manager.subscribe(_codes('Q', 300))
+
+    assert len(result['successful_stocks']) == 200
+    assert len(result['failed_stocks']) == 100
+    assert len(manager._quote_subscribed) == 200
+    assert all(manager.get_subscribe_time(code) > 0 for code in result['successful_stocks'])
+
+
 if __name__ == '__main__':
     test_quote_cannot_eat_ticker_reserve()
     test_ticker_can_use_reserved_seats()

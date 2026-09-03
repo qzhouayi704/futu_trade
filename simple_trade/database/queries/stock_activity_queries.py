@@ -55,16 +55,21 @@ class StockActivityQueries(BaseQueries):
             check_date: 检查日期 (YYYY-MM-DD)
 
         Returns:
-            股票代码 -> {'is_active': bool, 'activity_score': float} 的映射
+            股票代码 -> {'is_active': bool, 'activity_score': float, 'created_at': str} 的映射
             activity_score=-1 表示"检查失败"状态
         """
         try:
             result = self.execute_query('''
-                SELECT stock_code, is_active, activity_score FROM daily_active_stocks
+                SELECT stock_code, is_active, activity_score, created_at
+                FROM daily_active_stocks
                 WHERE check_date = ?
             ''', (check_date,))
             return {
-                row[0]: {'is_active': bool(row[1]), 'activity_score': row[2]}
+                row[0]: {
+                    'is_active': bool(row[1]),
+                    'activity_score': row[2],
+                    'created_at': row[3],
+                }
                 for row in result
             } if result else {}
         except Exception as e:
@@ -130,8 +135,9 @@ class StockActivityQueries(BaseQueries):
         try:
             rows = self.execute_update('''
                 INSERT OR REPLACE INTO daily_active_stocks
-                (check_date, stock_code, market, is_active, activity_score, turnover_rate, turnover_amount)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (check_date, stock_code, market, is_active, activity_score,
+                 turnover_rate, turnover_amount, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
             ''', (check_date, stock_code, market, 1 if is_active else 0,
                   activity_score, turnover_rate, turnover_amount))
             return rows >= 0
@@ -164,8 +170,9 @@ class StockActivityQueries(BaseQueries):
                     cursor = conn.cursor()
                     cursor.executemany('''
                         INSERT OR REPLACE INTO daily_active_stocks
-                        (check_date, stock_code, market, is_active, activity_score, turnover_rate, turnover_amount)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (check_date, stock_code, market, is_active, activity_score,
+                         turnover_rate, turnover_amount, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
                     ''', params_list)
                     conn.commit()
                     return cursor.rowcount if cursor.rowcount >= 0 else 0

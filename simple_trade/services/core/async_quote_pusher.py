@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any, List
 
 from ...utils.logger import print_status, get_flow_logger
 from ...utils.market_helper import MarketTimeHelper
+from ..realtime.activity_cache_policy import ActivityCachePolicy
 
 
 class AsyncQuotePusher:
@@ -44,7 +45,7 @@ class AsyncQuotePusher:
         self.last_active_markets: List[str] = MarketTimeHelper.get_current_active_markets() or []
         self.first_quote_ready = asyncio.Event()  # 首次报价就绪事件
         self._last_refilter_time: float = time.time()  # 上次活跃度重筛时间
-        self._refilter_interval: int = 1800  # 活跃度重筛间隔（秒），默认30分钟
+        self._activity_cache_policy = ActivityCachePolicy.from_config(container.config)
         self._last_pool_scan_time: float = 0  # 上次全池扫描时间
         self._pool_scan_interval: int = 60  # 全池扫描间隔（秒），1分钟
         self._pool_scanner = None  # 延迟初始化
@@ -271,13 +272,14 @@ class AsyncQuotePusher:
     def _check_periodic_refilter(self):
         """检查是否需要定时重新筛选活跃度
 
-        每 _refilter_interval 秒（默认30分钟）清空当天活跃度缓存并触发后台重筛。
-        重筛完成后会自动重新订阅股票。
+        开盘和午后复市前30分钟每2分钟检查一次，其余盘中每5分钟检查一次。
+        每次只重查按状态已过期的股票，重筛完成后自动更新订阅。
         仅在盘中执行，收盘后跳过（避免换手率为0导致活跃股被清空）。
         """
         now = time.time()
         elapsed = now - self._last_refilter_time
-        if elapsed < self._refilter_interval:
+        refilter_interval = self._activity_cache_policy.refilter_interval_seconds()
+        if elapsed < refilter_interval:
             return
 
         # 收盘后不重筛，保留当天活跃股数据用于盘后分析
@@ -290,19 +292,13 @@ class AsyncQuotePusher:
 
         try:
             from ...routers.data.activity_refilter import trigger_refilter_async
-            from datetime import date
 
-            # 清空当天缓存
-            today = date.today().strftime('%Y-%m-%d')
-            cleared = self.container.db_manager.stock_activity_queries.clear_daily_activity_records(today)
-            logging.info(
-                f"【定时重筛】已清空 {cleared} 条活跃度缓存，触发后台重新筛选"
-            )
-
-            # 触发异步重筛（后台线程执行，不阻塞推送循环）
+            # 触发增量异步重筛（后台线程执行，不阻塞推送循环）
             started = trigger_refilter_async(self.container)
             if started:
-                logging.info("【定时重筛】后台重筛任务已启动")
+                logging.info(
+                    f"【定时重筛】增量任务已启动，当前间隔 {refilter_interval} 秒"
+                )
             else:
                 logging.info("【定时重筛】无需重筛（正在进行中或无待检查股票）")
 
@@ -313,7 +309,7 @@ class AsyncQuotePusher:
         """开盘时触发活跃度重筛
 
         清空盘前/集合竞价期间的无效缓存数据，触发后台重新筛选，
-        并重置30分钟定时器避免重复触发。
+        并重置增量重筛定时器避免重复触发。
         """
         try:
             from ...routers.data.activity_refilter import trigger_refilter_async
@@ -324,7 +320,7 @@ class AsyncQuotePusher:
             cleared = self.container.db_manager.stock_activity_queries.clear_daily_activity_records(today)
             logging.info(f"【开盘筛选】已清空 {cleared} 条盘前活跃度缓存")
 
-            # 重置30分钟定时器，避免开盘后很快又触发定时重筛
+            # 重置增量定时器，避免开盘后很快又触发定时重筛
             self._last_refilter_time = time.time()
 
             # 触发异步重筛（后台线程执行，不阻塞推送循环）

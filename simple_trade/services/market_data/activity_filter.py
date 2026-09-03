@@ -99,7 +99,7 @@ class ActivityFilterService:
                 f"剩余 {len(pending_stocks)} 只待筛选"
             )
 
-        # 检查缓存（1小时内的活跃度数据）
+        # 检查按状态分层过期的活跃度缓存
         cached_stocks, uncached_stocks = self.calculator.check_activity_cache(pending_stocks)
         if cached_stocks:
             self.logger.info(

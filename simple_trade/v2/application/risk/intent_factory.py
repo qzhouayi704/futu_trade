@@ -31,7 +31,28 @@ class IntentFactory:
         quote = feature.get("quote") or {}
         price = self._positive(quote.get("last_price"))
         lot = self._integer(quote.get("lot_size"))
-        if price <= 0 or lot <= 0:
+        if price <= 0:
+            return None
+
+        # 提醒模式只生成可复核的价格意图，不依赖每手股数和账户可买数量。
+        # ExecutionModeGate 会阻止 ALERT 意图进入真实下单链路。
+        if self._mode is RuntimeMode.ALERT:
+            return TradeIntent(
+                source_event_id=event.event_id,
+                intent_type=IntentType.BUY,
+                created_at=event.exchange_time,
+                mode=self._mode,
+                reason_codes=(event.reason_code,),
+                buy_leg=OrderLeg(
+                    stock_code=event.stock_code,
+                    side=OrderSide.BUY,
+                    quantity=lot or 1,
+                    reference_price=price,
+                    lot_size=lot or None,
+                ),
+            )
+
+        if lot <= 0:
             return None
         account = context.account
         budget = min(

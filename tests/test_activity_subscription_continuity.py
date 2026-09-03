@@ -56,8 +56,8 @@ class FakeDbManager:
 
 # ── hypothesis 策略 ──────────────────────────────────────────────
 
-fresh_minutes_st = st.integers(min_value=0, max_value=9)
-expired_minutes_st = st.integers(min_value=11, max_value=60)
+fresh_minutes_st = st.integers(min_value=0, max_value=4)
+expired_minutes_st = st.integers(min_value=6, max_value=60)
 positive_score_st = st.floats(min_value=0.1, max_value=1.0, allow_nan=False)
 num_stocks_st = st.integers(min_value=1, max_value=4)
 
@@ -272,19 +272,13 @@ class TestProperty5SubscriptionContinuity:
 
         mock_client = MagicMock()
         mock_client.is_available.return_value = True
+        mock_client.subscribe_stocks.return_value = (0, None)
         mock_client.client = MagicMock()
 
         core = SubscriptionCore(futu_client=mock_client)
 
         # 模拟第一轮已订阅
-        core._subscribed_stocks = {'HK.00700', 'HK.09988', 'HK.03690'}
-
-        # Mock optimizer 使新股票订阅成功
-        core._optimizer = MagicMock()
-
-        def fake_process(new_stocks, result):
-            result['successful_stocks'] = new_stocks
-        core._optimizer.process_batches = MagicMock(side_effect=fake_process)
+        core._subscribed_stocks.update({'HK.00700', 'HK.09988', 'HK.03690'})
 
         # 第二轮：订阅 00700, 09988, 01810（前两个已订阅）
         result = core.subscribe(['HK.00700', 'HK.09988', 'HK.01810'])
@@ -293,9 +287,8 @@ class TestProperty5SubscriptionContinuity:
         assert 'HK.00700' in result['already_subscribed']
         assert 'HK.09988' in result['already_subscribed']
 
-        # 只有新股票传给 optimizer
-        core._optimizer.process_batches.assert_called_once()
-        actual_new = core._optimizer.process_batches.call_args[0][0]
+        # 只有新股票进入统一按类型订阅入口
+        actual_new = mock_client.subscribe_stocks.call_args[0][0]
         assert actual_new == ['HK.01810']
 
         # unsubscribe 从未被调用
@@ -325,16 +318,11 @@ class TestProperty5SubscriptionContinuity:
 
         mock_client = MagicMock()
         mock_client.is_available.return_value = True
+        mock_client.subscribe_stocks.return_value = (0, None)
         mock_client.client = MagicMock()
 
         core = SubscriptionCore(futu_client=mock_client)
-        core._subscribed_stocks = set(first_round)
-
-        core._optimizer = MagicMock()
-
-        def fake_process(new_stocks, result):
-            result['successful_stocks'] = new_stocks
-        core._optimizer.process_batches = MagicMock(side_effect=fake_process)
+        core._subscribed_stocks.update(first_round)
 
         core.subscribe(second_round)
 

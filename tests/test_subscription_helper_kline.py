@@ -117,7 +117,11 @@ class TestSubscriptionHelperKlineIntegration:
 
         helper.background_kline_task = MagicMock(spec=BackgroundKlineTask)
 
-        result = helper.subscribe_target_stocks(markets=['HK'])
+        with patch("threading.Thread") as thread_class:
+            result = helper.subscribe_target_stocks(markets=['HK'])
+            delayed_submit = thread_class.call_args.kwargs["target"]
+            with patch("time.sleep"):
+                delayed_submit()
 
         assert result['success'] is True
         helper.background_kline_task.submit.assert_called_once_with(target_stocks)
@@ -185,12 +189,29 @@ class TestSubscriptionHelperKlineIntegration:
 
         helper.background_kline_task = MagicMock(spec=BackgroundKlineTask)
 
-        helper.subscribe_target_stocks(markets=['HK'])
+        with patch("threading.Thread") as thread_class:
+            helper.subscribe_target_stocks(markets=['HK'])
+            delayed_submit = thread_class.call_args.kwargs["target"]
+            with patch("time.sleep"):
+                delayed_submit()
 
         # 验证传递给 submit 的是筛选后的完整股票列表
         call_args = helper.background_kline_task.submit.call_args[0][0]
         assert len(call_args) == 3
         assert all('code' in s for s in call_args)
+
+    def test_overlapping_refresh_reuses_existing_subscription(self):
+        helper, sub_mgr = _create_helper_with_mocks()
+        sub_mgr.subscribed_stocks = {"HK.00700"}
+        helper._subscription_refresh_lock.acquire()
+        try:
+            result = helper.subscribe_target_stocks(markets=["HK"])
+        finally:
+            helper._subscription_refresh_lock.release()
+
+        assert result["success"] is True
+        assert result["subscribed_count"] == 1
+        helper.stock_query_service.get_target_stocks.assert_not_called()
 
 
 class TestBackgroundKlineTaskSubmitNonBlocking:

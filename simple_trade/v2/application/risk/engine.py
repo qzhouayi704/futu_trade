@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Protocol
 
-from ...domain.enums import DataQuality, IntentType, RiskResult
+from ...domain.enums import DataQuality, IntentType, RiskResult, RuntimeMode
 from ...domain.orders import RiskDecision, TradeIntent
 from ...domain.risk import RiskContext, RiskLimits
 
@@ -67,6 +67,14 @@ class RiskEngine:
     def _check_buy(self, intent, context, positions, reasons: list[str]) -> None:
         leg = intent.buy_leg
         if leg is None:
+            return
+        if intent.mode is RuntimeMode.ALERT:
+            if self._frequency_guard is not None:
+                allowed, reason = self._frequency_guard.can_buy(
+                    leg.stock_code, context.checked_at
+                )
+                if not allowed:
+                    reasons.append(f"BUY_FREQUENCY_BLOCKED:{reason}")
             return
         if leg.lot_size is None:
             reasons.append(f"LOT_SIZE_UNAVAILABLE:{leg.stock_code}")

@@ -124,7 +124,7 @@ async def refilter_activity(container=Depends(get_container)):
 
 
 def _get_stocks_to_recheck(container) -> List[Dict[str, Any]]:
-    """获取需要重新检查的股票列表（未检查 + 检查失败）
+    """获取需要重新检查的股票列表（未检查 + 按状态已过期）
 
     重新筛选活跃度时，应该对股票池中的所有股票进行筛选，
     而不仅仅是已订阅的股票，这样才能发现新的活跃股票。
@@ -134,6 +134,8 @@ def _get_stocks_to_recheck(container) -> List[Dict[str, Any]]:
 
     # 获取已检查的股票
     checked_stocks = container.db_manager.stock_activity_queries.get_daily_checked_stocks(today)
+    from ...services.realtime.activity_cache_policy import ActivityCachePolicy
+    cache_policy = ActivityCachePolicy.from_config(container.config)
 
     # 获取股票池中的所有股票（而不是已订阅的股票）
     state = get_state_manager()
@@ -164,11 +166,8 @@ def _get_stocks_to_recheck(container) -> List[Dict[str, Any]]:
             skipped_market_count += 1
             continue
 
-        if code not in checked_stocks:
-            # 未检查的股票
-            stocks_to_check.append(stock)
-        elif checked_stocks[code].get('activity_score') == -1:
-            # 检查失败的股票（activity_score == -1）
+        cache_record = checked_stocks.get(code)
+        if cache_record is None or not cache_policy.is_fresh(cache_record):
             stocks_to_check.append(stock)
 
     if skipped_market_count > 0:

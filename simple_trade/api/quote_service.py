@@ -98,6 +98,24 @@ class QuoteService:
 
         return self._fetch_quote(subscribed_codes)
 
+    def get_market_snapshot(self, stock_codes: List[str]) -> Tuple[int, Any]:
+        """获取无需预先订阅的市场快照。
+
+        活跃股票发现只需要最新价、成交额、成交量和换手率。使用快照接口
+        可以避免为全市场初筛临时占用 QUOTE/TICKER 的共享订阅额度。
+        """
+        if not self._is_available():
+            self.logger.warning("获取市场快照失败: 富途API不可用")
+            return RET_ERROR, "富途API不可用"
+        if not stock_codes:
+            return RET_ERROR, "股票代码列表为空"
+
+        try:
+            return self._futu_client.get_market_snapshot(stock_codes)
+        except Exception as exc:
+            self.logger.error("获取市场快照异常: %s", exc)
+            return RET_ERROR, str(exc)
+
     def _is_available(self) -> bool:
         """检查服务是否可用"""
         return (FUTU_AVAILABLE and

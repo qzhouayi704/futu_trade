@@ -67,7 +67,15 @@
       "HK": 0.3
     },
     "min_turnover_amount": 5000000,
-    "low_activity_recheck_days": 7
+    "low_activity_recheck_days": 7,
+    "active_cache_ttl_seconds": 300,
+    "inactive_cache_ttl_seconds": 120,
+    "failed_cache_ttl_seconds": 30,
+    "opening_refilter_interval_seconds": 120,
+    "regular_refilter_interval_seconds": 300,
+    "discovery_score_threshold": 0.65,
+    "emerging_liquidity_floor_ratio": 0.35,
+    "demotion_confirmation_cycles": 2
   },
   "realtime_hot_filter": {
     "enabled": true,

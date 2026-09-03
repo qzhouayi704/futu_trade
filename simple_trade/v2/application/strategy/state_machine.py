@@ -221,7 +221,13 @@ class CandidateStateMachine:
     ) -> TransitionProposal | None:
         if not cls._quote_setup_context(snapshot, universe):
             return None
-        if snapshot.quality is DataQuality.INVALID:
+        if (
+            snapshot.price_position.daily_percentile
+            > cls.QUOTE_SETUP_MAX_DAILY_PERCENTILE
+            and CandidateSignalRules.strong_trend_discovery_context(snapshot)
+        ):
+            reason = "STRONG_TREND_DISCOVERY_SETUP"
+        elif snapshot.quality is DataQuality.INVALID:
             reason = "QUOTE_DATA_ENRICHMENT_SETUP"
         elif universe.eligible:
             reason = "HOT_ACTIVE_DAILY_SETUP"
@@ -588,7 +594,7 @@ class CandidateStateMachine:
             or (
                 snapshot.price_position.daily_percentile
                 > cls.QUOTE_SETUP_MAX_DAILY_PERCENTILE
-                and not CandidateSignalRules.strong_trend_reentry_ready(snapshot)
+                and not CandidateSignalRules.strong_trend_discovery_context(snapshot)
             )
             or not cls._usable_global_context(snapshot)
         ):
@@ -597,6 +603,52 @@ class CandidateStateMachine:
             return True
         missing = set(snapshot.missing_fields)
         return bool(missing and missing.issubset(cls.ENRICHABLE_SETUP_FIELDS))
+
+    @classmethod
+    def setup_blockers(
+        cls,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+    ) -> tuple[str, ...]:
+        """Return the concrete reasons a quote could not enter pre-candidate setup."""
+        reasons = [
+            reason
+            for reason in universe.reason_codes
+            if reason not in cls.PRESETUP_BYPASS_REASONS
+        ]
+        activity = snapshot.activity
+        liquidity = snapshot.liquidity
+        position = snapshot.price_position
+        context = snapshot.market_context
+
+        if activity is None or not activity.is_active:
+            reasons.append("NOT_ACTIVE")
+        if liquidity is None or liquidity.score < 30:
+            reasons.append("LIQUIDITY_TOO_LOW")
+        if position.quality is DataQuality.INVALID:
+            reasons.append("DAILY_POSITION_INVALID")
+        elif position.daily_percentile > cls.QUOTE_SETUP_MAX_DAILY_PERCENTILE:
+            extension_atr = (
+                position.distance_to_ma20 / position.atr_percent
+                if position.atr_percent > 0
+                else None
+            )
+            if (
+                extension_atr is None
+                or extension_atr > CandidateSignalRules.STRONG_TREND_MAX_EXTENSION_ATR
+            ):
+                reasons.append("PRICE_TOO_EXTENDED_FOR_ENTRY")
+            elif not CandidateSignalRules.strong_trend_discovery_context(snapshot):
+                reasons.append("STRONG_TREND_DISCOVERY_NOT_READY")
+        if not cls._usable_global_context(snapshot):
+            reasons.append("MARKET_CONTEXT_INCOMPLETE")
+        if snapshot.quality is DataQuality.INVALID:
+            missing = set(snapshot.missing_fields)
+            if not missing or not missing.issubset(cls.ENRICHABLE_SETUP_FIELDS):
+                reasons.append("DATA_QUALITY_INVALID")
+
+        reasons.extend(universe.reason_codes)
+        return tuple(dict.fromkeys(reasons))
 
     @staticmethod
     def _low_position_accumulation(window: TickAggregate | None) -> bool:

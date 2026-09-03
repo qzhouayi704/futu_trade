@@ -257,6 +257,12 @@ class CandidateCoordinator:
         if proposal is None and status is StrategyStatus.IDLE:
             await self._persist_rejection(source, universe, score, portfolio)
 
+        idle_reasons = (
+            self._machine.setup_blockers(snapshot, universe)
+            if status is StrategyStatus.IDLE
+            else ()
+        )
+
         candidate = TradeCandidate(
             stock_code=snapshot.stock_code,
             as_of=snapshot.computed_at,
@@ -266,7 +272,7 @@ class CandidateCoordinator:
             reason_codes=(
                 (proposal.reason_code,)
                 if proposal is not None
-                else universe.reason_codes or score.reason_codes or ("NO_TRANSITION",)
+                else idle_reasons or score.reason_codes or ("NO_TRANSITION",)
             ),
             invalidation_conditions=(
                 "15m main flow turns negative or sell amount offsets at least 80% of buys",
@@ -288,9 +294,9 @@ class CandidateCoordinator:
             self._latest[snapshot.stock_code] = candidate
 
     async def _persist_rejection(self, source, universe, score, portfolio) -> None:
-        reasons = list(universe.reason_codes)
-        if source.snapshot.price_position.quality.value == "INVALID":
-            reasons.append("DAILY_POSITION_INVALID")
+        reasons = list(self._machine.setup_blockers(source.snapshot, universe))
+        if not reasons:
+            reasons.extend(score.reason_codes)
         fingerprint = tuple(dict.fromkeys(reasons))
         if not fingerprint:
             return

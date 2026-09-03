@@ -11,8 +11,11 @@
 """
 
 import logging
+import math
 from datetime import datetime
 from typing import List, Dict, Any
+
+from .activity_cache_policy import ActivityCachePolicy
 
 
 class ActivityCalculator:
@@ -33,6 +36,7 @@ class ActivityCalculator:
         self.config = config
         self.db_manager = db_manager
         self.logger = logging.getLogger(__name__)
+        self.cache_policy = ActivityCachePolicy.from_config(config)
 
         # 延迟创建 StockMarkerService
         self._stock_marker = None
@@ -111,8 +115,8 @@ class ActivityCalculator:
     ) -> tuple:
         """检查当天活跃度缓存，返回缓存命中和未命中的股票
 
-        使用 daily_active_stocks 表存储当天的活跃度筛选结果（按天有效）。
-        定时重筛由外部定时器负责清空缓存后重新触发。
+        使用 daily_active_stocks 表存储当天的活跃度筛选结果，并根据
+        活跃、非活跃、检查失败三种状态应用不同的缓存有效期。
 
         Args:
             stocks: 股票列表
@@ -137,14 +141,17 @@ class ActivityCalculator:
 
             cached_inactive_count = 0
             check_failed_count = 0
+            expired_count = 0
             for stock in stocks:
                 code = stock['code']
                 if code in checked_stocks:
                     info = checked_stocks[code]
-                    if info['activity_score'] == -1:
-                        # 检查失败，需要重新检查
-                        check_failed_count += 1
+                    if not self.cache_policy.is_fresh(info):
+                        expired_count += 1
                         uncached.append(stock)
+                    elif info['activity_score'] == -1:
+                        # 短暂缓存失败状态，避免接口异常时立即重复请求。
+                        check_failed_count += 1
                     elif info['is_active']:
                         stock_with_cache = dict(stock)
                         stock_with_cache['from_cache'] = True
@@ -159,7 +166,8 @@ class ActivityCalculator:
             self.logger.info(
                 f"活跃度缓存(当天): 活跃{len(cached_active)}只, "
                 f"不活跃{cached_inactive_count}只, "
-                f"检查失败{check_failed_count}只, 待检查{len(uncached)}只"
+                f"检查失败暂缓{check_failed_count}只, 过期{expired_count}只, "
+                f"待检查{len(uncached)}只"
             )
 
         except Exception as e:
@@ -201,11 +209,18 @@ class ActivityCalculator:
             code = row.get('code', '')
             if code:
                 quote_map[code] = {
-                    'turnover_rate': float(row.get('turnover_rate', 0) or 0),
-                    'turnover': float(row.get('turnover', 0) or 0),
-                    'volume': int(row.get('volume', 0) or 0),
-                    'last_price': float(row.get('last_price', 0) or 0)
+                    'turnover_rate': self._safe_float(row.get('turnover_rate', 0)),
+                    'turnover': self._safe_float(row.get('turnover', 0)),
+                    'volume': int(self._safe_float(row.get('volume', 0))),
+                    'last_price': self._safe_float(row.get('last_price', 0)),
+                    'change_rate': self._safe_float(row.get('change_rate', 0)),
+                    'amplitude': self._safe_float(row.get('amplitude', 0)),
                 }
+
+        percentile_ranks = {
+            key: self._percentile_ranks(quote_map, key)
+            for key in ('turnover', 'turnover_rate', 'volume', 'change_rate')
+        }
 
         # 筛选
         active = []
@@ -234,11 +249,33 @@ class ActivityCalculator:
             market_turnover_rate = min_turnover_rate.get(market, 0.1) if isinstance(min_turnover_rate, dict) else min_turnover_rate
             market_min_volume = min_volume.get(market, 500000) if isinstance(min_volume, dict) else min_volume
 
-            if self.is_active_stock(quote, market_turnover_rate, min_turnover_amount, market_min_volume):
+            hard_active = self.is_active_stock(
+                quote, market_turnover_rate, min_turnover_amount, market_min_volume
+            )
+            discovery_score = self.calculate_discovery_score(
+                quote=quote,
+                ranks={key: values.get(code, 0.0) for key, values in percentile_ranks.items()},
+                min_turnover_amount=min_turnover_amount,
+                min_volume=market_min_volume,
+            )
+            emerging_active = self.is_emerging_active_stock(
+                quote=quote,
+                discovery_score=discovery_score,
+                min_turnover_amount=min_turnover_amount,
+                min_volume=market_min_volume,
+            )
+
+            if hard_active or emerging_active:
                 stock_with_activity = dict(stock)
                 stock_with_activity.update(quote)
-                activity_score = self.calculate_activity_score(quote)
+                activity_score = max(
+                    self.calculate_activity_score(quote), discovery_score
+                )
                 stock_with_activity['activity_score'] = activity_score
+                stock_with_activity['discovery_score'] = discovery_score
+                stock_with_activity['activity_reason'] = (
+                    'hard_threshold' if hard_active else 'emerging_hotspot'
+                )
                 active.append(stock_with_activity)
 
                 # 保存活跃结果到缓存
@@ -343,6 +380,81 @@ class ActivityCalculator:
         turnover_amount_score = min(turnover / 50000000, 1.0)
 
         return turnover_rate_score * 0.6 + turnover_amount_score * 0.4
+
+    def calculate_discovery_score(
+        self,
+        quote: Dict[str, Any],
+        ranks: Dict[str, float],
+        min_turnover_amount: float,
+        min_volume: int,
+    ) -> float:
+        """Calculate a cross-sectional score used only for discovery coverage."""
+        turnover_ratio = min(
+            float(quote.get('turnover', 0) or 0) / max(min_turnover_amount, 1), 1.0
+        )
+        volume_ratio = min(
+            float(quote.get('volume', 0) or 0) / max(min_volume, 1), 1.0
+        )
+        liquidity_floor = min(turnover_ratio, volume_ratio)
+        score = (
+            ranks.get('turnover', 0.0) * 0.30
+            + ranks.get('turnover_rate', 0.0) * 0.25
+            + ranks.get('volume', 0.0) * 0.20
+            + ranks.get('change_rate', 0.0) * 0.15
+            + liquidity_floor * 0.10
+        )
+        return round(max(0.0, min(score, 1.0)), 4)
+
+    def is_emerging_active_stock(
+        self,
+        quote: Dict[str, Any],
+        discovery_score: float,
+        min_turnover_amount: float,
+        min_volume: int,
+    ) -> bool:
+        """Admit new hotspots with relative strength before hard totals mature."""
+        config = getattr(self.config, 'realtime_activity_filter', {}) if self.config else {}
+        threshold = float(config.get('discovery_score_threshold', 0.65))
+        floor_ratio = float(config.get('emerging_liquidity_floor_ratio', 0.35))
+        turnover = float(quote.get('turnover', 0) or 0)
+        volume = float(quote.get('volume', 0) or 0)
+        last_price = float(quote.get('last_price', 0) or 0)
+        return (
+            last_price > 0
+            and turnover >= min_turnover_amount * floor_ratio
+            and volume >= min_volume * floor_ratio
+            and discovery_score >= threshold
+        )
+
+    @staticmethod
+    def _percentile_ranks(
+        quote_map: Dict[str, Dict[str, Any]], key: str
+    ) -> Dict[str, float]:
+        values = {
+            code: max(float(quote.get(key, 0) or 0), 0.0)
+            for code, quote in quote_map.items()
+        }
+        unique_values = sorted(set(values.values()))
+        if not unique_values:
+            return {}
+        if len(unique_values) == 1:
+            return {code: 0.5 for code in values}
+        value_ranks = {
+            value: index / (len(unique_values) - 1)
+            for index, value in enumerate(unique_values)
+        }
+        return {
+            code: value_ranks[value]
+            for code, value in values.items()
+        }
+
+    @staticmethod
+    def _safe_float(value: Any) -> float:
+        try:
+            result = float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return result if math.isfinite(result) else 0.0
 
     def save_activity_cache(
         self,

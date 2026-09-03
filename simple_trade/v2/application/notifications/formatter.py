@@ -3,7 +3,13 @@
 from datetime import timedelta
 
 from ...domain.decisions import NotificationEvent
-from ...domain.enums import EventType, IntentType, NotificationChannel, RiskResult
+from ...domain.enums import (
+    EventType,
+    IntentType,
+    NotificationChannel,
+    RiskResult,
+    RuntimeMode,
+)
 from ...domain.events import RiskAssessedEvent
 
 
@@ -69,10 +75,16 @@ class NotificationFormatter:
                 f"{intent.sell_leg.reference_price:.3f}"
             )
         if intent.buy_leg is not None:
-            lines.append(
-                f"- 买入参考：{intent.buy_leg.stock_code} "
-                f"{intent.buy_leg.quantity} 股 @ {intent.buy_leg.reference_price:.3f}"
-            )
+            if intent.mode is RuntimeMode.ALERT:
+                lines.append(
+                    f"- 买入参考：{intent.buy_leg.stock_code} @ "
+                    f"{intent.buy_leg.reference_price:.3f}（仓位需人工确认）"
+                )
+            else:
+                lines.append(
+                    f"- 买入参考：{intent.buy_leg.stock_code} "
+                    f"{intent.buy_leg.quantity} 股 @ {intent.buy_leg.reference_price:.3f}"
+                )
         if intent.reason_codes:
             labels = [
                 NotificationFormatter.REASON_LABELS.get(reason, reason)

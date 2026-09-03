@@ -21,6 +21,9 @@ const reasonLabel: Record<string, string> = {
   HOT_ACTIVE_DAILY_SETUP: "热门活跃，等待资金确认",
   ACTIVE_QUOTE_PRESETUP: "报价活跃，进入预候选观察",
   QUOTE_DATA_ENRICHMENT_SETUP: "报价活跃，正在补充逐笔资金数据",
+  STRONG_TREND_DISCOVERY_SETUP: "高位强势，已进入逐笔资金观察",
+  STRONG_TREND_DISCOVERY_NOT_READY: "高位股票的强度或活跃度尚未达到观察标准",
+  PRICE_TOO_EXTENDED_FOR_ENTRY: "股价偏离日线均线过远，暂不追高",
   FIRST_STRONG_INFLOW_WATCH: "首次强流入，继续观察",
   CAPITAL_MEMORY_REVERSAL_WATCH: "全天吸收转强，等待多次资金确认",
   CAPITAL_MEMORY_MULTI_INFLOW_SHADOW_CONFIRMED: "资金记忆多次流入影子确认",
@@ -48,6 +51,9 @@ const reasonLabel: Record<string, string> = {
   TURNOVER_RANK_NOT_HOT: "成交额热度不足",
   SECTOR_BREADTH_WEAK: "所属板块宽度偏弱",
   RELATIVE_STRENGTH_LOW: "相对强度不足",
+  NOT_ACTIVE: "成交活跃度不足",
+  LIQUIDITY_TOO_LOW: "流动性不足",
+  DAILY_POSITION_INVALID: "缺少日线位置参考",
 };
 
 export function candidateReasonText(value: string): string {
