@@ -367,6 +367,16 @@ class AsyncQuotePusher:
             )
 
             if anomalies:
+                # Full-pool snapshots are also valid V2 discovery quotes. Only
+                # selected anomalies are published, keeping the V2 queue bounded.
+                v2_runtime = getattr(self.container, 'v2_runtime', None)
+                if v2_runtime is not None and getattr(v2_runtime, 'started', False):
+                    quote_rows = self._pool_scanner.get_snapshot_rows(
+                        [item.code for item in anomalies]
+                    )
+                    if quote_rows:
+                        v2_runtime.ingest_quotes(quote_rows)
+
                 # 推送异动通知到前端
                 await self._broadcast_anomalies(anomalies)
 
@@ -542,47 +552,16 @@ class AsyncQuotePusher:
     def _rotate_subscriptions(self, new_codes):
         """将异动股替换进订阅列表（含 QUOTE + TICKER 逐笔）"""
         try:
-            sub_mgr = self.container.subscription_manager
-            if not sub_mgr:
+            helper = getattr(self.container, 'subscription_helper', None)
+            if helper is None:
                 return
-
-            subscribed = sub_mgr.subscribed_stocks
-            to_add = [c for c in new_codes if c not in subscribed]
-
-            if not to_add:
-                # 即使已订阅QUOTE，也检查是否需要补订TICKER
-                ticker_subscribed = sub_mgr.ticker_subscribed_stocks
-                need_ticker = [c for c in new_codes if c not in ticker_subscribed]
-                if need_ticker:
-                    try:
-                        from futu import SubType
-                        sub_mgr.subscribe_multi_types(need_ticker[:5], [SubType.TICKER])
-                        logging.info(
-                            f"【异动轮换】补订TICKER {len(need_ticker)}只: {need_ticker[:5]}"
-                        )
-                    except Exception as e:
-                        logging.debug(f"【异动轮换】补订TICKER失败: {e}")
-                return
-
-            # 新股票：同时订阅 QUOTE + TICKER
-            try:
-                from futu import SubType
-                result = sub_mgr.subscribe_multi_types(
-                    to_add[:5], [SubType.QUOTE, SubType.TICKER]
-                )
+            successes = []
+            for code in new_codes[:5]:
+                result = helper.subscribe_for_candidate_data(code)
                 if result.get('success'):
-                    logging.info(
-                        f"【异动轮换】新增订阅 {len(to_add)} 只异动股(QUOTE+TICKER): "
-                        f"{to_add[:5]}"
-                    )
-            except ImportError:
-                # futu 未安装时回退到仅 QUOTE 订阅
-                result = sub_mgr.subscribe(to_add)
-                if result.get('success'):
-                    logging.info(
-                        f"【异动轮换】新增订阅 {len(to_add)} 只异动股(仅QUOTE): "
-                        f"{to_add[:5]}"
-                    )
+                    successes.append(code)
+            if successes:
+                logging.info("【异动轮换】提升候选行情订阅: %s", successes)
         except Exception as e:
             logging.warning(f"【异动轮换】订阅失败: {e}")
 

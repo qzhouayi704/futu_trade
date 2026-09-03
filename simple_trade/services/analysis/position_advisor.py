@@ -15,6 +15,8 @@ from dataclasses import dataclass, field, asdict
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from ...config.legacy_signal_policy import resolve_legacy_signal_policy
+
 logger = logging.getLogger("position_advisor")
 
 
@@ -55,6 +57,7 @@ class PositionAdvisor:
     def __init__(self, db_manager, container=None):
         self.db = db_manager
         self.container = container
+        self._legacy_policy = resolve_legacy_signal_policy()
 
     async def generate_all_advice(self, positions: List[dict]) -> List[PositionAdvice]:
         """
@@ -67,6 +70,9 @@ class PositionAdvisor:
             PositionAdvice 列表
         """
         if not positions:
+            return []
+        if not self._legacy_policy.action_enabled:
+            logger.info("[PositionAdvisor] 旧版盘后建议处于观察模式，本轮不生成操作建议")
             return []
 
         results = []

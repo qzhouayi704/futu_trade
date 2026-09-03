@@ -67,6 +67,8 @@ class PoolSnapshotScanner:
         self._last_anomalies: Dict[str, AnomalyStock] = {}  # code -> AnomalyStock
         self._cooldown: Dict[str, float] = {}  # code -> 上次触发时间
         self._cooldown_seconds = 1800  # 同一股票30分钟内不重复触发
+        self._previous_snapshots: Dict[str, Dict[str, Any]] = {}
+        self._latest_snapshot_rows: Dict[str, Dict[str, Any]] = {}
 
     def scan(self) -> List[AnomalyStock]:
         """执行全池扫描，返回异动股列表
@@ -88,9 +90,15 @@ class PoolSnapshotScanner:
         snapshot_data = self._fetch_snapshots(codes)
         if not snapshot_data:
             return []
+        self._latest_snapshot_rows = {
+            str(item.get('code') or ''): item for item in snapshot_data
+        }
 
         # 第一层：快照异动筛选
         candidates = self._filter_by_snapshot(snapshot_data)
+        self._previous_snapshots = {
+            str(item.get('code') or ''): item for item in snapshot_data
+        }
         if not candidates:
             return []
 
@@ -133,10 +141,20 @@ class PoolSnapshotScanner:
         sub_mgr = getattr(self._container, 'subscription_manager', None)
         if not sub_mgr:
             return []
-        subscribed = sub_mgr.subscribed_stocks
+        ticker_subscribed = sub_mgr.ticker_subscribed_stocks
+        now = time.time()
         return [
             a.code for a in self._last_anomalies.values()
-            if a.code not in subscribed and a.has_shrinkage
+            if a.code not in ticker_subscribed
+            and now - self._cooldown.get(a.code, 0.0) <= self._cooldown_seconds
+        ]
+
+    def get_snapshot_rows(self, stock_codes: List[str]) -> List[Dict[str, Any]]:
+        """Return normalized Futu quote rows for selected full-pool discoveries."""
+        return [
+            dict(self._latest_snapshot_rows[code])
+            for code in stock_codes
+            if code in self._latest_snapshot_rows
         ]
 
     # ==================== 内部方法 ====================
@@ -176,10 +194,17 @@ class PoolSnapshotScanner:
                             'code': row.get('code', ''),
                             'name': row.get('name', ''),
                             'last_price': float(row.get('last_price', 0)),
+                            'prev_close_price': float(row.get('prev_close_price', 0) or 0),
+                            'open_price': float(row.get('open_price', 0) or 0),
+                            'high_price': float(row.get('high_price', 0) or 0),
+                            'low_price': float(row.get('low_price', 0) or 0),
                             'change_rate': float(row.get('change_rate', 0)),
                             'volume_ratio': float(row.get('volume_ratio', 0) or 0),
                             'turnover_rate': float(row.get('turnover_rate', 0) or 0),
+                            'turnover': float(row.get('turnover', 0) or 0),
                             'volume': int(row.get('volume', 0)),
+                            'update_time': row.get('update_time'),
+                            'is_realtime': True,
                         })
                 if i + self.BATCH_SIZE < len(codes):
                     time.sleep(self.BATCH_DELAY)
@@ -206,7 +231,9 @@ class PoolSnapshotScanner:
             chg = stock['change_rate']
 
             # 最低成交额过滤
-            est_turnover = stock.get('volume', 0) * stock.get('last_price', 0)
+            est_turnover = stock.get('turnover') or (
+                stock.get('volume', 0) * stock.get('last_price', 0)
+            )
             if est_turnover < self.TURNOVER_MIN:
                 continue
 
@@ -221,6 +248,14 @@ class PoolSnapshotScanner:
             # 资金流验证（唯一入口）
             cf = capital_map.get(code)
             if not cf:
+                quote_score = self._quote_hot_score(stock, est_turnover)
+                if quote_score is None:
+                    continue
+                stock['anomaly_type'] = 'quote_hot'
+                stock['cap_tier'] = cap_tier
+                stock['capital_score'] = quote_score
+                stock['signal_change'] = chg
+                candidates.append(stock)
                 continue
 
             cap_score = cf.get('capital_score', 0)
@@ -250,6 +285,37 @@ class PoolSnapshotScanner:
             candidates = self._rank_by_capital_strength(candidates)
 
         return candidates
+
+    def _quote_hot_score(self, stock: Dict[str, Any], turnover: float) -> float | None:
+        """Select data-subscription candidates without claiming fund confirmation."""
+        if turnover < self.TURNOVER_MIN:
+            return None
+        code = str(stock.get('code') or '')
+        change = float(stock.get('change_rate') or 0.0)
+        volume_ratio = float(stock.get('volume_ratio') or 0.0)
+        previous = self._previous_snapshots.get(code)
+        turnover_delta = 0.0
+        change_delta = 0.0
+        if previous is not None:
+            turnover_delta = turnover - float(previous.get('turnover') or 0.0)
+            change_delta = change - float(previous.get('change_rate') or 0.0)
+
+        active_now = volume_ratio >= 1.5 and change >= 0.5
+        accelerating = (
+            previous is not None
+            and turnover_delta >= 3_000_000
+            and change_delta >= 0.35
+            and change >= 0
+        )
+        if not active_now and not accelerating:
+            return None
+        return min(
+            74.0,
+            45.0
+            + min(15.0, volume_ratio * 5.0)
+            + min(10.0, max(0.0, change) * 1.5)
+            + (4.0 if accelerating else 0.0),
+        )
 
     def _rank_by_capital_strength(self, candidates: List[Dict]) -> List[Dict]:
         """按资金强度综合评分排序，取TOP MAX_SIGNALS

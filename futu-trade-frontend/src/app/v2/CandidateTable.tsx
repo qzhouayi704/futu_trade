@@ -19,6 +19,8 @@ const statusLabel: Record<string, string> = {
 
 const reasonLabel: Record<string, string> = {
   HOT_ACTIVE_DAILY_SETUP: "热门活跃，等待资金确认",
+  ACTIVE_QUOTE_PRESETUP: "报价活跃，进入预候选观察",
+  QUOTE_DATA_ENRICHMENT_SETUP: "报价活跃，正在补充逐笔资金数据",
   FIRST_STRONG_INFLOW_WATCH: "首次强流入，继续观察",
   CAPITAL_MEMORY_REVERSAL_WATCH: "全天吸收转强，等待多次资金确认",
   CAPITAL_MEMORY_MULTI_INFLOW_SHADOW_CONFIRMED: "资金记忆多次流入影子确认",
@@ -38,6 +40,7 @@ const reasonLabel: Record<string, string> = {
   MARKET_CONTEXT_INCOMPLETE: "市场环境数据不完整",
   SNAPSHOT_INVALID: "行情特征数据无效",
   DATA_QUALITY_INVALID: "关键行情数据无效",
+  DATA_ENRICHMENT_TIMEOUT: "逐笔资金数据补充超时",
   PRICE_ACCEPTANCE_BROKEN: "价格承接已经破坏",
   LARGE_OUTFLOW_OFFSETS_INFLOW: "大单流出已经抵消前期流入",
   FLOW_CONFIRMATION_EXPIRED: "资金确认等待时间已过",

@@ -43,6 +43,17 @@ async def get_recommendations(container=Depends(get_container)):
     if not db:
         return APIResponse(success=False, data=None, message="数据库不可用")
 
+    from ...config.legacy_signal_policy import resolve_legacy_signal_policy
+    legacy_policy = resolve_legacy_signal_policy()
+    if not legacy_policy.action_enabled:
+        return APIResponse(success=True, data={
+            "buy_recommendations": [],
+            "sell_recommendations": [],
+            "total_signals": 0,
+            "generated_at": datetime.now().isoformat(),
+            "legacy_mode": legacy_policy.mode.value,
+        }, message="旧版推荐已转为观察模式，请使用 V2 候选池与正式预警")
+
     try:
         # 1. 今日所有资金流信号
         flow_rows = db.execute_query("""

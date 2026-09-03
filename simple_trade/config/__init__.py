@@ -5,5 +5,17 @@
 """
 
 from .config import Config
+from .legacy_signal_policy import (
+    LegacySignalMode,
+    LegacySignalPolicy,
+    legacy_flow_advisory_rule_ids,
+    resolve_legacy_signal_policy,
+)
 
-__all__ = ['Config']
+__all__ = [
+    'Config',
+    'LegacySignalMode',
+    'LegacySignalPolicy',
+    'legacy_flow_advisory_rule_ids',
+    'resolve_legacy_signal_policy',
+]

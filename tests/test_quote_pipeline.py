@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from simple_trade.core.pipeline.quote_pipeline import QuotePipeline
+from simple_trade.config.legacy_signal_policy import resolve_legacy_signal_policy
 from simple_trade.websocket.events import SocketEvent
 
 
@@ -88,6 +89,113 @@ def _run(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+class TestLegacyObserveMode:
+
+    def test_only_hard_risk_actions_keep_decision_authority(self):
+        pipeline, container, _, _ = _make_pipeline()
+        pipeline.legacy_signal_policy = resolve_legacy_signal_policy({
+            "LEGACY_SIGNAL_MODE": "observe",
+        })
+        container.v2_runtime = None
+        quotes = [{"code": "HK.03690", "last_price": 78.0, "prev_close": 76.0}]
+        positions = {"HK.03690": {"stock_name": "美团", "qty": 100}}
+        hard_risk = {
+            "stock_code": "HK.03690", "stock_name": "美团",
+            "signal_type": "SELL", "price": 78.0, "reason": "硬止损触发",
+        }
+        old_r13 = {
+            "stock_code": "HK.03690", "stock_name": "美团",
+            "signal_type": "SELL", "price": 78.0, "reason": "[R13]波段高抛",
+        }
+        old_buy = {
+            "stock_code": "HK.03690", "stock_name": "美团",
+            "signal_type": "BUY", "price": 78.0, "reason": "旧吸收信号",
+        }
+
+        pipeline._get_positions_dict = AsyncMock(return_value=positions)
+        pipeline._check_price_triggers = AsyncMock()
+        pipeline._check_intraday_profit = AsyncMock(return_value=[old_r13])
+        pipeline._check_intraday_risks = AsyncMock(return_value=[hard_risk])
+        pipeline._check_open_risk = AsyncMock(return_value=[])
+        pipeline._push_open_check_once = AsyncMock()
+        pipeline._should_run_strategy = MagicMock(return_value=True)
+        pipeline._filter_trading_quotes = MagicMock(return_value=quotes)
+        pipeline._check_capital_flow_signals = AsyncMock(return_value=[old_r13])
+        pipeline._check_absorption = AsyncMock(return_value=[old_buy])
+        pipeline._check_swing_buyback = AsyncMock(return_value=[old_buy])
+        pipeline._check_t_trade = AsyncMock(return_value=[old_r13])
+        pipeline._feed_sell_signals_to_swing_tracker = MagicMock()
+        pipeline._run_strategy_detection = AsyncMock(return_value=([old_buy], []))
+        pipeline._start_signal_tracking = MagicMock()
+        pipeline._update_signal_tracking = AsyncMock()
+        pipeline._signal_arbitrator.arbitrate = MagicMock(side_effect=lambda actions: actions)
+        pipeline._notify_trade_signals = MagicMock()
+        pipeline._flush_exit_coordinator = AsyncMock()
+        pipeline._flush_tick_capital = AsyncMock()
+        pipeline._run_capital_trend_detector = AsyncMock()
+        pipeline._push_eod_reconcile_once = AsyncMock()
+        pipeline._filter_feed_actions = MagicMock(side_effect=lambda actions, _: actions)
+        pipeline._broadcaster.broadcast = AsyncMock()
+
+        _run(pipeline.run_monitoring_cycle(quotes))
+
+        pipeline._check_capital_flow_signals.assert_awaited_once()
+        pipeline._check_absorption.assert_awaited_once()
+        pipeline._check_intraday_profit.assert_not_awaited()
+        pipeline._check_swing_buyback.assert_not_awaited()
+        pipeline._check_t_trade.assert_not_awaited()
+        pipeline._feed_sell_signals_to_swing_tracker.assert_not_called()
+        pipeline._start_signal_tracking.assert_not_called()
+        pipeline._update_signal_tracking.assert_not_awaited()
+        pipeline._notify_trade_signals.assert_called_once_with([hard_risk], positions)
+        pipeline._broadcaster.broadcast.assert_awaited_once_with(quotes, [hard_risk], [])
+
+    def test_capital_trend_is_persisted_and_fed_to_v2_without_direct_alert(self):
+        pipeline, container, _, socket = _make_pipeline()
+        pipeline.legacy_signal_policy = resolve_legacy_signal_policy({
+            "LEGACY_SIGNAL_MODE": "observe",
+        })
+        quote = {"code": "HK.03690", "last_price": 78.0, "prev_close": 76.0}
+        alert_payload = {
+            "stock_code": "HK.03690",
+            "stock_name": "美团",
+            "direction": "RISING",
+            "trade_date": "2026-09-02",
+            "timestamp": 1788321600,
+            "reason": "主力资金持续流入",
+        }
+        alert = SimpleNamespace(
+            direction="RISING",
+            is_strong_push=True,
+            wechat_suppressed=False,
+            to_dict=MagicMock(return_value=dict(alert_payload)),
+        )
+        detector = MagicMock(enabled=True)
+        detector.evaluate.return_value = alert
+        accumulator = MagicMock(enabled=True)
+        accumulator.snapshot.return_value = {"stock_code": "HK.03690"}
+        v2_runtime = MagicMock(started=True)
+        container.capital_trend_detector = detector
+        container.tick_capital_accumulator = accumulator
+        container.baseline_service.get_capital_tiers.return_value = (1.0, 1.0, 1.0)
+        container.wechat_alert_service = MagicMock(enabled=True)
+        container.v2_runtime = v2_runtime
+        pipeline._filter_trading_quotes = MagicMock(return_value=[quote])
+        pipeline._capital_inflow_market_gate.evaluate = MagicMock(return_value={
+            "HK.03690": {"eligible": True, "is_hot": True, "reason": "热门股"},
+        })
+        pipeline._run_in_executor = AsyncMock()
+
+        _run(pipeline._run_capital_trend_detector([quote], {}))
+
+        socket.emit_to_all.assert_not_awaited()
+        v2_runtime.ingest_legacy_signal.assert_called_once()
+        fed_payload = v2_runtime.ingest_legacy_signal.call_args.args[0]
+        assert fed_payload["advisory"] is True
+        assert fed_payload["legacy_observe_only"] is True
+        pipeline._run_in_executor.assert_awaited_once()
 
 
 # ============================================================

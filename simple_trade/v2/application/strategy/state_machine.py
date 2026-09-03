@@ -23,6 +23,8 @@ class CandidateStateMachine:
     SOFT_REENTRY_SECONDS = 300
     FLOW_REENTRY_SECONDS = 120
     UNIVERSE_GRACE_SECONDS = 300
+    SETUP_ENRICHMENT_GRACE_SECONDS = 600
+    QUOTE_SETUP_MAX_DAILY_PERCENTILE = 0.75
     LOW_POSITION_MAX_PERCENTILE = CandidateSignalRules.LOW_POSITION_MAX_PERCENTILE
     SOFT_UNIVERSE_REASONS = {
         "TURNOVER_RANK_NOT_HOT",
@@ -31,6 +33,17 @@ class CandidateStateMachine:
     }
     OBSERVATION_BYPASS_REASONS = SOFT_UNIVERSE_REASONS | {
         "MARKET_CONTEXT_INCOMPLETE",
+    }
+    PRESETUP_BYPASS_REASONS = OBSERVATION_BYPASS_REASONS | {
+        "SNAPSHOT_INVALID",
+    }
+    ENRICHABLE_SETUP_FIELDS = {
+        "liquidity.spread",
+        "liquidity.lot_size",
+        "capital_windows.tick_stream",
+        "capital_memory.event_stream",
+        "price_acceptance.confirmation_price",
+        "price_acceptance.vwap",
     }
 
     def evaluate(
@@ -42,33 +55,15 @@ class CandidateStateMachine:
     ) -> TransitionProposal | None:
         status = state.status if state is not None else StrategyStatus.IDLE
         if status is StrategyStatus.IDLE:
+            # Every new stock first enters SETUP. This creates a deterministic
+            # subscription/enrichment boundary before any fund-flow state.
             return (
                 self._confirm_strong_trend_reentry(snapshot, universe)
-                or self._enter_capital_memory_watch(
-                    snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
-                )
-                or self._enter_low_position_watch(
-                    snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
-                )
-                or self._enter_strict_momentum_watch(
-                    snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
-                )
                 or self._enter_setup(snapshot, universe)
-                or self._enter_legacy_watch(
-                    snapshot, legacy, universe,
-                    event_type=EventType.CANDIDATE_ENTERED,
-                    reason="LEGACY_RALLY_STRONG_WATCH",
-                )
             )
         if status is StrategyStatus.INVALIDATED:
             return self._reenter_setup(snapshot, state, universe, legacy)
         if status is StrategyStatus.SETUP:
-            if snapshot.quality is DataQuality.INVALID:
-                return self._invalidate(
-                    EventType.CANDIDATE_INVALIDATED,
-                    universe,
-                    reason="DATA_QUALITY_INVALID",
-                )
             strong_trend = self._confirm_strong_trend_reentry(snapshot, universe)
             if strong_trend is not None:
                 return strong_trend
@@ -82,6 +77,11 @@ class CandidateStateMachine:
             )
             if low_position_watch is not None:
                 return low_position_watch
+            momentum_watch = self._enter_strict_momentum_watch(
+                snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
+            )
+            if momentum_watch is not None:
+                return momentum_watch
             legacy_watch = self._enter_legacy_watch(
                 snapshot, legacy, universe,
                 event_type=EventType.CANDIDATE_UPDATED,
@@ -89,6 +89,20 @@ class CandidateStateMachine:
             )
             if legacy_watch is not None:
                 return legacy_watch
+            if snapshot.quality is DataQuality.INVALID:
+                if self._quote_setup_context(snapshot, universe):
+                    if self._state_age(snapshot, state) <= self.SETUP_ENRICHMENT_GRACE_SECONDS:
+                        return None
+                    return self._invalidate(
+                        EventType.CANDIDATE_INVALIDATED,
+                        universe,
+                        reason="DATA_ENRICHMENT_TIMEOUT",
+                    )
+                return self._invalidate(
+                    EventType.CANDIDATE_INVALIDATED,
+                    universe,
+                    reason="DATA_QUALITY_INVALID",
+                )
             if not universe.eligible and not self._strict_momentum_context(
                 snapshot, universe
             ):
@@ -199,21 +213,31 @@ class CandidateStateMachine:
             )
         return None
 
-    @staticmethod
+    @classmethod
     def _enter_setup(
+        cls,
         snapshot: FeatureSnapshot,
         universe: UniverseDecision,
     ) -> TransitionProposal | None:
-        if not universe.eligible or snapshot.price_position.quality is DataQuality.INVALID:
+        if not cls._quote_setup_context(snapshot, universe):
             return None
+        if snapshot.quality is DataQuality.INVALID:
+            reason = "QUOTE_DATA_ENRICHMENT_SETUP"
+        elif universe.eligible:
+            reason = "HOT_ACTIVE_DAILY_SETUP"
+        else:
+            reason = "ACTIVE_QUOTE_PRESETUP"
         return TransitionProposal(
             new_status=StrategyStatus.SETUP,
             event_type=EventType.CANDIDATE_ENTERED,
-            reason_code="HOT_ACTIVE_DAILY_SETUP",
+            reason_code=reason,
+            alert_eligible=False,
             metadata={
                 "setup_at": snapshot.computed_at,
                 "daily_percentile": snapshot.price_position.daily_percentile,
                 "daily_structure": snapshot.price_position.structure,
+                "pending_fields": snapshot.missing_fields,
+                "alert_eligible": False,
             },
         )
 
@@ -274,6 +298,12 @@ class CandidateStateMachine:
         state: StrategyState | None,
         universe: UniverseDecision,
     ) -> TransitionProposal | None:
+        if (
+            state is not None
+            and state.metadata.get("watch_started_at") is not None
+            and snapshot.computed_at <= state.updated_at
+        ):
+            return None
         if snapshot.quality is DataQuality.INVALID:
             return self._active_invalidated(snapshot, "DATA_QUALITY_INVALID")
         memory = snapshot.capital_memory
@@ -288,9 +318,10 @@ class CandidateStateMachine:
             )
         fast = self._window(snapshot, self.FAST_WINDOW_SECONDS)
         slow = self._window(snapshot, self.SLOW_WINDOW_SECONDS)
-        if any(
-            window is not None and self._outflow_offsets_inflow(window)
-            for window in (fast, slow)
+        fast_outflow = fast is not None and self._outflow_offsets_inflow(fast)
+        slow_outflow = slow is not None and self._outflow_offsets_inflow(slow)
+        if fast_outflow or (
+            slow_outflow and not self._recent_inflow_recovered(snapshot, fast)
         ):
             return self._active_invalidated(snapshot, "LARGE_OUTFLOW_OFFSETS_INFLOW")
         acceptance = snapshot.price_acceptance
@@ -538,6 +569,35 @@ class CandidateStateMachine:
             and context.turnover_rank_percentile is not None
         )
 
+    @classmethod
+    def _quote_setup_context(
+        cls,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+    ) -> bool:
+        hard_reasons = set(universe.reason_codes) - cls.PRESETUP_BYPASS_REASONS
+        activity = snapshot.activity
+        liquidity = snapshot.liquidity
+        if (
+            hard_reasons
+            or activity is None
+            or not activity.is_active
+            or liquidity is None
+            or liquidity.score < 30
+            or snapshot.price_position.quality is DataQuality.INVALID
+            or (
+                snapshot.price_position.daily_percentile
+                > cls.QUOTE_SETUP_MAX_DAILY_PERCENTILE
+                and not CandidateSignalRules.strong_trend_reentry_ready(snapshot)
+            )
+            or not cls._usable_global_context(snapshot)
+        ):
+            return False
+        if snapshot.quality is not DataQuality.INVALID:
+            return True
+        missing = set(snapshot.missing_fields)
+        return bool(missing and missing.issubset(cls.ENRICHABLE_SETUP_FIELDS))
+
     @staticmethod
     def _low_position_accumulation(window: TickAggregate | None) -> bool:
         return CandidateSignalRules.repeated_absorption(window)
@@ -579,6 +639,26 @@ class CandidateStateMachine:
     @staticmethod
     def _outflow_offsets_inflow(window: TickAggregate) -> bool:
         return CandidateSignalRules.outflow_offsets_inflow(window)
+
+    @staticmethod
+    def _recent_inflow_recovered(
+        snapshot: FeatureSnapshot,
+        fast: TickAggregate | None,
+    ) -> bool:
+        if (
+            fast is not None
+            and fast.independent_buy_events >= 2
+            and fast.main_net > 0
+            and (fast.buy_sell_ratio or 0.0) >= 0.65
+        ):
+            return True
+        memory = snapshot.capital_memory
+        return bool(
+            memory is not None
+            and memory.state is not CapitalMemoryState.DISTRIBUTING
+            and memory.recent_15m_buy_events >= 2
+            and memory.recent_15m_main_net > 0
+        )
 
     @classmethod
     def _low_position_market_confirmed(

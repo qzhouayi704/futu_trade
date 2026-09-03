@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ...dependencies import get_container
 from ...schemas.common import APIResponse
+from ...config.legacy_signal_policy import resolve_legacy_signal_policy
 
 router = APIRouter(prefix="/api/flow-signals", tags=["资金流向信号"])
 logger = logging.getLogger("router.flow_signal")
@@ -93,6 +94,22 @@ RULE_DESCRIPTIONS = {
 }
 
 
+def _rules_for_runtime(engine_status: Optional[dict]) -> list:
+    """给旧规则附加当前权限，观察模式不再展示操作指令。"""
+    mode = (engine_status or {}).get("mode", "active")
+    action_enabled = bool((engine_status or {}).get("action_enabled", mode == "active"))
+    rules = []
+    for item in RULE_DESCRIPTIONS.values():
+        rule = dict(item)
+        rule["runtime_mode"] = mode
+        rule["action_enabled"] = action_enabled
+        if not action_enabled:
+            rule["legacy_suggestion"] = rule.get("suggestion", "")
+            rule["suggestion"] = "仅保留检测与回测样本，不参与当前系统买卖决策"
+        rules.append(rule)
+    return rules
+
+
 @router.get("/rules", response_model=APIResponse)
 async def get_flow_signal_rules(container=Depends(get_container)):
     """获取所有操盘规则总览"""
@@ -105,13 +122,15 @@ async def get_flow_signal_rules(container=Depends(get_container)):
     except Exception:
         pass
 
-    rules = list(RULE_DESCRIPTIONS.values())
+    rules = _rules_for_runtime(engine_status)
 
     return APIResponse(
         success=True,
         data={
             "rules": rules,
             "engine_enabled": engine_status.get("enabled", False) if engine_status else False,
+            "runtime_mode": engine_status.get("mode", "active") if engine_status else "active",
+            "action_enabled": engine_status.get("action_enabled", True) if engine_status else True,
             "vwap_tracking": engine_status.get("vwap_tracking", 0) if engine_status else 0,
         },
         message=f"获取 {len(rules)} 条操盘规则",
@@ -130,7 +149,7 @@ async def get_all_trading_rules(container=Depends(get_container)):
     except Exception:
         pass
 
-    flow_rules = list(RULE_DESCRIPTIONS.values())
+    flow_rules = _rules_for_runtime(engine_status)
 
     # 2. 风险管理规则（静态描述）
     risk_rules = {
@@ -311,6 +330,7 @@ async def get_flow_signal_history(
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
     try:
+        legacy_policy = resolve_legacy_signal_policy()
         # 查询总数
         count_rows = db.execute_query(
             f"SELECT COUNT(*) FROM capital_flow_signals{where_sql}",
@@ -331,7 +351,7 @@ async def get_flow_signal_history(
 
         signals = []
         for r in (rows or []):
-            signals.append({
+            signal = {
                 "id": r[0],
                 "rule_id": r[1],
                 "rule_name": r[2],
@@ -344,7 +364,13 @@ async def get_flow_signal_history(
                 "priority": r[9],
                 "action_suggestion": r[10],
                 "created_at": r[11],
-            })
+                "advisory": not legacy_policy.action_enabled,
+                "runtime_mode": legacy_policy.mode.value,
+            }
+            if not legacy_policy.action_enabled:
+                signal["legacy_action_suggestion"] = signal["action_suggestion"]
+                signal["action_suggestion"] = "历史样本，仅供复盘，不参与当前买卖决策"
+            signals.append(signal)
 
         return APIResponse(
             success=True,
@@ -368,6 +394,7 @@ async def get_today_signals_batch(container=Depends(get_container)):
         return APIResponse(success=True, data={}, message="数据库不可用")
 
     try:
+        legacy_policy = resolve_legacy_signal_policy()
         # 每个股票每条规则只保留最新一条（避免同一天同一规则的矛盾信号堆叠）
         rows = db.execute_query("""
             SELECT rule_id, rule_name, stock_code, stock_name,
@@ -385,7 +412,7 @@ async def get_today_signals_batch(container=Depends(get_container)):
             code = r[2]
             if code not in signals_by_stock:
                 signals_by_stock[code] = []
-            signals_by_stock[code].append({
+            signal = {
                 "rule_id": r[0],
                 "rule_name": r[1],
                 "signal_type": r[4],
@@ -395,7 +422,13 @@ async def get_today_signals_batch(container=Depends(get_container)):
                 "priority": r[8],
                 "action_suggestion": r[9],
                 "created_at": r[10],
-            })
+                "advisory": not legacy_policy.action_enabled,
+                "runtime_mode": legacy_policy.mode.value,
+            }
+            if not legacy_policy.action_enabled:
+                signal["legacy_action_suggestion"] = signal["action_suggestion"]
+                signal["action_suggestion"] = "历史样本，仅供复盘，不参与当前买卖决策"
+            signals_by_stock[code].append(signal)
 
         # 冲突解决：同一只股票有 BUY 和 SELL 时，只保留最新方向的信号
         for code, signals in signals_by_stock.items():
@@ -427,6 +460,14 @@ async def get_trade_signals_batch(container=Depends(get_container)):
     db = getattr(container, 'db_manager', None)
     if not db:
         return APIResponse(success=True, data={}, message="数据库不可用")
+
+    legacy_policy = resolve_legacy_signal_policy()
+    if not legacy_policy.action_enabled:
+        return APIResponse(
+            success=True,
+            data={},
+            message="旧版日线策略已转为观察模式，请使用 V2 决策结果",
+        )
 
     try:
         rows = db.execute_query("""

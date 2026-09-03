@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 from ...utils.logger import get_flow_logger
 from ...utils import env_flag, parse_flag
+from ...config.legacy_signal_policy import resolve_legacy_signal_policy
 
 from .pipeline_broadcast import PipelineBroadcast
 from .signal_arbitrator import SignalArbitrator
@@ -106,7 +107,11 @@ class QuotePipeline:
         self._signal_arbitrator = SignalArbitrator()
         from ...services.analysis.flow.inflow_market_gate import InflowMarketGate
         self._capital_inflow_market_gate = InflowMarketGate()
-        self.legacy_strategy_detection_enabled = self._legacy_strategy_detection_enabled(container)
+        self.legacy_signal_policy = resolve_legacy_signal_policy()
+        self.legacy_strategy_detection_enabled = (
+            self.legacy_signal_policy.detection_enabled
+            and self._legacy_strategy_detection_enabled(container)
+        )
         self._legacy_strategy_skipped_logged = False
         # 异步任务引用（防止 GC 回收和异常丢失）
         self._pending_tasks: set = set()
@@ -125,6 +130,12 @@ class QuotePipeline:
             )
 
         self._init_signal_tracker()
+        logging.info(
+            "【旧系统门控】mode=%s detection=%s action=%s",
+            self.legacy_signal_policy.mode.value,
+            self.legacy_signal_policy.detection_enabled,
+            self.legacy_signal_policy.action_enabled,
+        )
 
     @staticmethod
     def _legacy_strategy_detection_enabled(container) -> bool:
@@ -193,8 +204,10 @@ class QuotePipeline:
 
         await self._check_price_triggers(quotes, positions)
 
-        # 日内高抛低吸信号检查（仅持仓股）
-        intraday_signals = await self._check_intraday_profit(quotes, positions)
+        # 旧日内规则在 observe 模式不再改变状态；资金流规则仍单独检测入库供回测。
+        intraday_signals = []
+        if self.legacy_signal_policy.action_enabled:
+            intraday_signals = await self._check_intraday_profit(quotes, positions)
         
         # 日内自动化防砸盘风控与真空区止盈（新增）
         risk_actions = await self._check_intraday_risks(quotes, positions)
@@ -214,7 +227,7 @@ class QuotePipeline:
         # 资金流向信号检查（与策略检测同频）
         flow_signals = []
         absorption_alerts = []
-        if trading_quotes:
+        if trading_quotes and self.legacy_signal_policy.detection_enabled:
             flow_signals = await self._check_capital_flow_signals(trading_quotes, positions)
             absorption_alerts = await self._check_absorption(trading_quotes)
             if absorption_alerts and v2_runtime is not None:
@@ -222,31 +235,28 @@ class QuotePipeline:
                     v2_runtime.ingest_legacy_signal(alert)
 
         trade_actions: List[Dict] = []
-        trade_actions.extend(intraday_signals)
         trade_actions.extend(risk_actions)
         trade_actions.extend(open_risk_actions)
-        trade_actions.extend(flow_signals)
-        trade_actions.extend(absorption_alerts)
+        if self.legacy_signal_policy.action_enabled:
+            trade_actions.extend(intraday_signals)
+            trade_actions.extend(flow_signals)
+            trade_actions.extend(absorption_alerts)
 
-        # 日内波段卖后跟踪买回检查（每轮都检查，不受 strategy_check_interval 限制）
-        swing_signals = await self._check_swing_buyback(quotes)
-        trade_actions.extend(swing_signals)
-
-        # 持仓做T助手（高抛低吸；每轮检查，绕开开新仓门卫；默认告警模式，开关在 system_config）
-        t_trade_actions = await self._check_t_trade(quotes, positions)
-        trade_actions.extend(t_trade_actions)
-
-        # 将 R13 卖出信号送入卖后跟踪器
-        self._feed_sell_signals_to_swing_tracker(flow_signals + intraday_signals)
+            # 卖后买回和做T均会维护可操作状态，只允许旧系统 active 时运行。
+            trade_actions.extend(await self._check_swing_buyback(quotes))
+            trade_actions.extend(await self._check_t_trade(quotes, positions))
+            self._feed_sell_signals_to_swing_tracker(flow_signals + intraday_signals)
         conditions: List[Dict] = []
         conditions_updated = False
-        if trading_quotes:
+        if trading_quotes and self.legacy_signal_policy.detection_enabled:
             trade_actions_strategy, conditions = await self._run_strategy_detection(trading_quotes)
-            trade_actions.extend(trade_actions_strategy)
             conditions_updated = True
-            self._start_signal_tracking(trade_actions_strategy)
+            if self.legacy_signal_policy.action_enabled:
+                trade_actions.extend(trade_actions_strategy)
+                self._start_signal_tracking(trade_actions_strategy)
 
-        await self._update_signal_tracking(quotes)
+        if self.legacy_signal_policy.action_enabled:
+            await self._update_signal_tracking(quotes)
 
         if trade_actions:
             # === 信号一致性仲裁：消除矛盾信号 ===
@@ -1166,7 +1176,10 @@ class QuotePipeline:
                 if not alert:
                     continue
                 alert_payload = alert.to_dict()
-                await self.socket_manager.emit_to_all('capital_trend_alert', alert_payload)
+                alert_payload['advisory'] = not self.legacy_signal_policy.action_enabled
+                alert_payload['legacy_observe_only'] = self.legacy_signal_policy.observe_only
+                if self.legacy_signal_policy.action_enabled:
+                    await self.socket_manager.emit_to_all('capital_trend_alert', alert_payload)
                 emitted.append(alert_payload)
                 v2_runtime = getattr(self.container, 'v2_runtime', None)
                 if v2_runtime is not None and getattr(v2_runtime, 'started', False):
@@ -1181,7 +1194,8 @@ class QuotePipeline:
                         or (push_all and alert.is_strong_push)
                     )
                 )
-                if should_push and wechat and getattr(wechat, 'enabled', False):
+                if (self.legacy_signal_policy.action_enabled and should_push
+                        and wechat and getattr(wechat, 'enabled', False)):
                     task = asyncio.create_task(self._push_capital_trend_wechat(wechat, alert))
                     self._pending_tasks.add(task)
                     task.add_done_callback(self._on_task_done)
@@ -1206,7 +1220,9 @@ class QuotePipeline:
                 db.execute_update(sql, (
                     a.get('trade_date'), ts_iso, a.get('stock_code'), a.get('stock_name'),
                     'capital_trend', a.get('direction'), a.get('strength_mult') or 0,
-                    '{}', '{}', 'broadcast', a.get('reason', ''),
+                    '{}', '{}',
+                    ('observe' if a.get('legacy_observe_only') else 'broadcast'),
+                    a.get('reason', ''),
                     json.dumps(a, ensure_ascii=False, default=str)))
             except Exception:
                 pass

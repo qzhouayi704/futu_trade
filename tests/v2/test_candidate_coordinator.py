@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from datetime import timedelta
 
 from simple_trade.v2.application.strategy.coordinator import CandidateCoordinator
@@ -100,15 +101,25 @@ class CandidateCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         stores = MemoryStores()
         coordinator = CandidateCoordinator(stores, stores, strategy_version="test-v2")
         await coordinator.start()
-        coordinator.on_feature_snapshot(feature_event(snapshot(rank=0.60), "reject-1"))
+        inactive = snapshot(rank=0.60)
+        inactive = replace(
+            inactive,
+            activity=replace(inactive.activity, is_active=False),
+        )
+        coordinator.on_feature_snapshot(feature_event(inactive, "reject-1"))
         coordinator.on_feature_snapshot(feature_event(
-            snapshot(as_of=NOW + timedelta(seconds=1), rank=0.60), "reject-2"
+            replace(
+                inactive,
+                computed_at=NOW + timedelta(seconds=1),
+                quote=replace(inactive.quote, exchange_time=NOW + timedelta(seconds=1)),
+            ),
+            "reject-2",
         ))
         await coordinator.stop(drain=True)
 
         self.assertEqual(len(stores.events), 1)
         self.assertEqual(stores.events[0].event_type, EventType.CANDIDATE_REJECTED)
-        self.assertEqual(stores.events[0].reason_code, "TURNOVER_RANK_NOT_HOT")
+        self.assertIn("NOT_ACTIVE", stores.events[0].reason_code)
         self.assertEqual(coordinator.snapshot().rejections_persisted, 1)
 
 

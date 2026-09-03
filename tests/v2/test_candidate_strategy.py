@@ -79,6 +79,8 @@ def snapshot(
     atr_percent: float = 3.0,
     distance_to_ma20: float = 1.0,
     memory: CapitalMemory | None = None,
+    quality: DataQuality = DataQuality.GOOD,
+    missing_fields: tuple[str, ...] = (),
 ) -> FeatureSnapshot:
     quote = QuoteSnapshot(
         stock_code="HK.00100",
@@ -126,8 +128,9 @@ def snapshot(
             quality=DataQuality.GOOD,
         ),
         activity_score=80, liquidity_score=80, price_acceptance_score=80,
-        quality=DataQuality.GOOD, activity=activity, liquidity=liquidity,
+        quality=quality, activity=activity, liquidity=liquidity,
         price_acceptance=acceptance, capital_memory=memory,
+        missing_fields=missing_fields,
     )
 
 
@@ -276,6 +279,58 @@ class CandidateStrategyTests(unittest.TestCase):
         self.assertEqual(watching.new_status, StrategyStatus.WATCHING)
         self.assertEqual(watching.event_type, EventType.CANDIDATE_UPDATED)
 
+    def test_quote_candidate_waits_for_enrichable_tick_data(self) -> None:
+        pending = snapshot(
+            quality=DataQuality.INVALID,
+            missing_fields=(
+                "capital_windows.tick_stream",
+                "capital_memory.event_stream",
+                "price_acceptance.confirmation_price",
+                "price_acceptance.vwap",
+            ),
+        )
+        pending_universe = UniverseDecision(
+            eligible=False,
+            reason_codes=("SNAPSHOT_INVALID", "TURNOVER_RANK_NOT_HOT"),
+        )
+
+        setup = self.machine.evaluate(pending, None, pending_universe)
+
+        self.assertEqual(setup.new_status, StrategyStatus.SETUP)
+        self.assertEqual(setup.reason_code, "QUOTE_DATA_ENRICHMENT_SETUP")
+        self.assertFalse(setup.alert_eligible)
+        waiting = self.machine.evaluate(
+            replace(pending, computed_at=NOW + timedelta(minutes=5)),
+            state(StrategyStatus.SETUP, updated_at=NOW),
+            pending_universe,
+        )
+        self.assertIsNone(waiting)
+        expired = self.machine.evaluate(
+            replace(pending, computed_at=NOW + timedelta(minutes=11)),
+            state(StrategyStatus.SETUP, updated_at=NOW),
+            pending_universe,
+        )
+        self.assertEqual(expired.reason_code, "DATA_ENRICHMENT_TIMEOUT")
+
+    def test_quote_candidate_does_not_bypass_missing_daily_position(self) -> None:
+        item = snapshot(
+            quality=DataQuality.INVALID,
+            missing_fields=(
+                "price_position.daily_bars",
+                "capital_windows.tick_stream",
+            ),
+        )
+        item = replace(
+            item,
+            price_position=replace(item.price_position, quality=DataQuality.INVALID),
+        )
+        universe = UniverseDecision(
+            eligible=False,
+            reason_codes=("SNAPSHOT_INVALID",),
+        )
+
+        self.assertIsNone(self.machine.evaluate(item, None, universe))
+
     def test_strict_momentum_requires_three_spaced_inflows_and_context(self) -> None:
         two = window(900, buys=2, buy_amount=1_200_000, span=301)
         self.assertIsNone(self.machine.evaluate(
@@ -385,6 +440,44 @@ class CandidateStrategyTests(unittest.TestCase):
             "PRICE_ACCEPTANCE_BROKEN",
         )
 
+    def test_same_timestamp_cannot_enter_and_immediately_invalidate(self) -> None:
+        outflow = window(
+            900, buys=1, sells=2, buy_amount=500_000, sell_amount=700_000
+        )
+        result = self.machine.evaluate(
+            snapshot(windows=(outflow,)),
+            state(
+                StrategyStatus.WATCHING,
+                updated_at=NOW,
+                metadata={"watch_price": 100, "watch_started_at": NOW},
+            ),
+            ELIGIBLE,
+        )
+
+        self.assertIsNone(result)
+
+    def test_recent_inflow_recovery_overrides_stale_slow_outflow(self) -> None:
+        fast = window(900, buys=2, buy_amount=700_000, span=300)
+        slow = window(
+            3600,
+            buys=1,
+            sells=3,
+            buy_amount=500_000,
+            sell_amount=900_000,
+            span=900,
+        )
+        result = self.machine.evaluate(
+            snapshot(as_of=NOW + timedelta(minutes=10), windows=(fast, slow)),
+            state(
+                StrategyStatus.WATCHING,
+                updated_at=NOW,
+                metadata={"watch_price": 100},
+            ),
+            ELIGIBLE,
+        )
+
+        self.assertIsNone(result)
+
     def test_high_atr_watch_uses_adaptive_price_acceptance_floor(self) -> None:
         item = snapshot(
             as_of=NOW + timedelta(minutes=1),
@@ -430,18 +523,25 @@ class CandidateStrategyTests(unittest.TestCase):
 
     def test_strong_rally_opens_watch_but_high_position_does_not(self) -> None:
         item = snapshot(as_of=NOW + timedelta(minutes=5))
-        watch = self.machine.evaluate(
+        setup = self.machine.evaluate(
             item,
             None,
             SOFT_INELIGIBLE,
             legacy_signal(observed_at=NOW + timedelta(minutes=4)),
         )
+        self.assertEqual(setup.new_status, StrategyStatus.SETUP)
+        watch = self.machine.evaluate(
+            item,
+            state(StrategyStatus.SETUP),
+            SOFT_INELIGIBLE,
+            legacy_signal(observed_at=NOW + timedelta(minutes=4)),
+        )
         self.assertEqual(watch.new_status, StrategyStatus.WATCHING)
-        self.assertEqual(watch.reason_code, "LEGACY_RALLY_STRONG_WATCH")
+        self.assertEqual(watch.reason_code, "LEGACY_RALLY_SETUP_WATCH")
 
         self.assertIsNone(self.machine.evaluate(
             item,
-            None,
+            state(StrategyStatus.SETUP),
             SOFT_INELIGIBLE,
             legacy_signal(observed_at=NOW + timedelta(minutes=4), position="high"),
         ))
@@ -461,7 +561,9 @@ class CandidateStrategyTests(unittest.TestCase):
             price_position=replace(item.price_position, daily_percentile=0.20),
         )
 
-        watching = self.machine.evaluate(item, None, SOFT_INELIGIBLE)
+        watching = self.machine.evaluate(
+            item, state(StrategyStatus.SETUP), SOFT_INELIGIBLE
+        )
 
         self.assertEqual(watching.new_status, StrategyStatus.WATCHING)
         self.assertEqual(watching.reason_code, "LOW_POSITION_ACCUMULATION_WATCH")
@@ -484,7 +586,11 @@ class CandidateStrategyTests(unittest.TestCase):
             quality=DataQuality.DEGRADED,
         )
         self.assertEqual(
-            self.machine.evaluate(degraded, None, incomplete_context).new_status,
+            self.machine.evaluate(
+                degraded,
+                state(StrategyStatus.SETUP, updated_at=NOW),
+                incomplete_context,
+            ).new_status,
             StrategyStatus.WATCHING,
         )
 
@@ -510,7 +616,13 @@ class CandidateStrategyTests(unittest.TestCase):
             price_position=replace(item.price_position, daily_percentile=0.20),
         )
 
-        watch = self.machine.evaluate(item, None, SOFT_INELIGIBLE)
+        setup = self.machine.evaluate(item, None, SOFT_INELIGIBLE)
+        self.assertEqual(setup.new_status, StrategyStatus.SETUP)
+        watch = self.machine.evaluate(
+            item,
+            state(StrategyStatus.SETUP, updated_at=NOW),
+            SOFT_INELIGIBLE,
+        )
 
         self.assertEqual(watch.new_status, StrategyStatus.WATCHING)
         self.assertEqual(watch.reason_code, "CAPITAL_MEMORY_REVERSAL_WATCH")
@@ -578,7 +690,8 @@ class CandidateStrategyTests(unittest.TestCase):
             low,
             price_position=replace(low.price_position, daily_percentile=0.20),
         )
-        self.assertIsNone(self.machine.evaluate(low, None, SOFT_INELIGIBLE))
+        setup = self.machine.evaluate(low, None, SOFT_INELIGIBLE)
+        self.assertEqual(setup.new_status, StrategyStatus.SETUP)
 
     def test_empty_fast_window_does_not_hide_valid_slow_accumulation(self) -> None:
         empty_fast = window(900)
@@ -592,7 +705,11 @@ class CandidateStrategyTests(unittest.TestCase):
             price_position=replace(item.price_position, daily_percentile=0.20),
         )
 
-        watching = self.machine.evaluate(item, None, SOFT_INELIGIBLE)
+        watching = self.machine.evaluate(
+            item,
+            state(StrategyStatus.SETUP, updated_at=NOW),
+            SOFT_INELIGIBLE,
+        )
 
         self.assertEqual(watching.new_status, StrategyStatus.WATCHING)
         self.assertEqual(watching.reason_code, "LOW_POSITION_ACCUMULATION_WATCH")

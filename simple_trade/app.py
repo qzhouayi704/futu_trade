@@ -151,6 +151,9 @@ async def lifespan(app: FastAPI):
         try:
             from .v2.application.runtime import V2Runtime
             from .v2.config.models import V2Config
+            from .v2.infrastructure.candidate_subscription_adapter import (
+                LegacyCandidateSubscriptionAdapter,
+            )
 
             v2_config = V2Config.from_env()
             v2_alerting = v2_config.mode.value == "alert"
@@ -164,6 +167,9 @@ async def lifespan(app: FastAPI):
                 ),
                 frequency_guard=(
                     getattr(container, "trade_frequency_guard", None) if v2_alerting else None
+                ),
+                candidate_subscription_port=LegacyCandidateSubscriptionAdapter(
+                    container.subscription_helper
                 ),
             )
             container.v2_runtime = v2_runtime

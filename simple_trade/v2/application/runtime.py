@@ -33,6 +33,11 @@ from ..infrastructure.notifications import SqliteNotificationStore, UnifiedNotif
 from ..infrastructure.outcomes import SqliteOutcomeStore
 from ..infrastructure.risk import SqliteTradeIntentStore
 from .event_bus import EventBus, EventBusStats
+from .candidate_subscriptions import (
+    CandidateSubscriptionCoordinator,
+    CandidateSubscriptionPort,
+    CandidateSubscriptionStats,
+)
 from .features.feature_engine import FeatureEngine, FeatureEngineStats
 from .market_projector import MarketProjector, MarketProjectorStats
 from .runtime_supervisor import RuntimeSupervisor, TaskSnapshot
@@ -62,6 +67,7 @@ class V2RuntimeSnapshot:
     projector: MarketProjectorStats
     features: FeatureEngineStats
     candidates: CandidateCoordinatorStats
+    candidate_subscriptions: CandidateSubscriptionStats
     positions: PositionCoordinatorStats
     risk: RiskCoordinatorStats
     notifications: NotificationCoordinatorStats
@@ -81,6 +87,7 @@ class V2Runtime:
         wechat_service=None,
         frequency_guard=None,
         execution_port=None,
+        candidate_subscription_port: CandidateSubscriptionPort | None = None,
     ) -> None:
         self.config = config or V2Config.from_env()
         self.event_bus = EventBus(self.config.event_bus_capacity)
@@ -111,6 +118,9 @@ class V2Runtime:
             schema_version=self.config.event_schema_version,
             queue_capacity=max(100, self.config.event_bus_capacity // 5),
             observer=self.dual_track,
+        )
+        self.candidate_subscription_coordinator = CandidateSubscriptionCoordinator(
+            candidate_subscription_port,
         )
         self.position_provider = FutuPositionProvider(position_source)
         self.account_provider = FutuAccountProvider(position_source)
@@ -175,6 +185,7 @@ class V2Runtime:
         self.market_projector.register(self.event_bus)
         self.feature_engine.register(self.event_bus)
         self.candidate_coordinator.register(self.event_bus)
+        self.candidate_subscription_coordinator.register(self.event_bus)
         self.position_coordinator.register(self.event_bus)
         self.outcome_coordinator.register(self.event_bus)
         if self.config.mode is RuntimeMode.ALERT:
@@ -182,6 +193,7 @@ class V2Runtime:
             self.notification_coordinator.register(self.event_bus)
         try:
             await self.candidate_coordinator.start(self.supervisor)
+            await self.candidate_subscription_coordinator.start(self.supervisor)
             await self.position_coordinator.start(self.supervisor)
             await self.outcome_coordinator.start(self.supervisor)
             if self.config.mode is RuntimeMode.ALERT:
@@ -206,6 +218,8 @@ class V2Runtime:
             self.outcome_coordinator.unregister()
             await self.candidate_coordinator.stop(drain=False)
             self.candidate_coordinator.unregister()
+            await self.candidate_subscription_coordinator.stop(drain=False)
+            self.candidate_subscription_coordinator.unregister()
             self.feature_engine.unregister()
             self.market_projector.unregister()
             self._loop = None
@@ -230,10 +244,12 @@ class V2Runtime:
             await self.outcome_coordinator.stop(drain=True)
             await self.risk_coordinator.stop(drain=True)
             await self.event_bus.join()
+            await self.candidate_subscription_coordinator.stop(drain=True)
             await self.notification_coordinator.stop(drain=True)
             await self.event_bus.stop(drain=True)
         else:
             await self.candidate_coordinator.stop(drain=True)
+            await self.candidate_subscription_coordinator.stop(drain=True)
             await self.position_coordinator.stop(drain=True)
             await self.outcome_coordinator.stop(drain=True)
             await self.risk_coordinator.stop(drain=True)
@@ -243,6 +259,7 @@ class V2Runtime:
         self.position_coordinator.unregister()
         self.outcome_coordinator.unregister()
         self.candidate_coordinator.unregister()
+        self.candidate_subscription_coordinator.unregister()
         self.feature_engine.unregister()
         self.market_projector.unregister()
         await self.supervisor.stop()
@@ -318,6 +335,7 @@ class V2Runtime:
             projector=self.market_projector.snapshot(),
             features=self.feature_engine.snapshot(),
             candidates=self.candidate_coordinator.snapshot(),
+            candidate_subscriptions=self.candidate_subscription_coordinator.snapshot(),
             positions=self.position_coordinator.snapshot(),
             risk=self.risk_coordinator.snapshot(),
             notifications=self.notification_coordinator.snapshot(),

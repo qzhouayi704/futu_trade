@@ -510,6 +510,86 @@ class SubscriptionHelper:
                 'replaced': None
             }
 
+    def subscribe_for_candidate_data(self, stock_code: str) -> Dict[str, Any]:
+        """Promote a V2 pre-candidate to QUOTE and TICKER priority."""
+        code = str(stock_code or "").strip().upper()
+        if not code:
+            return {'success': False, 'message': '股票代码为空', 'replaced': None}
+        replaced_stock = None
+        replacement_removed = False
+        had_ticker = False
+        try:
+            from futu import SubType
+
+            manager = self.subscription_manager
+            ticker_subscribed = manager.ticker_subscribed_stocks
+            had_ticker = code in ticker_subscribed
+            if code not in ticker_subscribed:
+                max_quota = manager._max_ticker_subscription
+                if len(ticker_subscribed) >= max_quota:
+                    replaced_stock = self._find_replaceable_stock(ticker_subscribed)
+                    if replaced_stock is None:
+                        return {
+                            'success': False,
+                            'message': '逐笔订阅额度已满且无可替换股票',
+                            'replaced': None,
+                        }
+                    manager.unsubscribe_multi_types([replaced_stock], [SubType.TICKER])
+                    if replaced_stock in manager.ticker_subscribed_stocks:
+                        return {
+                            'success': False,
+                            'message': '旧逐笔订阅释放失败',
+                            'replaced': None,
+                        }
+                    replacement_removed = True
+
+            required_types = []
+            if code not in manager.subscribed_stocks:
+                required_types.append(SubType.QUOTE)
+            if code not in manager.ticker_subscribed_stocks:
+                required_types.append(SubType.TICKER)
+            if not required_types:
+                return {'success': True, 'message': '候选行情已订阅', 'replaced': None}
+
+            result = manager.subscribe_multi_types([code], required_types)
+            success = bool(
+                code in manager.subscribed_stocks
+                and code in manager.ticker_subscribed_stocks
+            )
+            if not success and replacement_removed:
+                if not had_ticker and code in manager.ticker_subscribed_stocks:
+                    manager.unsubscribe_multi_types([code], [SubType.TICKER])
+                manager.subscribe_multi_types([replaced_stock], [SubType.TICKER])
+            if success:
+                logging.info(
+                    "【V2候选订阅】%s 已提升为 QUOTE+TICKER，替换=%s",
+                    code,
+                    replaced_stock or "无",
+                )
+            return {
+                'success': success,
+                'message': '候选行情订阅成功' if success else result.get('message', '订阅失败'),
+                'replaced': replaced_stock,
+            }
+        except Exception as error:
+            if replacement_removed and replaced_stock:
+                try:
+                    from futu import SubType
+                    manager = self.subscription_manager
+                    if not had_ticker and code in manager.ticker_subscribed_stocks:
+                        manager.unsubscribe_multi_types([code], [SubType.TICKER])
+                    manager.subscribe_multi_types([replaced_stock], [SubType.TICKER])
+                except Exception:
+                    logging.exception(
+                        "【V2候选订阅】恢复被替换逐笔订阅失败: %s", replaced_stock
+                    )
+            logging.warning("【V2候选订阅】%s 订阅失败: %s", code, error)
+            return {
+                'success': False,
+                'message': f'候选行情订阅异常: {error}',
+                'replaced': None,
+            }
+
     def _find_replaceable_stock(self, subscribed_stocks: set) -> Optional[str]:
         """查找可替换的低优先级股票
 
@@ -525,7 +605,7 @@ class SubscriptionHelper:
         """
         try:
             # 获取活跃个股列表
-            active_stocks = set(self._get_active_stocks())
+            active_stocks = set(self._get_active_stocks()) | set(self.priority_stocks)
 
             # 查找不在活跃列表中的股票
             replaceable = subscribed_stocks - active_stocks

@@ -8,13 +8,16 @@
 """
 
 import logging
-import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .flow_signal_models import FlowSignal, RuleContext
 from .flow_signal_rules import ALL_RULES, BaseFlowRule
+from ....config.legacy_signal_policy import (
+    legacy_flow_advisory_rule_ids,
+    resolve_legacy_signal_policy,
+)
 
 
 logger = logging.getLogger("capital_flow.engine")
@@ -26,12 +29,8 @@ logger = logging.getLogger("capital_flow.engine")
 # 这些规则继续检测并写入 capital_flow_signals(signal_type 不变，供日后扩大窗口再回测)，
 # 但 advisory=True → 前端不弹 Toast、pre_trade_check 不计入评分。
 # 卖出/预警类 R10/R3/R2 有边际(+20~24pp)，不在此列、维持门控。
-# 用环境变量 FLOW_ADVISORY_RULES 覆盖；置空字符串=全部恢复门控。
-ADVISORY_RULE_IDS = {
-    r.strip().upper()
-    for r in os.environ.get("FLOW_ADVISORY_RULES", "R1,R4,R5,R11,R12,R14").split(",")
-    if r.strip()
-}
+# active 模式可由 FLOW_ADVISORY_RULES 调整；observe/off 模式强制全部只作样本。
+ADVISORY_RULE_IDS = legacy_flow_advisory_rule_ids()
 
 
 class CapitalFlowSignalEngine:
@@ -58,6 +57,7 @@ class CapitalFlowSignalEngine:
         self._db = db_manager
         self._vwap_service = vwap_service
         self._momentum_analyzer = momentum_analyzer
+        self._legacy_policy = resolve_legacy_signal_policy()
 
 
         # 实例化所有规则
@@ -147,8 +147,9 @@ class CapitalFlowSignalEngine:
             except Exception as e:
                 logger.debug(f"[信号引擎] {code} 规则检查异常: {e}")
 
-        # 同步资金流数据到换票引擎
-        self._sync_to_rotator(quotes, capital_flows, positions)
+        # 旧换票器属于决策出口；observe/off 只保留规则样本，不再同步。
+        if self._legacy_policy.action_enabled:
+            self._sync_to_rotator(quotes, capital_flows, positions)
 
         if results:
             logger.info(f"[信号引擎] 本轮产生 {len(results)} 个信号")
@@ -498,7 +499,9 @@ class CapitalFlowSignalEngine:
     def get_status(self) -> Dict[str, Any]:
         """返回引擎状态（供API查询）"""
         return {
-            'enabled': True,
+            'enabled': self._legacy_policy.detection_enabled,
+            'mode': self._legacy_policy.mode.value,
+            'action_enabled': self._legacy_policy.action_enabled,
             'rules_count': len(self._rules),
             'rules': [
                 {'id': r.rule_id, 'name': r.rule_name, 'cooldown': r.cooldown}
@@ -554,4 +557,3 @@ class CapitalFlowSignalEngine:
 
         except Exception as e:
             logger.debug(f"[信号引擎] 同步到换票引擎失败: {e}")
-
