@@ -29,7 +29,7 @@ def build_transition(
         proposal_metadata["invalidation_reason"] = proposal.reason_code
     merged_metadata = (
         proposal_metadata
-        if proposal.new_status is StrategyStatus.SETUP
+        if proposal.new_status in {StrategyStatus.SETUP, StrategyStatus.WATCHING}
         else {**(dict(state.metadata) if state is not None else {}), **proposal_metadata}
     )
     event = DecisionEvent(

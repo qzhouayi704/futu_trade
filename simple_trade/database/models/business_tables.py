@@ -766,6 +766,7 @@ class BusinessTables:
         'CREATE INDEX IF NOT EXISTS idx_v2_events_stock_time ON v2_decision_events(stock_code, exchange_time)',
         'CREATE INDEX IF NOT EXISTS idx_v2_events_strategy_type_time ON v2_decision_events(strategy_version, event_type, exchange_time)',
         'CREATE INDEX IF NOT EXISTS idx_v2_events_type_time_stock ON v2_decision_events(event_type, exchange_time, stock_code)',
+        'CREATE INDEX IF NOT EXISTS idx_v2_events_source_time_stock ON v2_decision_events(source, exchange_time, stock_code)',
         'CREATE INDEX IF NOT EXISTS idx_v2_events_correlation ON v2_decision_events(correlation_id)',
         'CREATE INDEX IF NOT EXISTS idx_v2_states_status ON v2_strategy_states(status, updated_at)',
         'CREATE INDEX IF NOT EXISTS idx_v2_position_states_status ON v2_position_states(status, updated_at)',

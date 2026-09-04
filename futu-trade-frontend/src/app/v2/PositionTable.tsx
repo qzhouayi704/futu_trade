@@ -2,6 +2,23 @@ import { ArrowRight, Gauge } from "lucide-react";
 import type { V2Position } from "@/lib/api/v2";
 import { clock, pct, tone } from "./format";
 
+const statusLabel: Record<string, string> = {
+  HOLDING: "持仓中",
+  PROFIT_READY: "盈利保护中",
+  STALLED: "走势停滞或走弱",
+  EXIT_RISK: "存在卖出风险",
+  ROTATION_READY: "可考虑换票",
+  EXITING: "卖出处理中",
+};
+
+const actionLabel: Record<string, string> = {
+  HOLD: "继续持有",
+  ADD: "建议加仓10%",
+  PROTECT_PROFIT: "保护利润",
+  EXIT: "建议退出",
+  ROTATE: "建议换票",
+};
+
 export function PositionTable({ items, compact = false }: { items: V2Position[]; compact?: boolean }) {
   return (
     <div className="overflow-x-auto">
@@ -16,9 +33,13 @@ export function PositionTable({ items, compact = false }: { items: V2Position[];
           {items.slice(0, compact ? 5 : undefined).map((item) => {
             const efficiency = item.efficiency;
             const currentReturn = efficiency?.current_return_pct ?? item.position?.current_return_pct;
+            const addPrompted = (item.position_plan?.add_prompt_count ?? 0) > 0;
+            const displayedAction = addPrompted && item.last_action === "HOLD"
+              ? "本持仓已发加仓提示"
+              : actionLabel[item.last_action || "HOLD"] || item.last_action;
             return <tr key={item.stock_code} className="h-16 hover:bg-muted/25">
               <td className="px-3 py-2"><div className="font-semibold">{item.stock_name || item.stock_code}</div><div className="text-muted-foreground">{item.stock_code}</div></td>
-              <td className="px-3 py-2"><div className="font-medium">{item.status}</div><div className="text-muted-foreground">{item.last_action || "HOLD"}</div></td>
+              <td className="px-3 py-2"><div className="font-medium">{statusLabel[item.status] || item.status}</div><div className="text-muted-foreground">{displayedAction}</div>{addPrompted && <div className="text-emerald-600 dark:text-emerald-400">目标仓位不超过 {((item.position_plan?.suggested_target_ratio ?? 0.25) * 100).toFixed(0)}%</div>}</td>
               <td className="px-3 py-2 tabular-nums"><span className={tone(currentReturn)}>{pct(currentReturn)}</span><span className="mx-1 text-border">/</span><span className="text-emerald-600 dark:text-emerald-400">{pct(item.mfe_pct)}</span><span className="mx-1 text-border">/</span><span className="text-rose-600 dark:text-rose-400">{pct(item.mae_pct)}</span></td>
               <td className="px-3 py-2"><div className="flex items-center gap-2"><Gauge className="h-4 w-4 text-sky-500" /><span className="text-base font-semibold tabular-nums">{efficiency?.score?.toFixed(1) ?? "--"}</span></div><div className="text-muted-foreground">高点后 {efficiency?.minutes_since_high?.toFixed(0) ?? "--"} 分钟</div></td>
               <td className="px-3 py-2 tabular-nums"><div className={tone(efficiency?.drawdown_from_peak_pct)}>{pct(efficiency?.drawdown_from_peak_pct)}</div><div className="text-muted-foreground">衰减 {pct((efficiency?.flow_drawdown_ratio ?? 0) * 100, 0)}</div></td>

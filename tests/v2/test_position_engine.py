@@ -62,6 +62,114 @@ def prices(flat: bool = True):
 
 
 class PositionEngineTests(unittest.TestCase):
+    @staticmethod
+    def _add_feature(*, five_minute_sell_pressure: bool = False):
+        window_15m = window(
+            900,
+            buys=3,
+            sells=0,
+            buy_amount=1_500_000,
+            sell_amount=100_000,
+            span=600,
+            active_buy_amount=8_000_000,
+            active_sell_amount=3_000_000,
+        )
+        window_5m = window(
+            300,
+            buys=0 if five_minute_sell_pressure else 1,
+            sells=2 if five_minute_sell_pressure else 0,
+            buy_amount=100_000 if five_minute_sell_pressure else 500_000,
+            sell_amount=900_000 if five_minute_sell_pressure else 100_000,
+            span=240,
+            active_buy_amount=2_000_000,
+            active_sell_amount=5_000_000 if five_minute_sell_pressure else 1_000_000,
+        )
+        memory = replace(
+            capital_memory(state=CapitalMemoryState.ACCUMULATING),
+            score=82,
+            day_main_net=5_000_000,
+            decayed_main_net=4_000_000,
+            recent_15m_main_net=1_400_000,
+            recent_15m_buy_events=3,
+            recent_15m_sell_events=0,
+        )
+        return feature_snapshot(
+            as_of=NOW,
+            price=101,
+            windows=(window_5m, window_15m),
+            memory=memory,
+        )
+
+    def test_profitable_position_with_fresh_multi_inflow_confirms_one_add(self) -> None:
+        feature = self._add_feature()
+        efficiency = replace(
+            PositionEfficiencyEngine().calculate(
+                position(101), state(peak=101.4, mfe=1.4), feature, prices()
+            ),
+            current_return_pct=1.0,
+            drawdown_from_peak_pct=-0.4,
+            slope_15m_pct=0.35,
+            score=78,
+            stalled=False,
+        )
+
+        result = PositionDecisionEngine().evaluate(
+            position(101), state(peak=101.4, mfe=1.4), efficiency, feature
+        )
+
+        self.assertIs(result.decision.action, DecisionAction.ADD)
+        self.assertEqual(result.event_type.value, "POSITION_ADD_CONFIRMED")
+        self.assertEqual(result.metadata_updates["suggested_add_ratio"], 0.10)
+        self.assertEqual(result.metadata_updates["suggested_target_ratio"], 0.25)
+
+    def test_five_minute_outflow_vetoes_add_even_when_15m_is_strong(self) -> None:
+        feature = self._add_feature(five_minute_sell_pressure=True)
+        efficiency = replace(
+            PositionEfficiencyEngine().calculate(
+                position(101), state(peak=101.4, mfe=1.4), feature, prices()
+            ),
+            current_return_pct=1.0,
+            drawdown_from_peak_pct=-0.4,
+            slope_15m_pct=0.35,
+            score=78,
+            stalled=False,
+        )
+
+        result = PositionDecisionEngine().evaluate(
+            position(101), state(peak=101.4, mfe=1.4), efficiency, feature
+        )
+
+        self.assertIs(result.decision.action, DecisionAction.HOLD)
+        self.assertNotEqual(result.event_type.value, "POSITION_ADD_CONFIRMED")
+
+    def test_losing_or_already_prompted_position_never_adds(self) -> None:
+        feature = self._add_feature()
+        base = replace(
+            PositionEfficiencyEngine().calculate(
+                position(101), state(peak=101.4, mfe=1.4), feature, prices()
+            ),
+            current_return_pct=1.0,
+            drawdown_from_peak_pct=-0.4,
+            slope_15m_pct=0.35,
+            score=78,
+            stalled=False,
+        )
+        prompted_state = replace(
+            state(peak=101.4, mfe=1.4),
+            metadata={"add_prompt_count": 1},
+        )
+
+        prompted = PositionDecisionEngine().evaluate(
+            position(101), prompted_state, base, feature
+        )
+        losing = PositionDecisionEngine().evaluate(
+            position(99), state(peak=101.4, mfe=1.4),
+            replace(base, current_return_pct=-1.0), feature,
+        )
+
+        self.assertIs(prompted.decision.action, DecisionAction.HOLD)
+        self.assertIs(losing.decision.action, DecisionAction.HOLD)
+
     def test_medium_term_distribution_survives_empty_15m_window(self) -> None:
         empty_15m = window(900)
         outflow_30m = window(

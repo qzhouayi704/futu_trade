@@ -15,6 +15,8 @@ from .runtime_supervisor import RuntimeSupervisor
 class CandidateSubscriptionPort(Protocol):
     def subscribe_candidate(self, stock_code: str) -> bool: ...
 
+    def protect_candidates(self, stock_codes: tuple[str, ...]) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateSubscriptionStats:
@@ -97,7 +99,20 @@ class CandidateSubscriptionCoordinator:
             }
         ):
             return
-        code = event.stock_code
+        self._request(event.stock_code)
+
+    def prime(self, stock_codes: tuple[str, ...]) -> None:
+        if self._port is None:
+            return
+        protect = getattr(self._port, "protect_candidates", None)
+        if callable(protect):
+            protect(stock_codes)
+        for code in stock_codes:
+            self._request(code)
+
+    def _request(self, code: str) -> None:
+        if not self._running:
+            return
         now = time.monotonic()
         if now - self._last_requested.get(code, 0.0) < self._cooldown_seconds:
             self._deduplicated += 1

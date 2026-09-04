@@ -41,6 +41,7 @@ class RiskCoordinator:
     _STOP = object()
     _EVENT_TYPES = (
         EventType.BUY_CONFIRMED,
+        EventType.POSITION_ADD_CONFIRMED,
         EventType.EXIT_RISK_CONFIRMED,
         EventType.ROTATION_PROPOSED,
         EventType.POSITION_EFFICIENCY_CHANGED,

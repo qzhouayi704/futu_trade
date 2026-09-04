@@ -18,6 +18,7 @@ from ..domain.events import PositionReconciledEvent
 from ..infrastructure.capital_seed_loader import CapitalSeedLoader
 from ..infrastructure.futu_market_adapter import FutuAdapterStats, FutuMarketAdapter
 from ..infrastructure.feature_reference_loader import FeatureReferenceLoader
+from ..infrastructure.overnight_priority_loader import OvernightPriorityLoader
 from ..infrastructure.ticker_replay_loader import TickerReplayLoader
 from ..infrastructure.sqlite_event_store import SqliteEventStore
 from ..infrastructure.sqlite_state_store import SqliteStateStore
@@ -109,6 +110,7 @@ class V2Runtime:
         )
         self.capital_seed_loader = CapitalSeedLoader(db)
         self.feature_reference_loader = FeatureReferenceLoader(db)
+        self.overnight_priority_loader = OvernightPriorityLoader(db)
         self.ticker_replay_loader = TickerReplayLoader(db)
         self.dual_track = DualTrackScoreboard()
         self.candidate_coordinator = CandidateCoordinator(
@@ -174,6 +176,8 @@ class V2Runtime:
         self._reference_pending: set[str] = set()
         self._reference_attempted_at: dict[str, float] = {}
         self._reference_lock = threading.RLock()
+        self._overnight_priority_signature: tuple[str, ...] = ()
+        self._overnight_priority_loaded_for_date = ""
 
     async def start(self) -> bool:
         if not self.config.enabled:
@@ -194,6 +198,7 @@ class V2Runtime:
         try:
             await self.candidate_coordinator.start(self.supervisor)
             await self.candidate_subscription_coordinator.start(self.supervisor)
+            await self._refresh_overnight_priorities()
             await self.position_coordinator.start(self.supervisor)
             await self.outcome_coordinator.start(self.supervisor)
             if self.config.mode is RuntimeMode.ALERT:
@@ -205,6 +210,11 @@ class V2Runtime:
             self.supervisor.create_task(
                 "v2-reference-refresh",
                 self._reference_refresh_loop(),
+                critical=False,
+            )
+            self.supervisor.create_task(
+                "v2-overnight-priority-refresh",
+                self._overnight_priority_refresh_loop(),
                 critical=False,
             )
         except Exception:
@@ -524,6 +534,39 @@ class V2Runtime:
                 logging.info("V2 restored capital baselines: %s", len(baselines))
         except Exception as error:
             logging.warning("V2 capital baseline restore skipped: %s", error)
+
+    async def _refresh_overnight_priorities(self) -> None:
+        now = datetime.now(timezone(timedelta(hours=8)))
+        trade_date = now.date().isoformat()
+        if self._overnight_priority_loaded_for_date == trade_date:
+            return
+        try:
+            priorities = await self.overnight_priority_loader.load(now)
+        except Exception as error:
+            logging.warning("V2 overnight priority restore skipped: %s", error)
+            return
+        self._overnight_priority_loaded_for_date = trade_date
+        signature = tuple(
+            f"{item.source_date}:{item.stock_code}:{item.source_time.isoformat()}"
+            for item in priorities
+        )
+        if signature == self._overnight_priority_signature:
+            return
+        self._overnight_priority_signature = signature
+        self.candidate_coordinator.set_overnight_priorities(priorities)
+        self.candidate_subscription_coordinator.prime(
+            tuple(item.stock_code for item in priorities)
+        )
+        logging.info(
+            "V2 restored overnight priorities: source=%s stocks=%s",
+            priorities[0].source_date if priorities else "none",
+            len(priorities),
+        )
+
+    async def _overnight_priority_refresh_loop(self) -> None:
+        while True:
+            await asyncio.sleep(600)
+            await self._refresh_overnight_priorities()
 
     async def _refresh_broker_positions(self) -> None:
         reconciliation = await self.position_provider.fetch()

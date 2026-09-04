@@ -151,7 +151,7 @@ class V2ReadModelService:
             "o.hold_control_return_pct, o.rotation_return_pct "
             "FROM v2_outcomes o JOIN v2_decision_events e "
             "ON e.event_id=o.decision_event_id LEFT JOIN stocks st ON st.code=o.stock_code "
-            "WHERE e.event_type IN ('BUY_CONFIRMED','ROTATION_PROPOSED') "
+            "WHERE e.event_type IN ('BUY_CONFIRMED','POSITION_ADD_CONFIRMED','ROTATION_PROPOSED') "
             "ORDER BY o.signal_time DESC LIMIT 2000"
         )
         mfe = [float(row[6]) for row in rows if row[6] is not None]
@@ -186,7 +186,7 @@ class V2ReadModelService:
             "FROM v2_outcomes o JOIN v2_decision_events e "
             "ON e.event_id=o.decision_event_id "
             "WHERE e.event_type IN "
-            "('CANDIDATE_UPDATED','BUY_CONFIRMED','ROTATION_PROPOSED') "
+            "('CANDIDATE_UPDATED','BUY_CONFIRMED','POSITION_ADD_CONFIRMED','ROTATION_PROPOSED') "
             "ORDER BY o.signal_time DESC LIMIT 10000"
         )
         return build_shadow_acceptance(
@@ -252,6 +252,13 @@ class V2ReadModelService:
     def _position_row(row: tuple) -> dict:
         metadata = json.loads(row[13] or "{}")
         payload = json.loads(row[16] or "{}")
+        position_plan = {
+            "add_prompt_count": metadata.get("add_prompt_count", 0),
+            "last_add_prompt_at": metadata.get("last_add_prompt_at"),
+            "suggested_add_ratio": metadata.get("suggested_add_ratio"),
+            "suggested_target_ratio": metadata.get("suggested_target_ratio"),
+            "add_reference_price": metadata.get("add_reference_price"),
+        }
         return {
             "stock_code": row[0], "stock_name": row[1], "status": row[2],
             "opened_at": row[3], "cost_price": row[4], "peak_price": row[5],
@@ -263,6 +270,7 @@ class V2ReadModelService:
             "position": payload.get("position"),
             "efficiency": payload.get("efficiency"),
             "rotation": payload.get("rotation"),
+            "position_plan": position_plan,
         }
 
     @staticmethod

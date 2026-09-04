@@ -32,6 +32,7 @@ class SubscriptionHelper:
         self.config = config
         self.container = container
         self.priority_stocks = set()
+        self.candidate_priority_stocks = set()
         self._subscription_refresh_lock = threading.Lock()
         self._inactive_refresh_counts: Dict[str, int] = {}
 
@@ -95,6 +96,15 @@ class SubscriptionHelper:
 
     def get_priority_stocks(self) -> List[str]:
         return list(self.priority_stocks)
+
+    def set_candidate_priority_stocks(self, stock_codes: List[str]):
+        """设置 V2 跨日候选，保护其逐笔订阅但不冒充持仓。"""
+        self.candidate_priority_stocks = set(stock_codes) if stock_codes else set()
+        if self.candidate_priority_stocks:
+            logging.info(
+                "【V2跨日优先订阅】保护 %s 只股票",
+                len(self.candidate_priority_stocks),
+            )
 
     def subscribe_target_stocks(self, markets: Optional[List[str]] = None) -> Dict[str, Any]:
         """订阅目标板块的所有股票行情 - 支持实时活跃度筛选和按市场数量限制"""
@@ -210,10 +220,11 @@ class SubscriptionHelper:
             MIN_SUBSCRIPTION_SECONDS = 65  # 富途要求至少 1 分钟，留 5 秒余量
 
             currently_subscribed = self.subscription_manager.subscribed_stocks
-            for code in active_codes | self.priority_stocks:
+            protected_codes = self.priority_stocks | self.candidate_priority_stocks
+            for code in active_codes | protected_codes:
                 self._inactive_refresh_counts.pop(code, None)
 
-            inactive_codes = currently_subscribed - active_codes - self.priority_stocks
+            inactive_codes = currently_subscribed - active_codes - protected_codes
 
             if not inactive_codes:
                 return 0
@@ -653,7 +664,11 @@ class SubscriptionHelper:
         """
         try:
             # 获取活跃个股列表
-            active_stocks = set(self._get_active_stocks()) | set(self.priority_stocks)
+            active_stocks = (
+                set(self._get_active_stocks())
+                | set(self.priority_stocks)
+                | set(self.candidate_priority_stocks)
+            )
 
             # 查找不在活跃列表中的股票
             replaceable = subscribed_stocks - active_stocks

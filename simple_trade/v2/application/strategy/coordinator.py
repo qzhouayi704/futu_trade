@@ -6,7 +6,7 @@ import logging
 import threading
 from typing import Protocol
 
-from ...domain.candidates import TradeCandidate
+from ...domain.candidates import OvernightPriority, TradeCandidate
 from ...domain.decisions import DecisionEvent, StrategyState
 from ...domain.enums import CandidateStatus, EventType, StrategyStatus
 from ...domain.events import FeatureSnapshotEvent
@@ -74,6 +74,7 @@ class CandidateCoordinator:
         self._running = False
         self._states: dict[str, StrategyState] = {}
         self._latest: dict[str, TradeCandidate] = {}
+        self._overnight_priorities: dict[str, OvernightPriority] = {}
         self._lock = threading.RLock()
         self._queued = 0
         self._dropped = 0
@@ -155,6 +156,18 @@ class CandidateCoordinator:
                 )[:limit]
             )
 
+    def set_overnight_priorities(
+        self, priorities: tuple[OvernightPriority, ...]
+    ) -> None:
+        with self._lock:
+            self._overnight_priorities = {
+                item.stock_code: item for item in priorities
+            }
+
+    def overnight_priority_codes(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._overnight_priorities)
+
     def snapshot(self) -> CandidateCoordinatorStats:
         with self._lock:
             return CandidateCoordinatorStats(
@@ -168,6 +181,7 @@ class CandidateCoordinator:
                 queue_size=self._queue.qsize(),
                 queue_capacity=self._queue.maxsize,
                 running=self._running,
+                overnight_priorities=len(self._overnight_priorities),
             )
 
     async def _run(self) -> None:
@@ -195,7 +209,14 @@ class CandidateCoordinator:
         score = self._scorer.score(snapshot)
         portfolio = self._portfolio.evaluate(snapshot, universe, score)
         state = await self._state_for(snapshot.stock_code)
-        proposal = self._machine.evaluate(snapshot, state, universe)
+        with self._lock:
+            overnight_priority = self._overnight_priorities.get(snapshot.stock_code)
+        proposal = self._machine.evaluate(
+            snapshot,
+            state,
+            universe,
+            overnight_priority,
+        )
 
         status = state.status if state is not None else StrategyStatus.IDLE
         if proposal is not None:
@@ -220,7 +241,12 @@ class CandidateCoordinator:
                     self._conflicts += 1
                     self._states.pop(snapshot.stock_code, None)
                 state = await self._state_for(snapshot.stock_code, force_reload=True)
-                retry = self._machine.evaluate(snapshot, state, universe)
+                retry = self._machine.evaluate(
+                    snapshot,
+                    state,
+                    universe,
+                    overnight_priority,
+                )
                 if retry is None:
                     proposal = None
                 else:

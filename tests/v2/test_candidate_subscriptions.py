@@ -12,10 +12,14 @@ from simple_trade.v2.domain.enums import EventType
 class FakeSubscriptionPort:
     def __init__(self) -> None:
         self.codes: list[str] = []
+        self.protected: tuple[str, ...] = ()
 
     def subscribe_candidate(self, stock_code: str) -> bool:
         self.codes.append(stock_code)
         return True
+
+    def protect_candidates(self, stock_codes: tuple[str, ...]) -> None:
+        self.protected = stock_codes
 
 
 def entered_event(new_state: str = "SETUP") -> DecisionEvent:
@@ -35,6 +39,18 @@ def entered_event(new_state: str = "SETUP") -> DecisionEvent:
 
 
 class CandidateSubscriptionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prime_protects_and_subscribes_overnight_candidates(self) -> None:
+        port = FakeSubscriptionPort()
+        coordinator = CandidateSubscriptionCoordinator(port, cooldown_seconds=300)
+        await coordinator.start()
+
+        coordinator.prime(("HK.00100", "HK.03690"))
+        await asyncio.wait_for(coordinator._queue.join(), timeout=1)
+
+        self.assertEqual(port.protected, ("HK.00100", "HK.03690"))
+        self.assertEqual(port.codes, ["HK.00100", "HK.03690"])
+        await coordinator.stop()
+
     async def test_candidate_entry_promotes_ticker_without_blocking_event_handler(self) -> None:
         port = FakeSubscriptionPort()
         coordinator = CandidateSubscriptionCoordinator(port, cooldown_seconds=300)

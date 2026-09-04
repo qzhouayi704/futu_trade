@@ -66,6 +66,7 @@ class OutcomeCoordinator:
         if self._bus is not None:
             raise RuntimeError("OutcomeCoordinator already registered")
         bus.subscribe(EventType.BUY_CONFIRMED, self.on_event)
+        bus.subscribe(EventType.POSITION_ADD_CONFIRMED, self.on_event)
         bus.subscribe(EventType.CANDIDATE_UPDATED, self.on_event)
         bus.subscribe(EventType.ROTATION_PROPOSED, self.on_event)
         bus.subscribe(EventType.QUOTE_UPDATED, self.on_event)
@@ -75,6 +76,7 @@ class OutcomeCoordinator:
         if self._bus is None:
             return
         self._bus.unsubscribe(EventType.BUY_CONFIRMED, self.on_event)
+        self._bus.unsubscribe(EventType.POSITION_ADD_CONFIRMED, self.on_event)
         self._bus.unsubscribe(EventType.CANDIDATE_UPDATED, self.on_event)
         self._bus.unsubscribe(EventType.ROTATION_PROPOSED, self.on_event)
         self._bus.unsubscribe(EventType.QUOTE_UPDATED, self.on_event)
@@ -211,6 +213,14 @@ class OutcomeCoordinator:
             feature = payload.get("feature_snapshot")
             quote = feature.get("quote") if isinstance(feature, Mapping) else None
             price = quote.get("last_price") if isinstance(quote, Mapping) else None
+            stock_code = event.stock_code
+            control_code = None
+            control_price = None
+        elif event.event_type is EventType.POSITION_ADD_CONFIRMED:
+            position = payload.get("position")
+            if not isinstance(position, Mapping):
+                return None
+            price = position.get("current_price")
             stock_code = event.stock_code
             control_code = None
             control_price = None

@@ -193,6 +193,37 @@ class RiskEngineTests(unittest.TestCase):
         self.assertIs(decision.result, RiskResult.APPROVED)
         self.assertNotIn("ACCOUNT_CAPACITY_UNAVAILABLE", decision.reason_codes)
 
+    def test_position_add_builds_manual_alert_only_when_position_exists(self):
+        event = DecisionEvent(
+            event_type=EventType.POSITION_ADD_CONFIRMED,
+            stock_code="HK.00100",
+            exchange_time=NOW,
+            received_time=NOW,
+            source="test",
+            strategy_version="test-v2",
+            reason_code="POSITION_ADD_CAPITAL_CONFIRMED",
+            payload={
+                "alert_eligible": True,
+                "manual_only": True,
+                "position": {"current_price": 10.2, "lot_size": 100},
+            },
+        )
+
+        alert_intent = IntentFactory(RuntimeMode.ALERT, RiskLimits()).build(
+            event, context(positions=(position(),))
+        )
+        missing_position = IntentFactory(RuntimeMode.ALERT, RiskLimits()).build(
+            event, context()
+        )
+        executable = IntentFactory(RuntimeMode.SEMI, RiskLimits()).build(
+            event, context(positions=(position(),))
+        )
+
+        self.assertIsNotNone(alert_intent)
+        self.assertEqual(alert_intent.reason_codes, ("POSITION_ADD_CAPITAL_CONFIRMED",))
+        self.assertIsNone(missing_position)
+        self.assertIsNone(executable)
+
 
 class AccountProviderTests(unittest.TestCase):
     def test_adapts_real_account_capacity_fields(self):
@@ -216,6 +247,64 @@ class AccountProviderTests(unittest.TestCase):
 
 
 class NotificationFormatterTests(unittest.TestCase):
+    @staticmethod
+    def _buy_source(reason: str) -> RiskAssessedEvent:
+        intent = TradeIntent(
+            source_event_id="decision-buy",
+            intent_type=IntentType.BUY,
+            created_at=NOW,
+            mode=RuntimeMode.ALERT,
+            reason_codes=(reason,),
+            buy_leg=OrderLeg(
+                stock_code="HK.00100",
+                side=OrderSide.BUY,
+                quantity=100,
+                reference_price=10,
+                lot_size=100,
+            ),
+        )
+        risk = RiskDecision(
+            intent_id=intent.intent_id,
+            result=RiskResult.APPROVED,
+            checked_at=NOW,
+            reason_codes=("RISK_CHECKS_PASSED",),
+        )
+        return RiskAssessedEvent(
+            event_type=EventType.RISK_APPROVED,
+            stock_code="HK.00100",
+            exchange_time=NOW,
+            received_time=NOW,
+            source="test",
+            source_decision_event_id="decision-buy",
+            intent=intent,
+            risk=risk,
+        )
+
+    def test_initial_entry_notification_includes_position_plan(self):
+        event = NotificationFormatter(expiry_seconds=300).build(
+            self._buy_source("FAST_15M_MULTI_INFLOW_CONFIRMED")
+        )[0]
+
+        self.assertEqual(event.title, "V2 首次建仓确认")
+        self.assertIn("建议首仓15%", event.message)
+        self.assertIn("单票总仓不超过25%", event.message)
+
+    def test_add_notification_has_distinct_title_plan_and_identity(self):
+        formatter = NotificationFormatter(expiry_seconds=300)
+        initial = formatter.build(
+            self._buy_source("FAST_15M_MULTI_INFLOW_CONFIRMED")
+        )[0]
+        adding = formatter.build(
+            self._buy_source("POSITION_ADD_CAPITAL_CONFIRMED")
+        )[0]
+
+        self.assertEqual(adding.title, "V2 加仓确认")
+        self.assertIn("建议加仓10%", adding.message)
+        self.assertIn("只加盈利仓", adding.message)
+        self.assertIn("风控：**通过**", adding.message)
+        self.assertIn("风控检查通过", adding.message)
+        self.assertNotEqual(initial.idempotency_key, adding.idempotency_key)
+
     def test_sell_notification_includes_strategy_reason(self):
         intent = TradeIntent(
             source_event_id="decision-exit",
@@ -251,7 +340,7 @@ class NotificationFormatterTests(unittest.TestCase):
         message = NotificationFormatter(expiry_seconds=300).build(source)[0].message
 
         self.assertIn("多次大单流出且价格结构破位", message)
-        self.assertIn("RISK_CHECKS_PASSED", message)
+        self.assertIn("风控检查通过", message)
 
 
 class FakeNotificationStore:

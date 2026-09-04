@@ -8,6 +8,7 @@ from simple_trade.v2.application.strategy.portfolio import StrategyPortfolio
 from simple_trade.v2.application.strategy.state_machine import CandidateStateMachine
 from simple_trade.v2.application.strategy.universe import UniversePolicy
 from simple_trade.v2.domain.decisions import StrategyState
+from simple_trade.v2.domain.candidates import OvernightPriority
 from simple_trade.v2.domain.enums import (
     CapitalMemoryState,
     DataQuality,
@@ -192,9 +193,105 @@ SOFT_INELIGIBLE = UniverseDecision(
 )
 
 
+def overnight_priority() -> OvernightPriority:
+    return OvernightPriority(
+        stock_code="HK.00100",
+        source_date="2026-08-30",
+        source_time=NOW - timedelta(days=1),
+        score=74,
+        reference_price=100,
+        daily_percentile=0.45,
+        atr_percent=4,
+        capital_memory_score=82,
+        day_main_net=5_000_000,
+        independent_buy_events=4,
+        source_reason="CAPITAL_MEMORY_REVERSAL_WATCH",
+    )
+
+
 class CandidateStrategyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.machine = CandidateStateMachine()
+
+    def test_previous_day_priority_enters_next_day_watch_without_buying(self) -> None:
+        proposal = self.machine.evaluate(
+            snapshot(),
+            state(StrategyStatus.INVALIDATED, updated_at=NOW - timedelta(hours=3)),
+            ELIGIBLE,
+            overnight_priority(),
+        )
+
+        self.assertEqual(proposal.new_status, StrategyStatus.WATCHING)
+        self.assertEqual(proposal.reason_code, "OVERNIGHT_PRIORITY_LOW_WATCH")
+        self.assertFalse(proposal.alert_eligible)
+
+    def test_previous_day_priority_only_shadow_confirms_after_two_fresh_inflows(self) -> None:
+        fast = window(
+            900,
+            buys=2,
+            buy_amount=900_000,
+            span=300,
+            active_buy_amount=700_000,
+            active_sell_amount=200_000,
+        )
+        memory = replace(
+            capital_memory(state=CapitalMemoryState.ACCUMULATING),
+            day_main_net=4_000_000,
+        )
+        watching = state(
+            StrategyStatus.WATCHING,
+            metadata={
+                "watch_kind": "overnight_priority",
+                "watch_price": 100,
+                "watch_started_at": NOW,
+                "overnight_session_date": NOW.date().isoformat(),
+            },
+        )
+
+        proposal = self.machine.evaluate(
+            snapshot(as_of=NOW + timedelta(minutes=5), windows=(fast,), memory=memory),
+            watching,
+            ELIGIBLE,
+            overnight_priority(),
+        )
+
+        self.assertEqual(proposal.new_status, StrategyStatus.CONFIRMED)
+        self.assertEqual(
+            proposal.reason_code,
+            "OVERNIGHT_PRIORITY_LOW_REENTRY_SHADOW_CONFIRMED",
+        )
+        self.assertTrue(proposal.metadata["research_only"])
+        self.assertFalse(proposal.alert_eligible)
+
+    def test_previous_day_priority_does_not_confirm_after_price_is_overheated(self) -> None:
+        fast = window(900, buys=2, buy_amount=900_000, span=300)
+        memory = replace(
+            capital_memory(state=CapitalMemoryState.ACCUMULATING),
+            day_main_net=4_000_000,
+        )
+        watching = state(
+            StrategyStatus.WATCHING,
+            metadata={
+                "watch_kind": "overnight_priority",
+                "watch_price": 100,
+                "watch_started_at": NOW,
+                "overnight_session_date": NOW.date().isoformat(),
+            },
+        )
+
+        proposal = self.machine.evaluate(
+            snapshot(
+                as_of=NOW + timedelta(minutes=5),
+                price=108,
+                windows=(fast,),
+                memory=memory,
+            ),
+            watching,
+            ELIGIBLE,
+            overnight_priority(),
+        )
+
+        self.assertIsNone(proposal)
 
     def test_universe_requires_hot_rank_and_scorer_only_returns_ranking(self) -> None:
         cold = snapshot(rank=0.60)

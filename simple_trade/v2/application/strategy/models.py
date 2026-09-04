@@ -90,3 +90,4 @@ class CandidateCoordinatorStats:
     queue_size: int
     queue_capacity: int
     running: bool
+    overnight_priorities: int = 0

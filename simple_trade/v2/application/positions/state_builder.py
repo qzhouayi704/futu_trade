@@ -77,12 +77,19 @@ def build_position_transition(
         new_state=evaluation.target_status.value,
         reason_code=evaluation.decision.reason_codes[0],
         payload={
-            "shadow_only": True,
+            "shadow_only": evaluation.event_type is not EventType.POSITION_ADD_CONFIRMED,
+            "alert_eligible": True,
+            "manual_only": evaluation.event_type is EventType.POSITION_ADD_CONFIRMED,
             "position": to_primitive(position),
             "efficiency": to_primitive(efficiency),
             "decision": to_primitive(evaluation.decision),
             "rotation": to_primitive(evaluation.rotation) if evaluation.rotation else None,
             "exit_context": to_primitive(evaluation.metadata_updates),
+            "position_plan": (
+                to_primitive(evaluation.metadata_updates)
+                if evaluation.event_type is EventType.POSITION_ADD_CONFIRMED
+                else None
+            ),
             "mark_source": (
                 "feature_snapshot"
                 if isinstance(source, FeatureSnapshotEvent)

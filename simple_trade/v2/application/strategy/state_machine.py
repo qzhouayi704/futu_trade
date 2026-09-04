@@ -1,5 +1,6 @@
 """Deterministic candidate state machine driven only by a feature snapshot."""
 
+from ...domain.candidates import OvernightPriority
 from ...domain.decisions import StrategyState
 from ...domain.enums import (
     CapitalMemoryState,
@@ -24,6 +25,12 @@ class CandidateStateMachine:
     FLOW_REENTRY_SECONDS = 120
     UNIVERSE_GRACE_SECONDS = 300
     SETUP_ENRICHMENT_GRACE_SECONDS = 600
+    OVERNIGHT_WATCH_SECONDS = 7200
+    OVERNIGHT_ENTRY_MIN_BREADTH = 0.35
+    OVERNIGHT_CONFIRM_MIN_BREADTH = 0.45
+    OVERNIGHT_MAX_DAILY_CHANGE = 0.06
+    OVERNIGHT_MAX_INTRADAY_POSITION = 0.70
+    OVERNIGHT_MAX_EXTENSION_ATR = 1.75
     QUOTE_SETUP_MAX_DAILY_PERCENTILE = 0.75
     LOW_POSITION_MAX_PERCENTILE = CandidateSignalRules.LOW_POSITION_MAX_PERCENTILE
     SOFT_UNIVERSE_REASONS = {
@@ -55,8 +62,17 @@ class CandidateStateMachine:
         snapshot: FeatureSnapshot,
         state: StrategyState | None,
         universe: UniverseDecision,
+        overnight_priority: OvernightPriority | None = None,
     ) -> TransitionProposal | None:
         status = state.status if state is not None else StrategyStatus.IDLE
+        overnight_watch = self._enter_overnight_priority_watch(
+            snapshot,
+            state,
+            universe,
+            overnight_priority,
+        )
+        if overnight_watch is not None:
+            return overnight_watch
         if status is StrategyStatus.IDLE:
             # Every new stock first enters SETUP. This creates a deterministic
             # subscription/enrichment boundary before any fund-flow state.
@@ -140,6 +156,13 @@ class CandidateStateMachine:
             state.metadata.get("watch_kind") == "low_position_accumulation"
         )
         capital_memory_watch = state.metadata.get("watch_kind") == "capital_memory"
+        overnight_priority_watch = state.metadata.get("watch_kind") == "overnight_priority"
+        if (
+            overnight_priority_watch
+            and overnight_priority is not None
+            and self._overnight_priority_confirmed(snapshot, universe)
+        ):
+            return self._confirm_overnight_priority(snapshot, overnight_priority)
         if (
             capital_memory_watch
             and self._low_position_market_confirmed(snapshot, universe)
@@ -196,6 +219,9 @@ class CandidateStateMachine:
             )
 
         watch_seconds = (
+            self.OVERNIGHT_WATCH_SECONDS
+            if overnight_priority_watch
+            else
             self.SLOW_WINDOW_SECONDS
             if low_position_watch or capital_memory_watch or regime is not MarketRegime.NORMAL
             else self.FAST_WINDOW_SECONDS
@@ -208,6 +234,169 @@ class CandidateStateMachine:
                 metadata={"cooldown_started_at": snapshot.computed_at},
             )
         return None
+
+    @classmethod
+    def _enter_overnight_priority_watch(
+        cls,
+        snapshot: FeatureSnapshot,
+        state: StrategyState | None,
+        universe: UniverseDecision,
+        priority: OvernightPriority | None,
+    ) -> TransitionProposal | None:
+        if priority is None or priority.stock_code != snapshot.stock_code:
+            return None
+        session_date = snapshot.computed_at.date().isoformat()
+        if priority.source_date >= session_date:
+            return None
+        if state is not None and state.metadata.get("overnight_session_date") == session_date:
+            return None
+        context = snapshot.market_context
+        position = snapshot.price_position
+        activity = snapshot.activity
+        liquidity = snapshot.liquidity
+        quote = snapshot.quote
+        hard_reasons = set(universe.reason_codes) - cls.OBSERVATION_BYPASS_REASONS
+        day_change = (
+            quote.last_price / quote.prev_close - 1.0 if quote.prev_close > 0 else 0.0
+        )
+        extension_atr = (
+            position.distance_to_ma20 / position.atr_percent
+            if position.atr_percent > 0
+            else None
+        )
+        if not (
+            not hard_reasons
+            and snapshot.computed_at.timetz().replace(tzinfo=None)
+            <= CandidateSignalRules.ENTRY_CUTOFF
+            and snapshot.quality is not DataQuality.INVALID
+            and cls._usable_global_context(snapshot)
+            and context.market_breadth >= cls.OVERNIGHT_ENTRY_MIN_BREADTH
+            and position.quality is not DataQuality.INVALID
+            and position.daily_percentile <= 0.80
+            and extension_atr is not None
+            and extension_atr <= cls.OVERNIGHT_MAX_EXTENSION_ATR
+            and -0.04 <= day_change <= cls.OVERNIGHT_MAX_DAILY_CHANGE
+            and activity is not None
+            and activity.is_active
+            and liquidity is not None
+            and liquidity.score >= 30
+        ):
+            return None
+        return TransitionProposal(
+            new_status=StrategyStatus.WATCHING,
+            event_type=EventType.CANDIDATE_UPDATED,
+            reason_code="OVERNIGHT_PRIORITY_LOW_WATCH",
+            confirmation_price=quote.last_price,
+            alert_eligible=False,
+            metadata={
+                "watch_started_at": snapshot.computed_at,
+                "watch_price": quote.last_price,
+                "watch_kind": "overnight_priority",
+                "overnight_session_date": session_date,
+                "overnight_source_date": priority.source_date,
+                "overnight_source_time": priority.source_time,
+                "overnight_source_score": priority.score,
+                "overnight_source_price": priority.reference_price,
+                "overnight_source_reason": priority.source_reason,
+                "overnight_source_memory_score": priority.capital_memory_score,
+                "overnight_source_buy_events": priority.independent_buy_events,
+                "alert_eligible": False,
+            },
+        )
+
+    @classmethod
+    def _overnight_priority_confirmed(
+        cls,
+        snapshot: FeatureSnapshot,
+        universe: UniverseDecision,
+    ) -> bool:
+        fast = cls._window(snapshot, cls.FAST_WINDOW_SECONDS)
+        memory = snapshot.capital_memory
+        acceptance = snapshot.price_acceptance
+        quote = snapshot.quote
+        position = snapshot.price_position
+        context = snapshot.market_context
+        hard_reasons = set(universe.reason_codes) - cls.OBSERVATION_BYPASS_REASONS
+        if fast is None:
+            return False
+        threshold = fast.large_order_threshold or 100_000.0
+        scale = fast.flow_scale or threshold
+        total_range = max(0.0, quote.high_price - quote.low_price)
+        intraday_position = (
+            (quote.last_price - quote.low_price) / total_range
+            if total_range > 0 and quote.low_price > 0
+            else 0.5
+        )
+        day_change = (
+            quote.last_price / quote.prev_close - 1.0 if quote.prev_close > 0 else 0.0
+        )
+        extension_atr = (
+            position.distance_to_ma20 / position.atr_percent
+            if position.atr_percent > 0
+            else None
+        )
+        return bool(
+            not hard_reasons
+            and cls._confirmation_quality_usable(snapshot)
+            and snapshot.computed_at.timetz().replace(tzinfo=None)
+            <= CandidateSignalRules.ENTRY_CUTOFF
+            and context.market_breadth >= cls.OVERNIGHT_CONFIRM_MIN_BREADTH
+            and position.daily_percentile <= 0.80
+            and extension_atr is not None
+            and extension_atr <= cls.OVERNIGHT_MAX_EXTENSION_ATR
+            and -0.04 <= day_change <= cls.OVERNIGHT_MAX_DAILY_CHANGE
+            and intraday_position <= cls.OVERNIGHT_MAX_INTRADAY_POSITION
+            and fast.independent_buy_events >= 2
+            and fast.independent_buy_span_seconds >= 300
+            and fast.main_net >= max(2.5 * threshold, scale)
+            and (fast.buy_sell_ratio or 0.0) >= 0.70
+            and (fast.active_buy_ratio is None or fast.active_buy_ratio >= 0.55)
+            and not CandidateSignalRules.outflow_offsets_inflow(fast)
+            and memory is not None
+            and memory.state is not CapitalMemoryState.DISTRIBUTING
+            and memory.day_main_net > 0
+            and memory.recent_15m_main_net > 0
+            and memory.recent_15m_buy_events >= 2
+            and acceptance is not None
+            and acceptance.accepted
+            and (
+                acceptance.distance_to_vwap_pct is None
+                or -0.5 <= acceptance.distance_to_vwap_pct <= 1.5
+            )
+        )
+
+    @classmethod
+    def _confirm_overnight_priority(
+        cls,
+        snapshot: FeatureSnapshot,
+        priority: OvernightPriority,
+    ) -> TransitionProposal:
+        memory = snapshot.capital_memory
+        return TransitionProposal(
+            new_status=StrategyStatus.CONFIRMED,
+            event_type=EventType.BUY_CONFIRMED,
+            reason_code="OVERNIGHT_PRIORITY_LOW_REENTRY_SHADOW_CONFIRMED",
+            confirmation_price=snapshot.quote.last_price,
+            alert_eligible=False,
+            metadata={
+                "confirmed_at": snapshot.computed_at,
+                "confirmed_price": snapshot.quote.last_price,
+                "expected_window_minutes": 60,
+                "research_only": True,
+                "watch_kind": "overnight_priority",
+                "overnight_source_date": priority.source_date,
+                "overnight_source_score": priority.score,
+                "overnight_source_price": priority.reference_price,
+                "day_main_net": memory.day_main_net if memory is not None else 0.0,
+                "recent_15m_main_net": (
+                    memory.recent_15m_main_net if memory is not None else 0.0
+                ),
+                "recent_15m_buy_events": (
+                    memory.recent_15m_buy_events if memory is not None else 0
+                ),
+                "alert_eligible": False,
+            },
+        )
 
     @classmethod
     def _enter_setup(
@@ -326,7 +515,10 @@ class CandidateStateMachine:
         capital_memory_watch = bool(
             state and state.metadata.get("watch_kind") == "capital_memory"
         )
-        tolerant_watch = low_position_watch or capital_memory_watch
+        overnight_priority_watch = bool(
+            state and state.metadata.get("watch_kind") == "overnight_priority"
+        )
+        tolerant_watch = low_position_watch or capital_memory_watch or overnight_priority_watch
         vwap_floor = -1.0 if tolerant_watch else -0.3
         pullback_limit = CandidateSignalRules.adaptive_pullback_limit_pct(
             snapshot,

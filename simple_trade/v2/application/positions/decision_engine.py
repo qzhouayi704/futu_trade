@@ -3,6 +3,7 @@
 from ...domain.enums import DecisionAction, EventType, PositionStatus
 from ...domain.features import FeatureSnapshot
 from ...domain.positions import PositionDecision, PositionEfficiency, PositionSnapshot, PositionState
+from .addition import PositionAddPolicy
 from .models import PositionEvaluation
 from .structural_exit import StructuralExitPolicy
 
@@ -12,6 +13,7 @@ class PositionDecisionEngine:
 
     def __init__(self) -> None:
         self._structural_exit = StructuralExitPolicy()
+        self._addition = PositionAddPolicy()
 
     def evaluate(
         self,
@@ -50,6 +52,26 @@ class PositionDecisionEngine:
                 "DOWNTREND_UNDER_SELL_PRESSURE",
                 status=PositionStatus.STALLED,
                 metadata_updates=structural.metadata_updates,
+            )
+
+        addition = self._addition.assess(position, state, efficiency, feature)
+        if addition.confirmed:
+            return PositionEvaluation(
+                decision=PositionDecision(
+                    stock_code=position.stock_code,
+                    as_of=position.as_of,
+                    status=PositionStatus.HOLDING,
+                    action=DecisionAction.ADD,
+                    reason_codes=("POSITION_ADD_CAPITAL_CONFIRMED",),
+                    confidence=0.78,
+                ),
+                event_type=EventType.POSITION_ADD_CONFIRMED,
+                target_status=PositionStatus.HOLDING,
+                persist_immediately=True,
+                metadata_updates={
+                    **structural.metadata_updates,
+                    **addition.metadata_updates,
+                },
             )
 
         profit_ready = max(efficiency.mfe_pct, state.mfe_pct if state else 0.0) >= self.PROFIT_READY_PCT

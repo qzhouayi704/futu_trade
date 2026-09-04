@@ -16,6 +16,8 @@ class IntentFactory:
             return None
         if event.event_type is EventType.BUY_CONFIRMED:
             return self._buy(event, context)
+        if event.event_type is EventType.POSITION_ADD_CONFIRMED:
+            return self._add(event, context)
         if event.event_type is EventType.EXIT_RISK_CONFIRMED:
             return self._sell(event)
         if event.event_type is EventType.ROTATION_PROPOSED:
@@ -73,6 +75,34 @@ class IntentFactory:
                 quantity=quantity,
                 reference_price=price,
                 lot_size=lot,
+            ),
+        )
+
+    def _add(self, event: DecisionEvent, context: RiskContext) -> TradeIntent | None:
+        # 分层加仓在当前版本始终只做人工提醒，防止未来切换执行模式后误下单。
+        if self._mode is not RuntimeMode.ALERT:
+            return None
+        current = next(
+            (item for item in context.positions if item.stock_code == event.stock_code),
+            None,
+        )
+        position = event.payload.get("position") or {}
+        price = self._positive(position.get("current_price"))
+        lot = self._integer(position.get("lot_size"))
+        if current is None or current.quantity <= 0 or price <= 0:
+            return None
+        return TradeIntent(
+            source_event_id=event.event_id,
+            intent_type=IntentType.BUY,
+            created_at=event.exchange_time,
+            mode=self._mode,
+            reason_codes=(event.reason_code,),
+            buy_leg=OrderLeg(
+                stock_code=event.stock_code,
+                side=OrderSide.BUY,
+                quantity=lot or 1,
+                reference_price=price,
+                lot_size=lot or None,
             ),
         )
 

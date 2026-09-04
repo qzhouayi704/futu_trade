@@ -114,6 +114,13 @@ export interface V2Position {
     slope_15m_pct?: number | null;
     minutes_since_high?: number;
   };
+  position_plan?: {
+    add_prompt_count?: number;
+    last_add_prompt_at?: string | null;
+    suggested_add_ratio?: number | null;
+    suggested_target_ratio?: number | null;
+    add_reference_price?: number | null;
+  };
   rotation?: {
     buy_stock_code?: string;
     candidate_score?: number;

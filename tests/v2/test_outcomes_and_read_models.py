@@ -88,6 +88,27 @@ class OutcomeEvaluatorTests(unittest.TestCase):
 
 
 class OutcomeCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_position_add_decision_creates_separate_outcome(self):
+        store = MemoryOutcomeStore()
+        coordinator = OutcomeCoordinator(store, strategy_version="test-v2")
+        await coordinator.start()
+        now = datetime.now(timezone.utc)
+        coordinator.on_event(DecisionEvent(
+            event_type=EventType.POSITION_ADD_CONFIRMED,
+            stock_code="HK.00100",
+            exchange_time=now,
+            received_time=now,
+            source="test",
+            strategy_version="test-v2",
+            reason_code="POSITION_ADD_CAPITAL_CONFIRMED",
+            payload={"position": {"current_price": 10.2}},
+        ))
+        await coordinator.stop(drain=True)
+
+        self.assertEqual(len(store.records), 1)
+        outcome = next(iter(store.records.values()))
+        self.assertEqual(outcome.signal_price, 10.2)
+
     async def test_buy_decision_creates_and_quote_updates_projection(self) -> None:
         store = MemoryOutcomeStore()
         coordinator = OutcomeCoordinator(store, strategy_version="v2", queue_capacity=8)

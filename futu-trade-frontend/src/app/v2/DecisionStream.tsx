@@ -2,17 +2,18 @@ import { ArrowRight, GitCommitHorizontal } from "lucide-react";
 import type { V2Decision } from "@/lib/api/v2";
 import { clock } from "./format";
 
-const actionTypes = new Set(["BUY_CONFIRMED", "EXIT_RISK_CONFIRMED", "ROTATION_PROPOSED"]);
+const actionTypes = new Set(["BUY_CONFIRMED", "POSITION_ADD_CONFIRMED", "EXIT_RISK_CONFIRMED", "ROTATION_PROPOSED"]);
 
 const eventLabel: Record<string, string> = {
   CANDIDATE_REJECTED: "未进入候选",
   CANDIDATE_ENTERED: "进入候选",
   CANDIDATE_UPDATED: "候选升级",
   CANDIDATE_INVALIDATED: "候选失效",
-  BUY_CONFIRMED: "买点确认",
+  BUY_CONFIRMED: "首次建仓确认",
   BUY_INVALIDATED: "买点失效",
   POSITION_OPENED: "持仓建立",
   POSITION_EFFICIENCY_CHANGED: "持仓状态更新",
+  POSITION_ADD_CONFIRMED: "加仓确认",
   EXIT_RISK_CONFIRMED: "卖出风险确认",
   ROTATION_PROPOSED: "换票建议",
   POSITION_CLOSED: "持仓结束",
@@ -70,6 +71,8 @@ const reasonLabel: Record<string, string> = {
   STRICT_MOMENTUM_WATCH: "强势动量，等待多次资金确认",
   STRICT_MOMENTUM_SHADOW_CONFIRMED: "强势动量影子确认",
   STRONG_TREND_SECOND_INFLOW_CONFIRMED: "强势股二次大单资金确认",
+  OVERNIGHT_PRIORITY_LOW_WATCH: "前日资金强势，等待次日低位确认",
+  OVERNIGHT_PRIORITY_LOW_REENTRY_SHADOW_CONFIRMED: "前日强势股次日低位影子确认（不推送）",
   FAST_15M_MULTI_INFLOW_CONFIRMED: "15分钟多次流入确认",
   WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED: "弱市中60分钟强势资金确认",
   EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED: "极弱市场中60分钟多次流入确认",
@@ -90,6 +93,7 @@ const reasonLabel: Record<string, string> = {
   SUSTAINED_PRICE_AND_FLOW_STALL: "价格与资金持续停滞",
   REPEATED_OUTFLOW_ABSORBED_OR_SUPPORTED: "大单流出被吸收或仍有资金支撑",
   POSITION_EFFICIENT: "持仓效率正常",
+  POSITION_ADD_CAPITAL_CONFIRMED: "浮盈、价格承接及长短周期资金同步增强，可加仓10%",
   PROFIT_PROTECTION_ARMED: "盈利保护已经启动",
   CONFIRMED_CANDIDATE_NET_ADVANTAGE: "新候选相对当前持仓优势明确",
   ACTIVE_ORDER_CONFLICT: "已有未完成订单，暂不重复操作",

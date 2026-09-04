@@ -14,13 +14,22 @@ from ...domain.events import RiskAssessedEvent
 
 
 class NotificationFormatter:
+    RISK_LABELS = {
+        RiskResult.APPROVED: "通过",
+        RiskResult.REJECTED: "未通过",
+        RiskResult.DEGRADED: "降级观察",
+    }
     REASON_LABELS = {
         "LOW_POSITION_15M_ACCUMULATION_CONFIRMED": "低位15分钟多次大单吸收确认",
         "FAST_15M_MULTI_INFLOW_CONFIRMED": "15分钟多次主力流入确认",
         "STRICT_MOMENTUM_SHADOW_CONFIRMED": "严格热门动量影子确认",
         "STRONG_TREND_SECOND_INFLOW_CONFIRMED": "强势股二次大单资金确认",
+        "OVERNIGHT_PRIORITY_LOW_REENTRY_SHADOW_CONFIRMED": (
+            "前日资金强势股次日低位影子确认（仅记录，不推送）"
+        ),
         "WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED": "弱市60分钟强股资金确认",
         "EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED": "极弱市60分钟多次流入确认",
+        "POSITION_ADD_CAPITAL_CONFIRMED": "持仓盈利且价格承接与长短周期资金同步增强",
         "HARD_STOP_3_PCT": "亏损达到3%硬止损",
         "TAKE_PROFIT_5_PCT": "收益达到5%止盈",
         "REPEATED_OUTFLOW_AND_STRUCTURE_BREAK": "多次大单流出且价格结构破位",
@@ -28,6 +37,7 @@ class NotificationFormatter:
         "TRAIL_AFTER_SUPPORT_LOST": "浮盈超过3%后回撤1.5%，且20分钟无新承接",
         "PROFIT_FLOOR_AFTER_SUPPORT_LOST": "浮盈超过3%后回落至0.5%，且20分钟无新承接",
         "CONFIRMED_CANDIDATE_NET_ADVANTAGE": "新候选相对持仓具备净优势",
+        "RISK_CHECKS_PASSED": "风控检查通过",
     }
 
     def __init__(self, *, expiry_seconds: int) -> None:
@@ -60,7 +70,10 @@ class NotificationFormatter:
     def _title(source: RiskAssessedEvent) -> str:
         approved = source.risk.result is RiskResult.APPROVED
         if source.intent.intent_type is IntentType.BUY:
-            return "V2 买入确认" if approved else "V2 买入观察（风控未通过）"
+            adding = "POSITION_ADD_CAPITAL_CONFIRMED" in source.intent.reason_codes
+            if adding:
+                return "V2 加仓确认" if approved else "V2 加仓观察（风控未通过）"
+            return "V2 首次建仓确认" if approved else "V2 建仓观察（风控未通过）"
         if source.intent.intent_type is IntentType.SELL:
             return "V2 持仓退出提醒" if approved else "V2 持仓风险（执行受限）"
         return "V2 换票建议" if approved else "V2 换票观察（风控未通过）"
@@ -80,6 +93,25 @@ class NotificationFormatter:
                     f"- 买入参考：{intent.buy_leg.stock_code} @ "
                     f"{intent.buy_leg.reference_price:.3f}（仓位需人工确认）"
                 )
+                if "POSITION_ADD_CAPITAL_CONFIRMED" in intent.reason_codes:
+                    lines.append("- 仓位：建议加仓10%，加仓后单票总仓不超过25%")
+                    lines.append("- 纪律：只加盈利仓；跌破VWAP或资金转为净流出时取消")
+                else:
+                    initial_ratio = (
+                        10
+                        if any(
+                            reason in {
+                                "WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED",
+                                "EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED",
+                            }
+                            for reason in intent.reason_codes
+                        )
+                        else 15
+                    )
+                    lines.append(
+                        f"- 仓位：建议首仓{initial_ratio}%，单票总仓不超过25%"
+                    )
+                    lines.append("- 后续：仅在浮盈、价格承接和资金继续增强后加仓10%")
             else:
                 lines.append(
                     f"- 买入参考：{intent.buy_leg.stock_code} "
@@ -91,8 +123,14 @@ class NotificationFormatter:
                 for reason in intent.reason_codes
             ]
             lines.append(f"- 信号：{', '.join(labels)}")
-        lines.append(f"- 风控：**{source.risk.result.value}**")
-        lines.append(f"- 原因：{', '.join(source.risk.reason_codes)}")
+        lines.append(
+            f"- 风控：**{NotificationFormatter.RISK_LABELS[source.risk.result]}**"
+        )
+        risk_labels = [
+            NotificationFormatter.REASON_LABELS.get(reason, reason)
+            for reason in source.risk.reason_codes
+        ]
+        lines.append(f"- 原因：{', '.join(risk_labels)}")
         lines.append("- 当前仅为提醒，不会自动下单")
         return "\n".join(lines)
 
@@ -100,7 +138,14 @@ class NotificationFormatter:
     def _idempotency(source: RiskAssessedEvent, channel: NotificationChannel) -> str:
         if source.intent.intent_type is IntentType.BUY:
             bucket = int(source.exchange_time.timestamp() // 600)
-            identity = f"{source.stock_code}:BUY:{source.risk.result.value}:{bucket}"
+            stage = (
+                "ADD"
+                if "POSITION_ADD_CAPITAL_CONFIRMED" in source.intent.reason_codes
+                else "INITIAL"
+            )
+            identity = (
+                f"{source.stock_code}:BUY:{stage}:{source.risk.result.value}:{bucket}"
+            )
         else:
             identity = source.source_decision_event_id
         return f"{source.strategy_version}:{identity}:{channel.value}"
