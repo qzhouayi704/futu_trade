@@ -146,8 +146,8 @@ async def lifespan(app: FastAPI):
         # 注册 container 到 dependencies（唯一的 setter）
         dependencies.set_container(container)
 
-        # V2 内核：shadow 只落库；alert 可提醒；本阶段不允许券商下单。
-        # 配置错误或启动失败只关闭 V2，不能影响现有 V1 生产链路。
+        # V2 内核：先完成依赖装配，主初始化清理旧订阅后再正式启动。
+        # alert 可提醒，但本阶段不允许券商下单。
         try:
             from .v2.application.runtime import V2Runtime
             from .v2.config.models import V2Config
@@ -173,21 +173,30 @@ async def lifespan(app: FastAPI):
                 ),
             )
             container.v2_runtime = v2_runtime
-            if await v2_runtime.start():
-                logging.info(
-                    "V2 影子内核已启动: mode=%s strategy_version=%s",
-                    v2_config.mode.value,
-                    v2_config.strategy_version,
-                )
-            else:
-                logging.info("V2 影子内核未启用 (V2_ENABLED=0)")
         except Exception as e:
             v2_runtime = None
             container.v2_runtime = None
-            logging.error("V2 影子内核启动失败，V1 继续运行: %s", e, exc_info=True)
+            logging.error("V2 影子内核装配失败，V1 继续运行: %s", e, exc_info=True)
 
         # ========== 系统数据初始化（与 Flask 模式一致）==========
         init_success = await initialize_system_data(container, state_manager)
+
+        # 主初始化在系统未运行时会清理旧订阅。V2 必须在此后启动，
+        # 否则刚恢复的跨日候选行情订阅会被随即清空。
+        if v2_runtime is not None:
+            try:
+                if await v2_runtime.start():
+                    logging.info(
+                        "V2 影子内核已启动: mode=%s strategy_version=%s",
+                        v2_config.mode.value,
+                        v2_config.strategy_version,
+                    )
+                else:
+                    logging.info("V2 影子内核未启用 (V2_ENABLED=0)")
+            except Exception as e:
+                v2_runtime = None
+                container.v2_runtime = None
+                logging.error("V2 影子内核启动失败，V1 继续运行: %s", e, exc_info=True)
 
         # ========== 创建并启动 AsyncQuotePusher ==========
         from .services.core import AsyncQuotePusher
