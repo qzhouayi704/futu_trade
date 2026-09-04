@@ -756,6 +756,47 @@ class CandidateStrategyTests(unittest.TestCase):
             "LOW_POSITION_15M_ACCUMULATION_CONFIRMED",
         )
 
+    def test_low_position_alert_accepts_only_enrichable_liquidity_degradation(self) -> None:
+        slow = window(3600, buys=4, buy_amount=1_800_000, span=900)
+        base = snapshot(
+            as_of=NOW + timedelta(minutes=15),
+            regime=MarketRegime.WEAK,
+            windows=(slow,),
+            quality=DataQuality.DEGRADED,
+            missing_fields=("liquidity.spread", "liquidity.lot_size"),
+        )
+        base = replace(
+            base,
+            price_position=replace(base.price_position, daily_percentile=0.20),
+        )
+        watching = state(
+            StrategyStatus.WATCHING,
+            metadata={
+                "watch_price": 100,
+                "watch_kind": "low_position_accumulation",
+            },
+        )
+
+        confirmed = self.machine.evaluate(base, watching, SOFT_INELIGIBLE)
+
+        self.assertEqual(confirmed.new_status, StrategyStatus.CONFIRMED)
+        self.assertTrue(confirmed.alert_eligible)
+        self.assertEqual(
+            confirmed.metadata["confirmation_quality"],
+            "DEGRADED_ENRICHABLE",
+        )
+
+        critical_missing = replace(
+            base,
+            missing_fields=(
+                "liquidity.spread",
+                "capital_windows.tick_stream",
+            ),
+        )
+        self.assertIsNone(
+            self.machine.evaluate(critical_missing, watching, SOFT_INELIGIBLE)
+        )
+
     def test_soft_universe_gate_has_grace_and_fast_signal_reentry(self) -> None:
         setup_state = state(StrategyStatus.SETUP, updated_at=NOW)
         self.assertIsNone(self.machine.evaluate(

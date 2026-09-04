@@ -56,7 +56,7 @@ class MarketProjectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.last_sequence, 1)
         self.assertEqual(self.projector.snapshot().stocks, 1)
 
-    async def test_sequence_gap_degrades_projection(self) -> None:
+    async def test_encoded_sequence_jump_does_not_degrade_projection(self) -> None:
         for sequence in (1, 4):
             events = self.adapter.adapt_ticker(
                 {
@@ -74,9 +74,34 @@ class MarketProjectorTests(unittest.IsolatedAsyncioTestCase):
         await self.bus.join()
 
         snapshot = self.projector.get("HK.00100")
-        self.assertIs(snapshot.quality, DataQuality.DEGRADED)
-        self.assertEqual(snapshot.sequence_gap_count, 2)
-        self.assertTrue(any(reason.startswith("SEQUENCE_GAP") for reason in snapshot.quality_reasons))
+        self.assertIs(snapshot.quality, DataQuality.GOOD)
+        self.assertEqual(snapshot.sequence_gap_count, 0)
+        self.assertEqual(snapshot.quality_reasons, ())
+
+    async def test_transient_sequence_regression_recovers_on_healthy_tick(self) -> None:
+        rows = (
+            ("2026-08-31 10:00:01", 10),
+            ("2026-08-31 10:00:02", 9),
+            ("2026-08-31 10:00:03", 11),
+        )
+        for trade_time, sequence in rows:
+            for event in self.adapter.adapt_ticker(
+                {
+                    "code": "HK.00100",
+                    "time": trade_time,
+                    "price": 356.0,
+                    "volume": 100,
+                    "ticker_direction": "BUY",
+                    "sequence": sequence,
+                },
+                received_time=NOW,
+            ):
+                await self.bus.publish(event)
+            await self.bus.join()
+
+        snapshot = self.projector.get("HK.00100")
+        self.assertIs(snapshot.quality, DataQuality.GOOD)
+        self.assertNotIn("OUT_OF_ORDER_SEQUENCE", snapshot.quality_reasons)
 
     async def test_restored_capital_preserves_cumulative_values(self) -> None:
         aggregate = TickAggregate(

@@ -33,6 +33,7 @@ class FutuAdapterStats:
     ticks: int
     order_books: int
     duplicates: int
+    stale_replays: int
     sequence_gaps: int
     out_of_order: int
     invalid: int
@@ -57,12 +58,14 @@ class FutuMarketAdapter:
         self._dedupe_capacity = no_sequence_dedupe_capacity
         self._lock = threading.RLock()
         self._last_sequence: dict[tuple[str, str], int] = {}
+        self._last_sequence_time: dict[tuple[str, str], datetime] = {}
         self._seen_without_sequence: dict[tuple[str, str], set[tuple[object, ...]]] = defaultdict(set)
         self._seen_order: dict[tuple[str, str], deque[tuple[object, ...]]] = defaultdict(deque)
         self._quotes = 0
         self._ticks = 0
         self._order_books = 0
         self._duplicates = 0
+        self._stale_replays = 0
         self._sequence_gaps = 0
         self._out_of_order = 0
         self._invalid = 0
@@ -158,6 +161,10 @@ class FutuMarketAdapter:
                     self._duplicates += 1
                     return ()
                 if last_sequence is not None and sequence < last_sequence:
+                    last_time = self._last_sequence_time.get(day_key)
+                    if last_time is None or exchange_time <= last_time:
+                        self._stale_replays += 1
+                        return ()
                     self._out_of_order += 1
                     quality_event = self._standalone_quality_event(
                         code=code,
@@ -167,12 +174,10 @@ class FutuMarketAdapter:
                         reason_codes=("OUT_OF_ORDER_SEQUENCE",),
                     )
                     return (quality_event,)
-                if last_sequence is not None and sequence > last_sequence + 1:
-                    missing = sequence - last_sequence - 1
-                    self._sequence_gaps += missing
-                    quality = DataQuality.DEGRADED
-                    reasons.append(f"SEQUENCE_GAP:{last_sequence + 1}-{sequence - 1}")
+                # Futu sequence embeds a time slot in the high bits. Jumps such as
+                # 2**32 + 1 are normal and do not imply missing trades.
                 self._last_sequence[day_key] = sequence
+                self._last_sequence_time[day_key] = exchange_time
             else:
                 business_key = (
                     exchange_time.isoformat(),
@@ -212,6 +217,30 @@ class FutuMarketAdapter:
         events.append(event)
         with self._lock:
             self._ticks += 1
+        return tuple(events)
+
+    def adapt_ticker_batch(
+        self,
+        rows: Sequence[Mapping[str, object]],
+        *,
+        stock_code: str,
+        received_time: datetime | None = None,
+    ) -> tuple[DomainEvent, ...]:
+        """Normalize one SDK batch in exchange order before watermark filtering."""
+
+        ordered = sorted(
+            enumerate(rows),
+            key=lambda item: self._ticker_batch_sort_key(item[1], item[0]),
+        )
+        events: list[DomainEvent] = []
+        for _, row in ordered:
+            events.extend(
+                self.adapt_ticker(
+                    row,
+                    stock_code=stock_code,
+                    received_time=received_time,
+                )
+            )
         return tuple(events)
 
     def adapt_order_book(
@@ -272,6 +301,7 @@ class FutuMarketAdapter:
                 ticks=self._ticks,
                 order_books=self._order_books,
                 duplicates=self._duplicates,
+                stale_replays=self._stale_replays,
                 sequence_gaps=self._sequence_gaps,
                 out_of_order=self._out_of_order,
                 invalid=self._invalid,
@@ -294,14 +324,26 @@ class FutuMarketAdapter:
             key
             for key in (
                 *self._last_sequence.keys(),
+                *self._last_sequence_time.keys(),
                 *self._seen_without_sequence.keys(),
             )
             if key[0] == code and key != current_key
         }
         for key in stale_keys:
             self._last_sequence.pop(key, None)
+            self._last_sequence_time.pop(key, None)
             self._seen_without_sequence.pop(key, None)
             self._seen_order.pop(key, None)
+
+    @classmethod
+    def _ticker_batch_sort_key(
+        cls,
+        row: Mapping[str, object],
+        original_index: int,
+    ) -> tuple[str, int, int]:
+        raw_time = str(row.get("time") or row.get("exchange_time") or "")
+        sequence = cls._optional_positive_int(row.get("sequence")) or 0
+        return raw_time, sequence, original_index
 
     def _quality_event(
         self,

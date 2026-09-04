@@ -45,6 +45,10 @@ class CandidateStateMachine:
         "price_acceptance.confirmation_price",
         "price_acceptance.vwap",
     }
+    ENRICHABLE_CONFIRM_FIELDS = {
+        "liquidity.spread",
+        "liquidity.lot_size",
+    }
 
     def evaluate(
         self,
@@ -749,7 +753,7 @@ class CandidateStateMachine:
         acceptance = snapshot.price_acceptance
         watch_price = CandidateStateMachine._number(state.metadata.get("watch_price"))
         if (
-            snapshot.quality is not DataQuality.GOOD
+            not CandidateStateMachine._confirmation_quality_usable(snapshot)
             or acceptance is None
             or not acceptance.accepted
             or (watch_price is not None and snapshot.quote.last_price < watch_price)
@@ -769,7 +773,33 @@ class CandidateStateMachine:
                 "expected_window_minutes": (
                     15 if "15M" in reason or "MOMENTUM" in reason else 60
                 ),
+                "confirmation_quality": (
+                    "GOOD"
+                    if snapshot.quality is DataQuality.GOOD
+                    else "DEGRADED_ENRICHABLE"
+                ),
             },
+        )
+
+    @classmethod
+    def _confirmation_quality_usable(cls, snapshot: FeatureSnapshot) -> bool:
+        if snapshot.quality is DataQuality.GOOD:
+            return True
+        if snapshot.quality is DataQuality.INVALID:
+            return False
+        missing = set(snapshot.missing_fields)
+        return bool(
+            missing
+            and missing.issubset(cls.ENRICHABLE_CONFIRM_FIELDS)
+            and snapshot.quote.quality is DataQuality.GOOD
+            and snapshot.price_position.quality is not DataQuality.INVALID
+            and snapshot.market_context.quality is not DataQuality.INVALID
+            and snapshot.price_acceptance is not None
+            and snapshot.price_acceptance.quality is not DataQuality.INVALID
+            and any(
+                window.quality is not DataQuality.INVALID
+                for window in snapshot.tick_windows
+            )
         )
 
     @staticmethod

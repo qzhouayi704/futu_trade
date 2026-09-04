@@ -73,10 +73,10 @@ class MarketProjector:
             return
         with self._lock:
             current = self._current(event.stock_code)
-            quality, reasons = self._merge_quality(
-                current,
-                event.quote.quality,
-                ("QUOTE_DEGRADED",) if event.quote.quality is not DataQuality.GOOD else (),
+            quality, reasons = self._component_quality(
+                event.quote,
+                current.last_tick,
+                current.order_book,
             )
             self._stocks[event.stock_code] = replace(
                 current,
@@ -92,17 +92,10 @@ class MarketProjector:
             return
         with self._lock:
             current = self._current(event.stock_code)
-            gap = 0
-            if (
-                current.last_sequence is not None
-                and event.sequence is not None
-                and event.sequence > current.last_sequence + 1
-            ):
-                gap = event.sequence - current.last_sequence - 1
-            quality, reasons = self._merge_quality(
-                current,
-                event.tick.quality,
-                ("TICK_DEGRADED",) if event.tick.quality is not DataQuality.GOOD else (),
+            quality, reasons = self._component_quality(
+                current.quote,
+                event.tick,
+                current.order_book,
             )
             self._stocks[event.stock_code] = replace(
                 current,
@@ -110,7 +103,7 @@ class MarketProjector:
                 quality=quality,
                 quality_reasons=reasons,
                 last_sequence=event.sequence if event.sequence is not None else current.last_sequence,
-                sequence_gap_count=current.sequence_gap_count + gap,
+                sequence_gap_count=current.sequence_gap_count,
                 updated_at=event.received_time,
             )
             self._tick_updates += 1
@@ -120,12 +113,10 @@ class MarketProjector:
             return
         with self._lock:
             current = self._current(event.stock_code)
-            quality, reasons = self._merge_quality(
-                current,
-                event.order_book.quality,
-                ("ORDER_BOOK_DEGRADED",)
-                if event.order_book.quality is not DataQuality.GOOD
-                else (),
+            quality, reasons = self._component_quality(
+                current.quote,
+                current.last_tick,
+                event.order_book,
             )
             self._stocks[event.stock_code] = replace(
                 current,
@@ -201,3 +192,22 @@ class MarketProjector:
         quality = incoming if rank[incoming] > rank[current.quality] else current.quality
         merged = tuple(dict.fromkeys((*current.quality_reasons, *reasons)))
         return quality, merged[-20:]
+
+    @staticmethod
+    def _component_quality(
+        quote: QuoteSnapshot | None,
+        tick: TickTrade | None,
+        order_book: OrderBookSnapshot | None,
+    ) -> tuple[DataQuality, tuple[str, ...]]:
+        components = (
+            (quote, "QUOTE_DEGRADED"),
+            (tick, "TICK_DEGRADED"),
+            (order_book, "ORDER_BOOK_DEGRADED"),
+        )
+        available = [(item.quality, reason) for item, reason in components if item is not None]
+        if not available:
+            return DataQuality.GOOD, ()
+        rank = {DataQuality.GOOD: 0, DataQuality.DEGRADED: 1, DataQuality.INVALID: 2}
+        quality = max((value for value, _ in available), key=rank.__getitem__)
+        reasons = tuple(reason for value, reason in available if value is not DataQuality.GOOD)
+        return quality, reasons

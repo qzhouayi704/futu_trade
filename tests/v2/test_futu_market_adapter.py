@@ -49,7 +49,7 @@ class FutuMarketAdapterTests(unittest.TestCase):
         self.assertEqual(event.quote.lot_size, 100)
         self.assertEqual(event.quote.sector_code, "AI")
 
-    def test_duplicate_gap_and_out_of_order_sequences(self) -> None:
+    def test_duplicate_sequence_jump_and_stale_replay(self) -> None:
         base = {
             "code": "HK.00100",
             "time": "2026-08-31 10:00:00",
@@ -71,17 +71,105 @@ class FutuMarketAdapterTests(unittest.TestCase):
 
         self.assertEqual(len(first), 1)
         self.assertEqual(duplicate, ())
-        self.assertEqual([event.event_type for event in gap], [
-            EventType.DATA_QUALITY_CHANGED,
-            EventType.TICK_RECEIVED,
-        ])
-        self.assertIs(gap[-1].tick.quality, DataQuality.DEGRADED)
-        self.assertEqual(len(out_of_order), 1)
-        self.assertIsInstance(out_of_order[0], DataQualityEvent)
+        self.assertEqual([event.event_type for event in gap], [EventType.TICK_RECEIVED])
+        self.assertIs(gap[-1].tick.quality, DataQuality.GOOD)
+        self.assertEqual(out_of_order, ())
         stats = self.adapter.snapshot()
         self.assertEqual(stats.duplicates, 1)
-        self.assertEqual(stats.sequence_gaps, 2)
-        self.assertEqual(stats.out_of_order, 1)
+        self.assertEqual(stats.stale_replays, 1)
+        self.assertEqual(stats.sequence_gaps, 0)
+        self.assertEqual(stats.out_of_order, 0)
+
+    def test_later_time_sequence_regression_is_degraded(self) -> None:
+        base = {
+            "code": "HK.00100",
+            "price": 356.6,
+            "volume": 100,
+            "ticker_direction": "BUY",
+        }
+        self.adapter.adapt_ticker(
+            {**base, "time": "2026-08-31 10:00:01", "sequence": 13},
+            received_time=RECEIVED,
+        )
+
+        regressed = self.adapter.adapt_ticker(
+            {**base, "time": "2026-08-31 10:00:02", "sequence": 12},
+            received_time=RECEIVED,
+        )
+
+        self.assertEqual(len(regressed), 1)
+        self.assertIsInstance(regressed[0], DataQualityEvent)
+        self.assertEqual(self.adapter.snapshot().out_of_order, 1)
+
+    def test_ticker_batch_sorts_rows_before_applying_watermark(self) -> None:
+        rows = [
+            {
+                "time": "2026-08-31 10:00:03",
+                "price": 356.8,
+                "volume": 100,
+                "ticker_direction": "BUY",
+                "sequence": 13,
+            },
+            {
+                "time": "2026-08-31 10:00:01",
+                "price": 356.6,
+                "volume": 100,
+                "ticker_direction": "BUY",
+                "sequence": 11,
+            },
+            {
+                "time": "2026-08-31 10:00:02",
+                "price": 356.7,
+                "volume": 100,
+                "ticker_direction": "BUY",
+                "sequence": 12,
+            },
+        ]
+
+        events = self.adapter.adapt_ticker_batch(
+            rows,
+            stock_code="HK.00100",
+            received_time=RECEIVED,
+        )
+
+        ticks = [event for event in events if isinstance(event, TickEvent)]
+        self.assertEqual([event.sequence for event in ticks], [11, 12, 13])
+        self.assertEqual(self.adapter.snapshot().out_of_order, 0)
+
+    def test_futu_high_bit_sequence_jumps_and_replayed_batch_stay_healthy(self) -> None:
+        rows = [
+            {
+                "time": f"2026-08-31 10:00:0{index}",
+                "price": 356.5 + index / 10,
+                "volume": 100,
+                "ticker_direction": "BUY",
+                "sequence": 10 + index * (2**32 + 1),
+            }
+            for index in range(1, 4)
+        ]
+
+        first = self.adapter.adapt_ticker_batch(
+            rows,
+            stock_code="HK.00100",
+            received_time=RECEIVED,
+        )
+        replayed = self.adapter.adapt_ticker_batch(
+            rows,
+            stock_code="HK.00100",
+            received_time=RECEIVED,
+        )
+
+        self.assertEqual(len(first), 3)
+        self.assertTrue(all(isinstance(event, TickEvent) for event in first))
+        self.assertTrue(
+            all(event.tick.quality is DataQuality.GOOD for event in first)
+        )
+        self.assertEqual(replayed, ())
+        stats = self.adapter.snapshot()
+        self.assertEqual(stats.duplicates, 1)
+        self.assertEqual(stats.stale_replays, 2)
+        self.assertEqual(stats.sequence_gaps, 0)
+        self.assertEqual(stats.out_of_order, 0)
 
     def test_no_sequence_uses_business_key_deduplication(self) -> None:
         row = {

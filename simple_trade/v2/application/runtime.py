@@ -285,16 +285,12 @@ class V2Runtime:
         if not self._started:
             return
         received = datetime.now(timezone.utc)
-        events: list[DomainEvent] = []
-        for row in rows:
-            events.extend(
-                self.market_adapter.adapt_ticker(
-                    row,
-                    stock_code=stock_code,
-                    received_time=received,
-                )
-            )
-        self._publish_threadsafe(tuple(events))
+        events = self.market_adapter.adapt_ticker_batch(
+            rows,
+            stock_code=stock_code,
+            received_time=received,
+        )
+        self._publish_threadsafe(events)
 
     def ingest_order_book(self, stock_code: str, data: object) -> None:
         if not self._started:
