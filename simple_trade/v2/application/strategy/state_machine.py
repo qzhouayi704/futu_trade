@@ -10,7 +10,7 @@ from ...domain.enums import (
 )
 from ...domain.features import FeatureSnapshot
 from ...domain.market import TickAggregate
-from .models import LegacySignalContext, TransitionProposal, UniverseDecision
+from .models import TransitionProposal, UniverseDecision
 from .portfolio import CandidateSignalRules
 
 
@@ -55,7 +55,6 @@ class CandidateStateMachine:
         snapshot: FeatureSnapshot,
         state: StrategyState | None,
         universe: UniverseDecision,
-        legacy: LegacySignalContext | None = None,
     ) -> TransitionProposal | None:
         status = state.status if state is not None else StrategyStatus.IDLE
         if status is StrategyStatus.IDLE:
@@ -66,7 +65,7 @@ class CandidateStateMachine:
                 or self._enter_setup(snapshot, universe)
             )
         if status is StrategyStatus.INVALIDATED:
-            return self._reenter_setup(snapshot, state, universe, legacy)
+            return self._reenter_setup(snapshot, state, universe)
         if status is StrategyStatus.SETUP:
             strong_trend = self._confirm_strong_trend_reentry(snapshot, universe)
             if strong_trend is not None:
@@ -86,13 +85,6 @@ class CandidateStateMachine:
             )
             if momentum_watch is not None:
                 return momentum_watch
-            legacy_watch = self._enter_legacy_watch(
-                snapshot, legacy, universe,
-                event_type=EventType.CANDIDATE_UPDATED,
-                reason="LEGACY_RALLY_SETUP_WATCH",
-            )
-            if legacy_watch is not None:
-                return legacy_watch
             if snapshot.quality is DataQuality.INVALID:
                 if self._quote_setup_context(snapshot, universe):
                     if self._state_age(snapshot, state) <= self.SETUP_ENRICHMENT_GRACE_SECONDS:
@@ -256,7 +248,6 @@ class CandidateStateMachine:
         snapshot: FeatureSnapshot,
         state: StrategyState,
         universe: UniverseDecision,
-        legacy: LegacySignalContext | None,
     ) -> TransitionProposal | None:
         elapsed = (snapshot.computed_at - state.updated_at).total_seconds()
         invalidation_reason = str(state.metadata.get("invalidation_reason") or "")
@@ -283,13 +274,6 @@ class CandidateStateMachine:
             )
             if momentum_watch is not None:
                 return momentum_watch
-            watch = self._enter_legacy_watch(
-                snapshot, legacy, universe,
-                event_type=EventType.CANDIDATE_ENTERED,
-                reason="SOFT_GATE_STRONG_SIGNAL_REENTRY",
-            )
-            if watch is not None:
-                return watch
         if elapsed < self.REENTRY_COOLDOWN_SECONDS:
             return None
         proposal = self._enter_setup(snapshot, universe)
@@ -815,62 +799,6 @@ class CandidateStateMachine:
             event_type=event_type,
             reason_code=selected_reason,
             metadata={"invalidation_reason": selected_reason},
-        )
-
-    @classmethod
-    def _enter_legacy_watch(
-        cls,
-        snapshot: FeatureSnapshot,
-        legacy: LegacySignalContext | None,
-        universe: UniverseDecision,
-        *,
-        event_type: EventType,
-        reason: str,
-    ) -> TransitionProposal | None:
-        if legacy is None or not cls._legacy_signal_is_strong(snapshot, legacy, universe):
-            return None
-        return TransitionProposal(
-            new_status=StrategyStatus.WATCHING,
-            event_type=event_type,
-            reason_code=reason,
-            metadata={
-                "watch_started_at": snapshot.computed_at,
-                "watch_price": snapshot.quote.last_price,
-                "legacy_signal_at": legacy.observed_at,
-                "legacy_signal_source": legacy.source,
-                "legacy_net_buy_amount": legacy.net_buy_amount,
-                "legacy_price_change_pct": legacy.price_change_pct,
-            },
-        )
-
-    @classmethod
-    def _legacy_signal_is_strong(
-        cls,
-        snapshot: FeatureSnapshot,
-        legacy: LegacySignalContext,
-        universe: UniverseDecision,
-    ) -> bool:
-        hard_reasons = set(universe.reason_codes) - cls.SOFT_UNIVERSE_REASONS
-        age = (snapshot.computed_at - legacy.observed_at).total_seconds()
-        activity = snapshot.activity
-        liquidity = snapshot.liquidity
-        return bool(
-            legacy.source == "absorption_scanner"
-            and legacy.direction == "BUY"
-            and 0 <= age <= 900
-            and legacy.duration_minutes >= 5
-            and 1.0 <= legacy.price_change_pct <= 2.5
-            and legacy.net_buy_amount >= 1_000_000.0
-            and legacy.position != "high"
-            and legacy.signal_price > 0
-            and snapshot.quote.last_price >= legacy.signal_price * 0.99
-            and snapshot.quality is not DataQuality.INVALID
-            and snapshot.price_position.quality is not DataQuality.INVALID
-            and activity is not None
-            and activity.is_active
-            and liquidity is not None
-            and liquidity.score >= 30
-            and not hard_reasons
         )
 
     @staticmethod

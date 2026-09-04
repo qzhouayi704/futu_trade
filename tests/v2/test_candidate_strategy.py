@@ -3,7 +3,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from simple_trade.v2.application.strategy.candidate_scorer import CandidateScorer
-from simple_trade.v2.application.strategy.models import LegacySignalContext, UniverseDecision
+from simple_trade.v2.application.strategy.models import UniverseDecision
 from simple_trade.v2.application.strategy.portfolio import StrategyPortfolio
 from simple_trade.v2.application.strategy.state_machine import CandidateStateMachine
 from simple_trade.v2.application.strategy.universe import UniversePolicy
@@ -190,24 +190,6 @@ SOFT_INELIGIBLE = UniverseDecision(
     eligible=False,
     reason_codes=("TURNOVER_RANK_NOT_HOT",),
 )
-
-
-def legacy_signal(
-    *,
-    observed_at: datetime = NOW,
-    position: str = "low",
-) -> LegacySignalContext:
-    return LegacySignalContext(
-        observed_at=observed_at,
-        source="absorption_scanner",
-        direction="BUY",
-        severity="medium",
-        duration_minutes=6,
-        price_change_pct=1.6,
-        net_buy_amount=2_000_000,
-        position=position,
-        signal_price=100.5,
-    )
 
 
 class CandidateStrategyTests(unittest.TestCase):
@@ -531,29 +513,18 @@ class CandidateStrategyTests(unittest.TestCase):
         self.assertEqual(reentry.new_status, StrategyStatus.SETUP)
         self.assertEqual(reentry.reason_code, "COOLDOWN_COMPLETE_REENTER_SETUP")
 
-    def test_strong_rally_opens_watch_but_high_position_does_not(self) -> None:
+    def test_soft_ineligible_setup_does_not_watch_without_v2_evidence(self) -> None:
         item = snapshot(as_of=NOW + timedelta(minutes=5))
         setup = self.machine.evaluate(
             item,
             None,
             SOFT_INELIGIBLE,
-            legacy_signal(observed_at=NOW + timedelta(minutes=4)),
         )
         self.assertEqual(setup.new_status, StrategyStatus.SETUP)
-        watch = self.machine.evaluate(
-            item,
-            state(StrategyStatus.SETUP),
-            SOFT_INELIGIBLE,
-            legacy_signal(observed_at=NOW + timedelta(minutes=4)),
-        )
-        self.assertEqual(watch.new_status, StrategyStatus.WATCHING)
-        self.assertEqual(watch.reason_code, "LEGACY_RALLY_SETUP_WATCH")
-
         self.assertIsNone(self.machine.evaluate(
             item,
             state(StrategyStatus.SETUP),
             SOFT_INELIGIBLE,
-            legacy_signal(observed_at=NOW + timedelta(minutes=4), position="high"),
         ))
 
     def test_low_position_repeated_inflow_bypasses_only_soft_universe_gates(self) -> None:
@@ -797,7 +768,7 @@ class CandidateStrategyTests(unittest.TestCase):
             self.machine.evaluate(critical_missing, watching, SOFT_INELIGIBLE)
         )
 
-    def test_soft_universe_gate_has_grace_and_fast_signal_reentry(self) -> None:
+    def test_soft_universe_gate_has_grace_without_legacy_reentry(self) -> None:
         setup_state = state(StrategyStatus.SETUP, updated_at=NOW)
         self.assertIsNone(self.machine.evaluate(
             snapshot(as_of=NOW + timedelta(minutes=4), rank=0.60),
@@ -816,14 +787,13 @@ class CandidateStrategyTests(unittest.TestCase):
             updated_at=NOW,
             metadata={"invalidation_reason": "TURNOVER_RANK_NOT_HOT"},
         )
-        reentered = self.machine.evaluate(
-            snapshot(as_of=NOW + timedelta(minutes=6)),
-            invalid_state,
-            SOFT_INELIGIBLE,
-            legacy_signal(observed_at=NOW + timedelta(minutes=5)),
+        self.assertIsNone(
+            self.machine.evaluate(
+                snapshot(as_of=NOW + timedelta(minutes=6)),
+                invalid_state,
+                SOFT_INELIGIBLE,
+            )
         )
-        self.assertEqual(reentered.new_status, StrategyStatus.WATCHING)
-        self.assertEqual(reentered.reason_code, "SOFT_GATE_STRONG_SIGNAL_REENTRY")
 
     def test_high_position_second_inflow_reconfirms_after_price_invalidation(self) -> None:
         as_of = NOW + timedelta(minutes=3)

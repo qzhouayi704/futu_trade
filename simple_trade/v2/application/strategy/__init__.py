@@ -3,11 +3,9 @@
 from .candidate_scorer import CandidateScorer
 from .coordinator import CandidateCoordinator
 from .dual_track import DualTrackReport, DualTrackScoreboard, LegacySignalObservation
-from .legacy_observations import LegacyObservationBook
 from .models import (
     CandidateCoordinatorStats,
     CandidateScore,
-    LegacySignalContext,
     TransitionProposal,
     UniverseDecision,
 )
@@ -23,8 +21,6 @@ __all__ = [
     "DualTrackReport",
     "DualTrackScoreboard",
     "LegacySignalObservation",
-    "LegacyObservationBook",
-    "LegacySignalContext",
     "TransitionProposal",
     "UniverseDecision",
     "UniversePolicy",

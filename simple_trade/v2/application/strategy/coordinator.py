@@ -17,7 +17,6 @@ from ..runtime_supervisor import RuntimeSupervisor
 from .candidate_scorer import CandidateScorer
 from .decision_builder import build_transition
 from .models import CandidateCoordinatorStats
-from .legacy_observations import LegacyObservationBook
 from .portfolio import StrategyPortfolio
 from .state_machine import CandidateStateMachine
 from .universe import UniversePolicy
@@ -68,7 +67,6 @@ class CandidateCoordinator:
         self._scorer = CandidateScorer()
         self._machine = CandidateStateMachine()
         self._portfolio = StrategyPortfolio()
-        self._observations = LegacyObservationBook()
         self._observer = observer
         self._bus: EventBus | None = None
         self._worker: asyncio.Task | None = None
@@ -92,14 +90,12 @@ class CandidateCoordinator:
         if self._bus is not None:
             raise RuntimeError("CandidateCoordinator already registered")
         bus.subscribe(EventType.FEATURE_SNAPSHOT_READY, self.on_feature_snapshot)
-        bus.subscribe(EventType.LEGACY_SIGNAL_RECEIVED, self._observations.on_event)
         self._bus = bus
 
     def unregister(self) -> None:
         if self._bus is None:
             return
         self._bus.unsubscribe(EventType.FEATURE_SNAPSHOT_READY, self.on_feature_snapshot)
-        self._bus.unsubscribe(EventType.LEGACY_SIGNAL_RECEIVED, self._observations.on_event)
         self._bus = None
 
     async def start(self, supervisor: RuntimeSupervisor | None = None) -> None:
@@ -199,8 +195,7 @@ class CandidateCoordinator:
         score = self._scorer.score(snapshot)
         portfolio = self._portfolio.evaluate(snapshot, universe, score)
         state = await self._state_for(snapshot.stock_code)
-        legacy = self._observations.latest(snapshot.stock_code, snapshot.computed_at)
-        proposal = self._machine.evaluate(snapshot, state, universe, legacy)
+        proposal = self._machine.evaluate(snapshot, state, universe)
 
         status = state.status if state is not None else StrategyStatus.IDLE
         if proposal is not None:
@@ -225,7 +220,7 @@ class CandidateCoordinator:
                     self._conflicts += 1
                     self._states.pop(snapshot.stock_code, None)
                 state = await self._state_for(snapshot.stock_code, force_reload=True)
-                retry = self._machine.evaluate(snapshot, state, universe, legacy)
+                retry = self._machine.evaluate(snapshot, state, universe)
                 if retry is None:
                     proposal = None
                 else:

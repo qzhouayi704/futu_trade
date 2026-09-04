@@ -2,11 +2,12 @@ import unittest
 from dataclasses import replace
 from datetime import timedelta
 
+from simple_trade.v2.application.event_bus import EventBus
 from simple_trade.v2.application.strategy.coordinator import CandidateCoordinator
 from simple_trade.v2.application.strategy.dual_track import DualTrackScoreboard
 from simple_trade.v2.domain.decisions import DecisionEvent
 from simple_trade.v2.domain.enums import EventType
-from simple_trade.v2.domain.events import FeatureSnapshotEvent
+from simple_trade.v2.domain.events import FeatureSnapshotEvent, MarketEvent
 
 from tests.v2.test_candidate_strategy import NOW, snapshot, window
 
@@ -121,6 +122,50 @@ class CandidateCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stores.events[0].event_type, EventType.CANDIDATE_REJECTED)
         self.assertIn("NOT_ACTIVE", stores.events[0].reason_code)
         self.assertEqual(coordinator.snapshot().rejections_persisted, 1)
+
+    async def test_legacy_observation_cannot_advance_v2_candidate_state(self) -> None:
+        stores = MemoryStores()
+        bus = EventBus()
+        coordinator = CandidateCoordinator(stores, stores, strategy_version="test-v2")
+        coordinator.register(bus)
+        await coordinator.start()
+        await bus.start()
+
+        bus.publish_nowait(MarketEvent(
+            event_type=EventType.LEGACY_SIGNAL_RECEIVED,
+            stock_code="HK.00100",
+            exchange_time=NOW,
+            received_time=NOW,
+            source="legacy.signal-bridge",
+            strategy_version="test-v2",
+            payload={
+                "signal_source": "absorption_scanner",
+                "direction": "BUY",
+                "duration_minutes": 6,
+                "price_change_pct": 1.6,
+                "net_buy_amount": 2_000_000,
+                "position": "low",
+                "signal_price": 100.5,
+            },
+        ))
+        weak = snapshot(rank=0.60)
+        bus.publish_nowait(feature_event(weak, "legacy-setup"))
+        bus.publish_nowait(feature_event(
+            replace(
+                weak,
+                computed_at=NOW + timedelta(seconds=1),
+                quote=replace(weak.quote, exchange_time=NOW + timedelta(seconds=1)),
+            ),
+            "legacy-no-watch",
+        ))
+
+        await bus.stop(drain=True)
+        await coordinator.stop(drain=True)
+        coordinator.unregister()
+
+        self.assertEqual(len(stores.events), 1)
+        self.assertEqual(stores.events[0].event_type, EventType.CANDIDATE_ENTERED)
+        self.assertNotIn("LEGACY_RALLY", stores.events[0].reason_code)
 
 
 class DualTrackTests(unittest.TestCase):
