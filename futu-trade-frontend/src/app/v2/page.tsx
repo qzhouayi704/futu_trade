@@ -16,6 +16,7 @@ import { OutcomeDistribution } from "./OutcomeDistribution";
 import { PositionTable } from "./PositionTable";
 import { ShadowAcceptance } from "./ShadowAcceptance";
 import { SystemPanel } from "./SystemPanel";
+import { TodaySignals } from "./cockpit/TodaySignals";
 
 const tabs = [
   { id: "cockpit", label: "盘中驾驶舱", icon: Activity },
@@ -59,7 +60,7 @@ export default function V2WorkbenchPage() {
       <div className="border-b border-border px-2 md:px-6"><nav className="mx-auto flex max-w-[1680px] overflow-x-auto" aria-label="V2 工作视图">{tabs.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => setTab(id)} className={`flex h-11 shrink-0 items-center gap-2 border-b-2 px-3 text-xs font-medium md:px-4 ${tab === id ? "border-emerald-500 text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}><Icon className="h-4 w-4" />{label}</button>)}</nav></div>
       <main className="mx-auto max-w-[1680px] px-3 py-4 md:px-6 md:py-6">
         {hasError && <div className="mb-4 border-l-2 border-rose-500 bg-rose-500/8 px-3 py-2 text-sm text-rose-700 dark:text-rose-300">部分 V2 Read Model 暂不可用，系统会继续重试。</div>}
-        {tab === "cockpit" && <div className="space-y-6"><MetricStrip data={cockpit.data} /><section><h2 className="mb-2 text-sm font-semibold">优先候选</h2><CandidateTable items={cockpit.data?.candidates || []} compact /></section><section><h2 className="mb-2 text-sm font-semibold">持仓效率</h2><PositionTable items={cockpit.data?.positions || []} compact /></section><section><h2 className="mb-2 text-sm font-semibold">最新决策</h2><DecisionStream items={cockpit.data?.decisions || []} compact /></section></div>}
+        {tab === "cockpit" && <div className="space-y-6"><MetricStrip data={cockpit.data} /><TodaySignals /><section><h2 className="mb-2 text-sm font-semibold">优先候选</h2><CandidateTable items={cockpit.data?.candidates || []} compact /></section><section><h2 className="mb-2 text-sm font-semibold">持仓效率</h2><PositionTable items={cockpit.data?.positions || []} compact /></section><section><h2 className="mb-2 text-sm font-semibold">最新决策</h2><DecisionStream items={cockpit.data?.decisions || []} compact /></section></div>}
         {tab === "candidates" && <CandidateWorkspace currentItems={candidates.data?.items || []} />}
         {tab === "positions" && <PositionTable items={positions.data?.items || []} />}
         {tab === "review" && <div className="space-y-10"><AlertPerformance /><ShadowAcceptance data={acceptance.data} /><OutcomeDistribution data={distribution.data} /><section><h2 className="mb-2 text-sm font-semibold">事件回放</h2><DecisionStream items={decisions.data?.items || []} /></section></div>}
