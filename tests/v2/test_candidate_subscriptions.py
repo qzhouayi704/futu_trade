@@ -38,6 +38,22 @@ def entered_event(new_state: str = "SETUP") -> DecisionEvent:
     )
 
 
+def invalidated_event(reason_code: str) -> DecisionEvent:
+    now = datetime.now(timezone.utc)
+    return DecisionEvent(
+        event_type=EventType.CANDIDATE_INVALIDATED,
+        stock_code="HK.00100",
+        exchange_time=now,
+        received_time=now,
+        source="test",
+        schema_version=1,
+        strategy_version="test-v2",
+        old_state="WATCHING",
+        new_state="INVALIDATED",
+        reason_code=reason_code,
+    )
+
+
 class CandidateSubscriptionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_prime_protects_and_subscribes_overnight_candidates(self) -> None:
         port = FakeSubscriptionPort()
@@ -74,4 +90,30 @@ class CandidateSubscriptionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         self.assertEqual(port.codes, [])
+        await coordinator.stop()
+
+    async def test_hard_invalidation_unprotects_overnight_candidate(self) -> None:
+        port = FakeSubscriptionPort()
+        coordinator = CandidateSubscriptionCoordinator(port)
+        await coordinator.start()
+        coordinator.prime(("HK.00100", "HK.03690"))
+
+        coordinator.on_candidate_invalidated(
+            invalidated_event("PRICE_ACCEPTANCE_BROKEN")
+        )
+
+        self.assertEqual(port.protected, ("HK.03690",))
+        await coordinator.stop()
+
+    async def test_temporary_invalidation_keeps_overnight_candidate_protected(self) -> None:
+        port = FakeSubscriptionPort()
+        coordinator = CandidateSubscriptionCoordinator(port)
+        await coordinator.start()
+        coordinator.prime(("HK.00100",))
+
+        coordinator.on_candidate_invalidated(
+            invalidated_event("FLOW_CONFIRMATION_EXPIRED")
+        )
+
+        self.assertEqual(port.protected, ("HK.00100",))
         await coordinator.stop()

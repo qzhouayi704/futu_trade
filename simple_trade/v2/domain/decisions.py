@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Mapping
 
-from .enums import EventType, NotificationChannel, StrategyStatus
+from .enums import EventType, IntentType, NotificationChannel, StrategyStatus
 from .events import DomainEvent
 from .serialization import JsonValue, freeze_json, require_aware, require_stock_code
 
@@ -79,6 +79,9 @@ class NotificationEvent(DomainEvent):
     title: str
     message: str
     expires_at: datetime | None = None
+    intent_type: IntentType | None = None
+    actionable: bool = False
+    reference_price: float | None = None
 
     def __post_init__(self) -> None:
         DomainEvent.__post_init__(self)

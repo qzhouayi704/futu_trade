@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 import time
 from typing import Protocol
+from ..domain.candidates import OVERNIGHT_HARD_INVALIDATIONS
 
 from ..domain.decisions import DecisionEvent
 from ..domain.enums import EventType, StrategyStatus
@@ -49,6 +50,7 @@ class CandidateSubscriptionCoordinator:
         self._completed = 0
         self._failed = 0
         self._deduplicated = 0
+        self._protected: tuple[str, ...] = ()
 
     def register(self, bus: EventBus) -> None:
         if self._bus is bus:
@@ -56,12 +58,16 @@ class CandidateSubscriptionCoordinator:
         if self._bus is not None:
             raise RuntimeError("CandidateSubscriptionCoordinator already registered")
         bus.subscribe(EventType.CANDIDATE_ENTERED, self.on_candidate_entered)
+        bus.subscribe(EventType.CANDIDATE_INVALIDATED, self.on_candidate_invalidated)
+        bus.subscribe(EventType.BUY_INVALIDATED, self.on_candidate_invalidated)
         self._bus = bus
 
     def unregister(self) -> None:
         if self._bus is None:
             return
         self._bus.unsubscribe(EventType.CANDIDATE_ENTERED, self.on_candidate_entered)
+        self._bus.unsubscribe(EventType.CANDIDATE_INVALIDATED, self.on_candidate_invalidated)
+        self._bus.unsubscribe(EventType.BUY_INVALIDATED, self.on_candidate_invalidated)
         self._bus = None
 
     async def start(self, supervisor: RuntimeSupervisor | None = None) -> None:
@@ -102,6 +108,7 @@ class CandidateSubscriptionCoordinator:
         self._request(event.stock_code)
 
     def prime(self, stock_codes: tuple[str, ...]) -> None:
+        self._protected = stock_codes
         if self._port is None:
             return
         protect = getattr(self._port, "protect_candidates", None)
@@ -109,6 +116,13 @@ class CandidateSubscriptionCoordinator:
             protect(stock_codes)
         for code in stock_codes:
             self._request(code)
+
+    def on_candidate_invalidated(self, event) -> None:
+        if (
+            isinstance(event, DecisionEvent) and event.stock_code in self._protected
+            and event.reason_code in OVERNIGHT_HARD_INVALIDATIONS | {"OVERNIGHT_PRIORITY_EXPIRED"}
+        ):
+            self.prime(tuple(code for code in self._protected if code != event.stock_code))
 
     def _request(self, code: str) -> None:
         if not self._running:

@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from simple_trade.v2.infrastructure.ticker_replay_loader import TickerReplayLoader
+from simple_trade.v2.infrastructure.ticker_replay_loader import TickerReplayLimitExceeded, TickerReplayLoader
 
 
 class ReplayDatabase:
@@ -18,6 +18,56 @@ class ReplayDatabase:
 
 
 class TickerReplayLoaderTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "ticks.db"
+        with closing(sqlite3.connect(self.path)) as connection:
+            connection.execute(
+                "CREATE TABLE ticker_data (id INTEGER PRIMARY KEY, stock_code TEXT, "
+                "trade_time TEXT, price REAL, volume INTEGER, turnover REAL, "
+                "direction TEXT, sequence INTEGER, timestamp INTEGER, trade_date TEXT)"
+            )
+        self.db = ReplayDatabase(self.path)
+
+    def insert(self, rows):
+        with closing(sqlite3.connect(self.path)) as connection:
+            connection.executemany("INSERT INTO ticker_data VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+            connection.commit()
+
+    async def test_true_trade_time_filters_late_receipt_and_future_ticks(self):
+        self.insert([
+            (1, "HK.00100", "2026-09-01 13:30:00", 10, 100, 1000, "BUY", 1, 0, "2026-09-01"),
+            (2, "HK.00100", "2026-09-01 10:00:00", 10, 100, 1000, "BUY", 2, 9999999999999, "2026-09-01"),
+            (3, "HK.00100", "2026-09-01 14:01:00", 10, 100, 500000, "BUY", 3, 0, "2026-09-01"),
+            (4, "HK.00100", "2026-09-01T02:00:00Z", 10, 100, 80000, "SELL", 4, 0, "2026-09-02"),
+        ])
+        rows = await TickerReplayLoader(self.db).load(
+            "2026-09-01", datetime(2026, 9, 1, 6, tzinfo=timezone.utc), minimum_large_turnover=50000,
+        )
+        self.assertEqual([row["direction"] for row in rows], ["SELL", "BUY"])
+        self.assertEqual([row["time"][11:16] for row in rows], ["10:00", "13:30"])
+
+    async def test_replay_limit_fails_instead_of_restoring_partial_state(self):
+        self.insert([
+            (1, "HK.00100", "2026-09-01 13:30:00", 10, 100, 1000, "BUY", 1, 0, "2026-09-01"),
+            (2, "HK.00100", "2026-09-01 13:31:00", 10, 100, 1000, "BUY", 2, 0, "2026-09-01"),
+        ])
+        with self.assertRaises(TickerReplayLimitExceeded):
+            await TickerReplayLoader(self.db, row_limit=1).load(
+                "2026-09-01", datetime(2026, 9, 1, 6, tzinfo=timezone.utc),
+            )
+
+    async def test_us_wall_time_is_not_interpreted_as_hong_kong_time(self):
+        self.insert([
+            (1, "US.TEST", "2026-09-01 10:30:00", 10, 100, 1000, "BUY", 1, 0, "2026-09-01"),
+        ])
+        rows = await TickerReplayLoader(self.db).load(
+            "2026-09-01", datetime(2026, 9, 1, 15, tzinfo=timezone.utc),
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["time"], "2026-09-01T10:30:00-04:00")
+
     async def test_recent_tape_and_older_large_ticks_are_loaded(self) -> None:
         hk = timezone(timedelta(hours=8))
         as_of = datetime(2026, 9, 1, 14, 0, tzinfo=hk)

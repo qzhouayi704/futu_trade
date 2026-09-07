@@ -141,6 +141,37 @@ export interface V2Decision {
   strategy_version: string;
 }
 
+export interface V2OvernightObservation {
+  stock_code: string;
+  stock_name: string;
+  setup_id: string;
+  source_date: string;
+  source_time: string;
+  source_reason: string;
+  reference_price: number;
+  score: number;
+  day_main_net: number;
+  independent_buy_events: number;
+  eligible_date: string;
+  expires_date: string;
+  age_sessions: number;
+  status: "WATCHING" | "SUSPENDED" | "INVALIDATED" | "EXPIRED";
+  reason_code: string;
+  last_event_time: string;
+  selected: boolean;
+}
+
+export interface V2OvernightPool {
+  status: "NOT_LOADED" | "READY" | "UNAVAILABLE" | "MARKET_CLOSED" | "STALE";
+  trade_date: string;
+  updated_at: string | null;
+  items: V2OvernightObservation[];
+  count: number;
+  selected_count: number;
+  max_sessions: number;
+  alerts_enabled: boolean;
+}
+
 export interface V2Outcome {
   event_id: string;
   stock_code: string;
@@ -163,13 +194,17 @@ export interface V2Outcome {
 }
 
 export interface V2AlertPeriodResult {
-  status: "READY" | "PENDING" | "OBSERVING";
+  status: "READY" | "PENDING" | "OBSERVING" | "LIVE" | "PARTIAL";
   trading_day: string | null;
   close_return_pct: number | null;
   max_return_pct: number | null;
   max_drawdown_pct: number | null;
-  source?: "OUTCOME" | "DAILY_KLINE" | "TICKER_MINUTE" | null;
+  source?: "OUTCOME" | "DAILY_KLINE" | "TICKER_MINUTE" | "TICKER_DATA" | null;
   intraday_covered?: boolean;
+  latest_return_pct?: number | null;
+  observed_from?: string | null;
+  observed_through?: string | null;
+  coverage?: "OBSERVED" | "MISSING";
 }
 
 export interface V2AlertPerformanceItem {
@@ -202,6 +237,7 @@ export interface V2AlertPerformanceItem {
 
 export interface V2AlertPerformance {
   trade_date: string;
+  as_of?: string;
   scope: "candidates" | "watching" | "confirmed" | "alerts";
   items: V2AlertPerformanceItem[];
   count: number;
@@ -332,6 +368,7 @@ async function getData<T>(path: string): Promise<T> {
 }
 
 export const v2Api = {
+  overnightCandidates: () => getData<V2OvernightPool>("/v2/candidates/overnight"),
   cockpit: () => getData<V2Cockpit>("/v2/cockpit"),
   candidates: () => getData<{ items: V2Candidate[]; count: number }>("/v2/candidates"),
   candidateHistory: (params: {

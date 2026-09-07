@@ -13,11 +13,13 @@ import {
   candidateStatusText,
 } from "./CandidateTable";
 import { clock, money } from "./format";
+import { OvernightCandidates } from "./OvernightCandidates";
 
-type CandidateView = "current" | "entered" | "all";
+type CandidateView = "current" | "entered" | "all" | "overnight";
 
 const views: Array<{ id: CandidateView; label: string }> = [
   { id: "current", label: "当前候选" },
+  { id: "overnight", label: "跨日重点" },
   { id: "entered", label: "今日记录" },
   { id: "all", label: "全部评估" },
 ];
@@ -108,7 +110,7 @@ export function CandidateWorkspace({ currentItems }: { currentItems: V2Candidate
       search: deferredSearch || undefined,
       status: status || undefined,
     }),
-    enabled: view !== "current",
+    enabled: view === "entered" || view === "all",
     refetchInterval: 30_000,
   });
   const totalPages = Math.max(1, Math.ceil((history.data?.total || 0) / (history.data?.page_size || 50)));
@@ -118,7 +120,7 @@ export function CandidateWorkspace({ currentItems }: { currentItems: V2Candidate
       <div className="inline-flex w-fit border border-border bg-muted/30 p-0.5">
         {views.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={`h-8 px-3 text-xs font-medium ${view === item.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{item.label}</button>)}
       </div>
-      {view !== "current" && <div className="flex flex-col gap-2 sm:flex-row">
+      {(view === "entered" || view === "all") && <div className="flex flex-col gap-2 sm:flex-row">
         <div className="relative w-full sm:w-64"><Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索股票代码或名称" className="h-9 pl-8 text-xs" /></div>
         <select value={status} onChange={(event) => setStatus(event.target.value)} className="h-9 border border-input bg-background px-3 text-xs text-foreground" aria-label="筛选候选状态">
           {statusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -126,7 +128,7 @@ export function CandidateWorkspace({ currentItems }: { currentItems: V2Candidate
       </div>}
     </div>
 
-    {view === "current" ? <CandidateTable items={currentItems} /> : <>
+    {view === "current" ? <CandidateTable items={currentItems} /> : view === "overnight" ? <OvernightCandidates /> : <>
       <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
         <span>{history.data?.trade_date || "今日"} · 共 {history.data?.total ?? 0} 只股票</span>
         <span>{view === "entered" ? "仅显示真正进入过候选流程的股票" : "包含所有被系统评估的股票"}</span>

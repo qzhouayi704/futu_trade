@@ -9,6 +9,38 @@ from typing import Optional
 
 
 _INVALID_TEXT = {"", "nan", "nat", "none", "null"}
+HK_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def market_datetime(value, stock_code: str = "HK.") -> Optional[datetime]:
+    """解析事件时间，并将历史无时区时间视为对应市场的本地时间。"""
+    if value is None:
+        return None
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        if stock_code.upper().startswith("US."):
+            from zoneinfo import ZoneInfo
+
+            market_tz = ZoneInfo("America/New_York")
+        else:
+            market_tz = HK_TIMEZONE
+        return (
+            parsed.replace(tzinfo=market_tz)
+            if parsed.tzinfo is None else parsed.astimezone(market_tz)
+        )
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def is_hk_continuous_session(value) -> bool:
+    """普通港股连续交易时段；竞价与休市日历由上层分别处理。"""
+    parsed = market_datetime(value)
+    if parsed is None or parsed.weekday() >= 5:
+        return False
+    from datetime import time
+
+    local_time = parsed.time()
+    return time(9, 30) <= local_time < time(12) or time(13) <= local_time <= time(16)
 
 
 def normalize_futu_trade_time(value) -> Optional[str]:

@@ -1,5 +1,7 @@
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 from simple_trade.v2.application.notifications import NotificationCoordinator, NotificationFormatter
 from simple_trade.v2.application.risk import ExecutionModeGate, IntentFactory, RiskEngine
@@ -20,6 +22,7 @@ from simple_trade.v2.domain.orders import OrderLeg, RiskDecision, TradeIntent
 from simple_trade.v2.domain.positions import ActiveOrderSnapshot, PositionSnapshot
 from simple_trade.v2.domain.risk import AccountSnapshot, RiskContext, RiskLimits
 from simple_trade.v2.infrastructure.broker.futu_account_provider import FutuAccountProvider
+from simple_trade.v2.infrastructure.notifications.channels import UnifiedNotifier
 
 
 NOW = datetime(2026, 9, 1, 2, 0, tzinfo=timezone.utc)
@@ -289,6 +292,23 @@ class NotificationFormatterTests(unittest.TestCase):
         self.assertIn("建议首仓15%", event.message)
         self.assertIn("单票总仓不超过25%", event.message)
 
+    def test_rejected_buy_is_only_an_observation_without_allocation_advice(self):
+        source = self._buy_source("FAST_15M_MULTI_INFLOW_CONFIRMED")
+        source = replace(source, event_type=EventType.RISK_REJECTED, risk=replace(source.risk, result=RiskResult.REJECTED))
+        events = NotificationFormatter(expiry_seconds=300).build(source)
+        self.assertEqual([event.channel for event in events], [NotificationChannel.WEBSOCKET])
+        self.assertFalse(events[0].actionable)
+        self.assertIn("尚不具备建仓或加仓条件", events[0].message)
+        self.assertNotIn("建议首仓", events[0].message)
+        self.assertNotIn("买入参考", events[0].message)
+
+    def test_late_replay_does_not_reset_notification_expiry(self):
+        source = self._buy_source("FAST_15M_MULTI_INFLOW_CONFIRMED")
+        source = replace(source, received_time=NOW + timedelta(hours=1))
+        event = NotificationFormatter(expiry_seconds=300).build(source)[0]
+        self.assertEqual(event.expires_at, NOW + timedelta(minutes=5))
+        self.assertLess(event.expires_at, source.received_time)
+
     def test_add_notification_has_distinct_title_plan_and_identity(self):
         formatter = NotificationFormatter(expiry_seconds=300)
         initial = formatter.build(
@@ -429,6 +449,68 @@ class NotificationCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         await coordinator.stop()
         self.assertEqual(notifier.calls, 0)
         self.assertEqual(coordinator.snapshot().expired, 1)
+
+
+class NotificationGovernanceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from simple_trade.services.alert.push_governor import GovernorConfig, PushGovernor
+        from simple_trade.services.alert.wechat_alert import WeChatAlertService
+
+        self.environment = patch.dict("os.environ", {"WECHAT_SOLO_CATEGORIES": ""})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.wechat = WeChatAlertService(webhook_key="unit-test-no-network")
+        self.wechat._do_send = AsyncMock(return_value=True)
+        self.wechat.governor = PushGovernor(
+            GovernorConfig(enabled=True, info_budget_per_window=0),
+            today_provider=lambda: "2026-09-01",
+        )
+        self.notifier = UnifiedNotifier(wechat_service=self.wechat)
+        self.formatter = NotificationFormatter(expiry_seconds=300)
+
+    async def test_initial_and_add_bypass_exhausted_low_priority_budget(self):
+        for _ in range(2):
+            self.wechat.governor.record_sent("交易信号", "HK.00100", 10, "INFO")
+        for reason in ("FAST_15M_MULTI_INFLOW_CONFIRMED", "POSITION_ADD_CAPITAL_CONFIRMED"):
+            source = NotificationFormatterTests._buy_source(reason)
+            event = self.formatter.build(source)[1]
+            result = await self.notifier.send(event, attempt=1)
+            self.assertIs(result, NotificationDeliveryResult.DELIVERED)
+        self.assertEqual(self.wechat._do_send.await_count, 2)
+        repeated = await self.notifier.send(event, attempt=1)
+        self.assertIs(repeated, NotificationDeliveryResult.COLLAPSED)
+        self.assertEqual(self.wechat._do_send.await_count, 2)
+
+    async def test_risk_notice_cannot_throttle_subsequent_approved_exit(self):
+        from simple_trade.services.alert.wechat_alert import AlertLevel
+
+        buy = NotificationFormatterTests._buy_source("REPEATED_OUTFLOW_AND_STRUCTURE_BREAK")
+        intent = replace(
+            buy.intent, source_event_id="risk-limited", intent_type=IntentType.SELL, buy_leg=None,
+            sell_leg=replace(buy.intent.buy_leg, side=OrderSide.SELL),
+        )
+        risk_notice = replace(
+            buy, intent=intent, event_type=EventType.RISK_REJECTED, source_decision_event_id="risk-limited",
+            risk=replace(buy.risk, result=RiskResult.REJECTED),
+        )
+        risk_event = self.formatter.build(risk_notice)[1]
+        self.assertNotIn("卖出参考", risk_event.message)
+        self.assertFalse(risk_event.actionable)
+        self.assertIs(await self.notifier.send(risk_event, attempt=1), NotificationDeliveryResult.DELIVERED)
+        self.assertIs(self.wechat._do_send.await_args.args[0], AlertLevel.WARNING)
+
+        approved = replace(
+            risk_notice, event_type=EventType.RISK_APPROVED,
+            source_decision_event_id="exit-approved", risk=buy.risk,
+            intent=replace(intent, source_event_id="exit-approved"),
+        )
+        exit_event = self.formatter.build(approved)[1]
+        self.assertTrue(exit_event.actionable)
+        self.assertIs(await self.notifier.send(exit_event, attempt=1), NotificationDeliveryResult.DELIVERED)
+        self.assertIs(self.wechat._do_send.await_args.args[0], AlertLevel.CRITICAL)
+
+        escalated = replace(exit_event, idempotency_key="new-price", reference_price=9.5)
+        self.assertIs(await self.notifier.send(escalated, attempt=1), NotificationDeliveryResult.DELIVERED)
 
 
 if __name__ == "__main__":

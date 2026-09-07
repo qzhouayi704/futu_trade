@@ -43,6 +43,12 @@ async def get_candidates(
     return await _respond(lambda: service.candidates(limit=limit), "V2候选池读取成功")
 
 
+@router.get("/candidates/overnight", response_model=APIResponse)
+async def get_overnight_candidates(container=Depends(get_container)):
+    service = _service(container)
+    return await _respond(service.overnight_candidates, "V2跨日观察读取成功")
+
+
 @router.get("/candidates/history", response_model=APIResponse)
 async def get_candidate_history(
     trade_date: str | None = Query(default=None),

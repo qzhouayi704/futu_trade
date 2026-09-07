@@ -3,8 +3,13 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from .enums import CandidateStatus, DataQuality
+from .enums import CandidateStatus, DataQuality, StringEnum
 from .serialization import require_aware, require_stock_code
+
+
+OVERNIGHT_HARD_INVALIDATIONS = frozenset({
+    "PRICE_ACCEPTANCE_BROKEN", "LARGE_OUTFLOW_OFFSETS_INFLOW", "CAPITAL_MEMORY_TURNED_DISTRIBUTING",
+})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -38,7 +43,7 @@ class TradeCandidate:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OvernightPriority:
-    """前一交易日形成、仅供次日重新确认的观察线索。"""
+    """历史独立合格条件形成、需在有效交易日重新确认的观察线索。"""
 
     stock_code: str
     source_date: str
@@ -51,6 +56,10 @@ class OvernightPriority:
     day_main_net: float
     independent_buy_events: int
     source_reason: str
+    setup_id: str = ""
+    eligible_date: str | None = None
+    expires_date: str | None = None
+    age_sessions: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stock_code", require_stock_code(self.stock_code))
@@ -72,3 +81,38 @@ class OvernightPriority:
             raise ValueError("independent_buy_events 必须大于 0")
         if not self.source_reason.strip():
             raise ValueError("source_reason 不能为空")
+        if self.age_sessions < 1:
+            raise ValueError("age_sessions 必须大于 0")
+        if self.eligible_date is not None:
+            date.fromisoformat(self.eligible_date)
+        if self.expires_date is not None:
+            date.fromisoformat(self.expires_date)
+            if self.expires_date <= self.source_date:
+                raise ValueError("到期日必须晚于来源日")
+
+    def is_valid_on(self, session_date: str) -> bool:
+        return bool(
+            self.eligible_date == session_date
+            and self.expires_date is not None
+            and self.source_date < session_date <= self.expires_date
+            and self.age_sessions <= 3
+        )
+
+
+class OvernightStatus(StringEnum):
+    WATCHING = "WATCHING"
+    SUSPENDED = "SUSPENDED"
+    INVALIDATED = "INVALIDATED"
+    EXPIRED = "EXPIRED"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OvernightObservation:
+    priority: OvernightPriority
+    status: OvernightStatus
+    reason_code: str
+    last_event_time: datetime
+
+    @property
+    def retained(self) -> bool:
+        return self.status in {OvernightStatus.WATCHING, OvernightStatus.SUSPENDED}

@@ -141,6 +141,26 @@ class TradingCalendar:
 
         return day_str in cached
 
+    def known_trading_days(
+        self, market: str, start: date, end: date, *, refresh: bool = True,
+    ) -> tuple[str, ...] | None:
+        """返回完整已知窗口；未知返回 None，不能用于猜测跨日期限。"""
+        if start > end:
+            raise ValueError("交易日历起点不能晚于终点")
+        today_str = datetime.now().date().isoformat()
+        with self._lock:
+            stale = self._built_on.get(market) != today_str
+        if refresh and stale:
+            self._refresh(market, today_str)
+        with self._lock:
+            window = self._window.get(market)
+            cached = self._cache.get(market)
+            if not window or not cached:
+                return None
+            if start.isoformat() < window[0] or end.isoformat() > window[1]:
+                return None
+            return tuple(sorted(day for day in cached if start.isoformat() <= day <= end.isoformat()))
+
 
 _calendar_singleton: Optional[TradingCalendar] = None
 _singleton_lock = threading.Lock()

@@ -1,5 +1,11 @@
 """Pure post-signal performance calculations for the review read model."""
 
+from datetime import datetime, time
+from math import isfinite
+
+from ....utils.trade_time import market_datetime
+from .alert_performance_tape import TapePerformance
+
 HORIZONS = (1, 3, 5, 10)
 
 
@@ -9,23 +15,37 @@ def evaluate_alert(
     klines: dict,
     intraday: dict,
     intraday_closes: dict,
+    *,
+    raw_tape: TapePerformance | None = None,
+    as_of: datetime | None = None,
 ) -> dict:
     basis = alert["signal_price"]
     direction = alert["direction"]
-    stock_days = klines.get(alert["stock_code"], {})
+    now = market_datetime(as_of, alert["stock_code"]) if as_of is not None else None
+    today = now.date().isoformat() if now is not None else None
+    day_finished = now is None or alert["signal_date"] < today or (
+        alert["signal_date"] == today and now.time() >= time(16, 15)
+    )
+    stock_days = {
+        day: row for day, row in klines.get(alert["stock_code"], {}).items()
+        if today is None or day < today or (day == today and now.time() >= time(16, 15))
+    }
     same_day = stock_days.get(alert["signal_date"])
     later_days = [day for day in sorted(stock_days) if day > alert["signal_date"]]
-    signal_minute = _signal_minute(alert["signal_time"])
+    signal_at = market_datetime(alert["signal_time"], alert["stock_code"])
+    signal_minute = signal_at.strftime("%H:%M") if signal_at else "23:59"
+    exact_minute_start = signal_at is not None and signal_at.second == 0 and signal_at.microsecond == 0
     minute_rows = [
         row for row in intraday.get(alert["stock_code"], [])
-        if row[0] >= signal_minute
+        if (row[0] > signal_minute or (exact_minute_start and row[0] == signal_minute))
+        and (now is None or alert["signal_date"] < today or row[0] < now.strftime("%H:%M"))
     ]
 
     outcome_close = alert["outcome_close_return_pct"]
     same_close = None
     same_day_source = None
     price_scale = 1.0
-    if outcome_close is not None:
+    if outcome_close is not None and day_finished:
         same_close = _directional_value(outcome_close, direction)
         same_day_source = "OUTCOME"
         if same_day and same_day[0] > 0:
@@ -34,6 +54,9 @@ def evaluate_alert(
     elif same_day:
         same_close = _directional_return(same_day[0], basis, direction)
         same_day_source = "DAILY_KLINE"
+    elif raw_tape is not None:
+        same_close = _directional_return(raw_tape.last_price, basis, direction)
+        same_day_source = "TICKER_DATA"
     elif minute_rows:
         close_price = intraday_closes.get(alert["stock_code"], minute_rows[-1][1])
         same_close = _directional_return(close_price, basis, direction)
@@ -41,7 +64,12 @@ def evaluate_alert(
 
     same_best = None
     same_worst = None
-    if minute_rows:
+    if raw_tape is not None:
+        favorable_price = raw_tape.low_price if direction == "SELL" else raw_tape.high_price
+        adverse_price = raw_tape.high_price if direction == "SELL" else raw_tape.low_price
+        same_best = _directional_return(favorable_price, basis, direction)
+        same_worst = _directional_return(adverse_price, basis, direction)
+    elif minute_rows:
         favorable_price = (
             min(row[3] for row in minute_rows)
             if direction == "SELL"
@@ -61,17 +89,25 @@ def evaluate_alert(
         )
         for horizon in HORIZONS
     }
+    settled = day_finished and same_day_source in {"OUTCOME", "DAILY_KLINE"}
+    status = "OBSERVING"
+    if same_close is not None:
+        status = "READY" if settled else "PARTIAL" if day_finished else "LIVE"
     return {
         **alert,
         "stock_name": names.get(alert["stock_code"], ""),
         "same_day": {
-            "status": "READY" if same_close is not None else "OBSERVING",
+            "status": status,
             "trading_day": alert["signal_date"],
-            "close_return_pct": same_close,
+            "close_return_pct": same_close if settled else None,
+            "latest_return_pct": same_close if not settled else None,
             "max_return_pct": same_best,
             "max_drawdown_pct": same_worst,
             "source": same_day_source,
-            "intraday_covered": bool(minute_rows),
+            "intraday_covered": raw_tape is not None or bool(minute_rows),
+            "observed_from": raw_tape.first_time if raw_tape else None,
+            "observed_through": raw_tape.last_time if raw_tape else None,
+            "coverage": "OBSERVED" if raw_tape or minute_rows else "MISSING",
         },
         "periods": periods,
         "completed_horizon": max(
@@ -104,8 +140,9 @@ def performance_summary(items: list[dict]) -> dict:
 
 def number(value) -> float | None:
     try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
+        result = float(value) if value is not None else None
+        return result if result is not None and isfinite(result) else None
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -188,9 +225,3 @@ def _directional_value(value: float | None, direction: str) -> float | None:
     if value is None:
         return None
     return round(-value if direction == "SELL" else value, 4)
-
-
-def _signal_minute(value: str) -> str:
-    text = str(value or "")
-    time_part = text.split("T", 1)[-1] if "T" in text else text.split(" ", 1)[-1]
-    return time_part[:5] if len(time_part) >= 5 else "00:00"

@@ -1,4 +1,6 @@
 import unittest
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 from simple_trade.v2.application.read_models.alert_performance import (
     AlertPerformanceReader,
@@ -63,10 +65,11 @@ class FakeAlertDatabase:
         ])
         self.ticker_rows = []
         self.ticker_close_rows = []
+        self.raw_rows = []
 
     def execute_query(self, query: str, params: tuple = ()) -> list:
         if "FROM v2_decision_events e LEFT JOIN v2_outcomes" in query:
-            states = set(params[:-1])
+            states = set(params[:-2])
             return [row for row in self.candidate_rows if row[6] in states]
         if "FROM v2_notification_log" in query:
             self.last_alert_params = params
@@ -75,14 +78,22 @@ class FakeAlertDatabase:
             return self.kline_rows
         if "FROM ticker_minute" in query:
             return self.ticker_rows
-        if "FROM ticker_data" in query:
-            return self.ticker_close_rows
+        if "WITH bounds" in query:
+            return self.raw_rows
         if "FROM stocks" in query:
             return [("HK.00100", "测试买入"), ("HK.00200", "测试卖出")]
         raise AssertionError(f"unexpected query: {query}")
 
 
 class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.clock = patch(
+            "simple_trade.v2.application.read_models.alert_performance.market_now",
+            return_value=datetime(2026, 9, 17, 2, tzinfo=timezone.utc),
+        )
+        self.mock_now = self.clock.start()
+        self.addCleanup(self.clock.stop)
+
     async def test_tracks_trading_day_horizons_and_collapses_repeat_alerts(self) -> None:
         database = FakeAlertDatabase()
         result = await AlertPerformanceReader(database).history(
@@ -90,7 +101,7 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["count"], 2)
-        self.assertEqual(database.last_alert_params, ("2026-09-02",))
+        self.assertEqual(database.last_alert_params, ("2026-09-01", "2026-09-03"))
         buy = next(item for item in result["items"] if item["action"] == "BUY")
         self.assertEqual(buy["alert_count"], 2)
         self.assertEqual(buy["signal_price"], 100)
@@ -263,7 +274,10 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         item = result["items"][0]
         self.assertEqual(result["intraday_coverage_count"], 1)
         self.assertEqual(item["same_day"]["source"], "TICKER_MINUTE")
-        self.assertEqual(item["same_day"]["close_return_pct"], 5.102)
+        self.assertEqual(item["same_day"]["status"], "PARTIAL")
+        self.assertEqual(item["same_day"]["latest_return_pct"], 5.102)
+        self.assertIsNone(item["same_day"]["close_return_pct"])
+        self.assertEqual(result["summary"]["same_day"]["completed_count"], 0)
         self.assertEqual(item["same_day"]["max_return_pct"], 6.1224)
         self.assertEqual(item["same_day"]["max_drawdown_pct"], -1.0204)
 
@@ -288,7 +302,7 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(same_day["max_drawdown_pct"])
         self.assertFalse(same_day["intraday_covered"])
 
-    async def test_uses_last_raw_trade_instead_of_last_minute_average_for_close(self) -> None:
+    async def test_last_raw_trade_is_not_mislabelled_as_a_settled_close(self) -> None:
         database = FakeAlertDatabase()
         database.candidate_rows = [database.candidate_rows[0]]
         database.kline_rows = []
@@ -296,14 +310,63 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
             ("HK.00100", "15:59", 102, 104, 101),
         ]
         database.ticker_close_rows = [("HK.00100", 103)]
+        database.raw_rows = [
+            ("setup-1", 103, 104, 101, "2026-09-02 15:59:00", "2026-09-02 15:59:59", 3),
+        ]
 
         result = await AlertPerformanceReader(database).history(
             trade_date="2026-09-02"
         )
 
         same_day = result["items"][0]["same_day"]
-        self.assertEqual(same_day["close_return_pct"], 5.102)
+        self.assertEqual(same_day["status"], "PARTIAL")
+        self.assertIsNone(same_day["close_return_pct"])
+        self.assertEqual(same_day["latest_return_pct"], 5.102)
         self.assertEqual(same_day["max_return_pct"], 6.1224)
+
+    async def test_utc_alert_is_included_but_lunch_is_excluded(self) -> None:
+        database = FakeAlertDatabase()
+        row = list(database.alert_rows[0])
+        row[3] = "2026-09-02T02:00:00+00:00"
+        lunch = list(row)
+        lunch[0], lunch[3] = "lunch", "2026-09-02T04:30:00+00:00"
+        database.alert_rows = [tuple(row), tuple(lunch)]
+        result = await AlertPerformanceReader(database).history(trade_date="2026-09-02", scope="alerts")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["items"][0]["signal_time"], "2026-09-02T10:00:00+08:00")
+        self.assertEqual(result["excluded"]["by_reason"]["OUTSIDE_REGULAR_SESSION"], 1)
+
+    async def test_live_raw_tape_is_visible_without_being_counted_as_a_close(self) -> None:
+        self.mock_now.return_value = datetime(2026, 9, 2, 3, tzinfo=timezone.utc)
+        database = FakeAlertDatabase()
+        database.candidate_rows = [database.candidate_rows[0]]
+        database.raw_rows = [("setup-1", 101, 103, 97, "2026-09-02 09:41:00", "2026-09-02 10:59:30", 4)]
+        result = await AlertPerformanceReader(database).history(trade_date="2026-09-02")
+        value = result["items"][0]["same_day"]
+        self.assertEqual(value["status"], "LIVE")
+        self.assertEqual(value["source"], "TICKER_DATA")
+        self.assertEqual(value["latest_return_pct"], 3.0612)
+        self.assertIsNone(value["close_return_pct"])
+        self.assertEqual(result["summary"]["same_day"]["completed_count"], 0)
+        self.assertEqual(result["items"][0]["periods"]["1"]["status"], "PENDING")
+
+    async def test_signal_minute_extremes_before_confirmation_are_not_used(self) -> None:
+        database = FakeAlertDatabase()
+        database.candidate_rows = [list(database.candidate_rows[0])]
+        database.candidate_rows[0][3] = "2026-09-02T09:40:45+08:00"
+        database.ticker_rows = [
+            ("HK.00100", "09:40", 98, 130, 60),
+            ("HK.00100", "09:41", 100, 101, 99),
+        ]
+        result = await AlertPerformanceReader(database).history(trade_date="2026-09-02")
+        value = result["items"][0]["same_day"]
+        self.assertEqual(value["max_return_pct"], 3.0612)
+        self.assertEqual(value["max_drawdown_pct"], 1.0204)
+
+    async def test_stage_upgrade_does_not_overwrite_original_outcome_basis(self) -> None:
+        result = await AlertPerformanceReader(FakeAlertDatabase()).history(trade_date="2026-09-02")
+        self.assertIsNone(result["items"][0]["intraday_mfe_pct"])
+        self.assertIsNone(result["items"][0]["intraday_mae_pct"])
 
 
 if __name__ == "__main__":

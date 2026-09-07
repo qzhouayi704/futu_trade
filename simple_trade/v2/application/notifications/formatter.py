@@ -46,6 +46,11 @@ class NotificationFormatter:
     def build(self, source: RiskAssessedEvent) -> tuple[NotificationEvent, ...]:
         title = self._title(source)
         message = self._message(source)
+        approved = source.risk.result is RiskResult.APPROVED
+        channels = (NotificationChannel.WEBSOCKET, NotificationChannel.WECHAT)
+        if not approved and source.intent.intent_type is not IntentType.SELL:
+            channels = (NotificationChannel.WEBSOCKET,)
+        leg = source.intent.sell_leg or source.intent.buy_leg
         return tuple(
             NotificationEvent(
                 event_type=EventType.NOTIFICATION_REQUESTED,
@@ -61,9 +66,12 @@ class NotificationFormatter:
                 idempotency_key=self._idempotency(source, channel),
                 title=title,
                 message=message,
-                expires_at=source.received_time + self._expiry,
+                expires_at=min(source.exchange_time, source.received_time) + self._expiry,
+                intent_type=source.intent.intent_type,
+                actionable=approved,
+                reference_price=leg.reference_price if leg is not None else None,
             )
-            for channel in (NotificationChannel.WEBSOCKET, NotificationChannel.WECHAT)
+            for channel in channels
         )
 
     @staticmethod
@@ -81,14 +89,22 @@ class NotificationFormatter:
     @staticmethod
     def _message(source: RiskAssessedEvent) -> str:
         intent = source.intent
+        approved = source.risk.result is RiskResult.APPROVED
         lines = [f"- 股票：**{source.stock_code}**"]
         if intent.sell_leg is not None:
-            lines.append(
-                f"- 卖出参考：{intent.sell_leg.quantity} 股 @ "
-                f"{intent.sell_leg.reference_price:.3f}"
-            )
+            if approved:
+                lines.append(
+                    f"- 卖出参考：{intent.sell_leg.quantity} 股 @ "
+                    f"{intent.sell_leg.reference_price:.3f}"
+                )
+            else:
+                lines.append(f"- 风险参考价：{intent.sell_leg.reference_price:.3f}")
+                lines.append("- 当前执行条件未通过，请核对持仓与交易状态")
         if intent.buy_leg is not None:
-            if intent.mode is RuntimeMode.ALERT:
+            if not approved:
+                lines.append(f"- 观察参考价：{intent.buy_leg.reference_price:.3f}")
+                lines.append("- 尚不具备建仓或加仓条件")
+            elif intent.mode is RuntimeMode.ALERT:
                 lines.append(
                     f"- 买入参考：{intent.buy_leg.stock_code} @ "
                     f"{intent.buy_leg.reference_price:.3f}（仓位需人工确认）"

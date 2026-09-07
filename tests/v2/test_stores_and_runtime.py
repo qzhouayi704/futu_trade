@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from unittest.mock import AsyncMock
 from pathlib import Path
 
 from simple_trade.v2.application.runtime import V2Runtime
@@ -332,6 +333,34 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.snapshot().tasks[0].name, "v2-event-bus")
         await runtime.stop()
         self.assertFalse(runtime.snapshot().started)
+
+    async def test_failed_replay_stops_runtime_and_background_workers(self):
+        runtime = V2Runtime(self.db, V2Config(enabled=True, mode=RuntimeMode.SHADOW))
+        runtime.ticker_replay_loader.load = AsyncMock(side_effect=RuntimeError("replay failed"))
+        with self.assertRaisesRegex(RuntimeError, "replay failed"):
+            await runtime.start()
+        self.assertFalse(runtime.started)
+        self.assertFalse(runtime.event_bus.snapshot().running)
+        self.assertFalse(runtime.snapshot().candidates.running)
+        self.assertFalse(runtime.snapshot().notifications.running)
+        await runtime.stop()
+
+    async def test_replay_handler_failure_does_not_report_successful_startup(self):
+        runtime = V2Runtime(self.db, V2Config(enabled=True, mode=RuntimeMode.SHADOW))
+        runtime.ticker_replay_loader.load = AsyncMock(return_value=({
+            "stock_code": "HK.00100", "time": datetime.now(timezone.utc).isoformat(),
+            "price": 100, "volume": 5000, "turnover": 500000, "direction": "BUY", "sequence": None,
+        },))
+
+        def fail_on_tick(_event):
+            raise RuntimeError("simulated capital handler failure")
+
+        runtime.event_bus.subscribe(EventType.TICK_RECEIVED, fail_on_tick)
+        with self.assertRaisesRegex(RuntimeError, "recovery event processing failed"):
+            await runtime.start()
+        self.assertFalse(runtime.started)
+        self.assertFalse(runtime.event_bus.snapshot().running)
+        await runtime.stop()
 
     async def test_ticker_replay_is_not_overwritten_by_legacy_capital_seed(self) -> None:
         hk = timezone(timedelta(hours=8))

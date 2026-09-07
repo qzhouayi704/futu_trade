@@ -3,7 +3,8 @@
 from collections import Counter
 import json
 
-from .alert_performance_metrics import max_number, min_number, number
+from ....utils.trade_time import is_hk_continuous_session, market_datetime
+from .alert_performance_metrics import number
 
 
 STAGE_RANK = {"SETUP": 1, "WATCHING": 2, "CONFIRMED": 3}
@@ -13,7 +14,7 @@ def eligible_delivered(rows: list[tuple]) -> tuple[list[tuple], dict]:
     eligible = []
     excluded = Counter()
     excluded_rows = 0
-    for row in rows:
+    for row in _chronological(rows):
         reasons = []
         if str(row[7] or "").upper() != "APPROVED":
             reasons.append("RISK_NOT_APPROVED")
@@ -32,29 +33,33 @@ def eligible_delivered(rows: list[tuple]) -> tuple[list[tuple], dict]:
 
 def collapse_delivered(rows: list[tuple]) -> list[dict]:
     collapsed: dict[tuple[str, str, str, str], dict] = {}
-    for row in rows:
+    for row in _chronological(rows):
         intent_type = str(row[6])
         leg_json = row[9] if intent_type == "SELL" else row[8]
         try:
             leg = json.loads(leg_json or "{}")
             stock_code = str(leg.get("stock_code") or row[2]).strip().upper()
-            signal_price = float(leg.get("reference_price") or 0)
-        except (TypeError, ValueError, json.JSONDecodeError):
+            signal_price = number(leg.get("reference_price"))
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
             continue
-        if not stock_code or signal_price <= 0:
+        if not stock_code or signal_price is None or signal_price <= 0:
             continue
-        signal_date = str(row[3])[:10]
+        observed_at = market_datetime(row[3], stock_code)
+        if observed_at is None:
+            continue
+        signal_time = observed_at.isoformat()
+        signal_date = observed_at.date().isoformat()
         key = (signal_date, stock_code, intent_type, str(row[5]))
         if key in collapsed:
             collapsed[key]["alert_count"] += 1
-            collapsed[key]["last_alert_time"] = row[3]
+            collapsed[key]["last_alert_time"] = signal_time
             continue
         collapsed[key] = {
             "event_id": row[0],
             "event_type": row[1],
             "stock_code": stock_code,
-            "signal_time": row[3],
-            "last_alert_time": row[3],
+            "signal_time": signal_time,
+            "last_alert_time": signal_time,
             "signal_date": signal_date,
             "signal_price": signal_price,
             "reason_code": row[4],
@@ -66,7 +71,7 @@ def collapse_delivered(rows: list[tuple]) -> list[dict]:
             "max_stage": "CONFIRMED",
             "stage_points": {
                 "CONFIRMED": {
-                    "time": row[3],
+                    "time": signal_time,
                     "price": signal_price,
                     "reason_code": row[4],
                 }
@@ -82,42 +87,44 @@ def collapse_delivered(rows: list[tuple]) -> list[dict]:
 
 def collapse_candidates(rows: list[tuple]) -> list[dict]:
     collapsed: dict[tuple[str, str, str], dict] = {}
-    for row in rows:
+    for row in _chronological(rows):
         try:
             payload = json.loads(row[7] or "{}")
             feature = payload.get("feature_snapshot") or {}
             quote = feature.get("quote") or {}
-            signal_price = float(quote.get("last_price") or 0)
-        except (TypeError, ValueError, json.JSONDecodeError):
+            signal_price = number(quote.get("last_price"))
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
             continue
         stock_code = str(row[2]).strip().upper()
         stage = str(row[6] or "SETUP")
-        if not stock_code or signal_price <= 0 or stage not in STAGE_RANK:
+        if not stock_code or signal_price is None or signal_price <= 0 or stage not in STAGE_RANK:
             continue
-        signal_date = str(row[3])[:10]
+        observed_at = market_datetime(row[3], stock_code)
+        if observed_at is None:
+            continue
+        signal_time = observed_at.isoformat()
+        signal_date = observed_at.date().isoformat()
         strategy_version = str(row[5])
         key = (signal_date, stock_code, strategy_version)
         stage_point = {
-            "time": row[3],
+            "time": signal_time,
             "price": signal_price,
             "reason_code": row[4],
         }
         if key in collapsed:
             item = collapsed[key]
             item["alert_count"] += 1
-            item["last_alert_time"] = row[3]
+            item["last_alert_time"] = signal_time
             item["stage_points"].setdefault(stage, stage_point)
             if STAGE_RANK[stage] > STAGE_RANK[item["max_stage"]]:
                 item["max_stage"] = stage
-            item["intraday_mfe_pct"] = max_number(item["intraday_mfe_pct"], row[8])
-            item["intraday_mae_pct"] = min_number(item["intraday_mae_pct"], row[9])
             continue
         collapsed[key] = {
             "event_id": row[0],
             "event_type": row[1],
             "stock_code": stock_code,
-            "signal_time": row[3],
-            "last_alert_time": row[3],
+            "signal_time": signal_time,
+            "last_alert_time": signal_time,
             "signal_date": signal_date,
             "signal_price": signal_price,
             "reason_code": row[4],
@@ -140,7 +147,12 @@ def collapse_candidates(rows: list[tuple]) -> list[dict]:
 def _is_regular_session(stock_code: str, exchange_time: str) -> bool:
     if not stock_code.upper().startswith("HK."):
         return True
-    text = str(exchange_time or "")
-    time_part = text.split("T", 1)[-1] if "T" in text else text.split(" ", 1)[-1]
-    minute = time_part[:5]
-    return "09:30" <= minute <= "16:00"
+    return is_hk_continuous_session(exchange_time)
+
+
+def _chronological(rows: list[tuple]) -> list[tuple]:
+    def timestamp(row: tuple) -> float:
+        parsed = market_datetime(row[3], str(row[2]))
+        return parsed.timestamp() if parsed is not None else float("inf")
+
+    return sorted(rows, key=timestamp)

@@ -1,6 +1,6 @@
 """Deterministic candidate state machine driven only by a feature snapshot."""
 
-from ...domain.candidates import OvernightPriority
+from ...domain.candidates import OVERNIGHT_HARD_INVALIDATIONS, OvernightPriority
 from ...domain.decisions import StrategyState
 from ...domain.enums import (
     CapitalMemoryState,
@@ -65,6 +65,17 @@ class CandidateStateMachine:
         overnight_priority: OvernightPriority | None = None,
     ) -> TransitionProposal | None:
         status = state.status if state is not None else StrategyStatus.IDLE
+        session_date = snapshot.computed_at.date().isoformat()
+        if (
+            state is not None and state.metadata.get("watch_kind") == "overnight_priority"
+            and status in {StrategyStatus.WATCHING, StrategyStatus.CONFIRMED}
+            and (overnight_priority is None or not overnight_priority.is_valid_on(session_date))
+        ):
+            expires = str(state.metadata.get("overnight_expires_date") or "")
+            return self._invalidate(
+                EventType.BUY_INVALIDATED, universe,
+                reason="OVERNIGHT_PRIORITY_EXPIRED" if expires and session_date > expires else "OVERNIGHT_PRIORITY_UNAVAILABLE",
+            )
         overnight_watch = self._enter_overnight_priority_watch(
             snapshot,
             state,
@@ -246,7 +257,13 @@ class CandidateStateMachine:
         if priority is None or priority.stock_code != snapshot.stock_code:
             return None
         session_date = snapshot.computed_at.date().isoformat()
-        if priority.source_date >= session_date:
+        if not priority.is_valid_on(session_date):
+            return None
+        if (
+            state is not None and state.status is StrategyStatus.INVALIDATED
+            and state.metadata.get("invalidation_reason") in OVERNIGHT_HARD_INVALIDATIONS
+            and state.updated_at >= priority.source_time
+        ):
             return None
         if state is not None and state.metadata.get("overnight_session_date") == session_date:
             return None
@@ -300,6 +317,9 @@ class CandidateStateMachine:
                 "overnight_source_reason": priority.source_reason,
                 "overnight_source_memory_score": priority.capital_memory_score,
                 "overnight_source_buy_events": priority.independent_buy_events,
+                "overnight_setup_id": priority.setup_id,
+                "overnight_age_sessions": priority.age_sessions,
+                "overnight_expires_date": priority.expires_date,
                 "alert_eligible": False,
             },
         )
@@ -387,6 +407,9 @@ class CandidateStateMachine:
                 "overnight_source_date": priority.source_date,
                 "overnight_source_score": priority.score,
                 "overnight_source_price": priority.reference_price,
+                "overnight_setup_id": priority.setup_id,
+                "overnight_age_sessions": priority.age_sessions,
+                "overnight_expires_date": priority.expires_date,
                 "day_main_net": memory.day_main_net if memory is not None else 0.0,
                 "recent_15m_main_net": (
                     memory.recent_15m_main_net if memory is not None else 0.0

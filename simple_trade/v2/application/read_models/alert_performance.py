@@ -2,7 +2,10 @@
 
 import asyncio
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timedelta
+
+from ....utils.trade_time import HK_TIMEZONE, market_datetime
+from ...infrastructure.db_read import strict_reader
 
 from .alert_performance_metrics import (
     evaluate_alert,
@@ -13,13 +16,19 @@ from .alert_performance_records import (
     collapse_delivered,
     eligible_delivered,
 )
+from .alert_performance_tape import AlertPerformanceTapeReader
 
 VALID_SCOPES = {"candidates", "watching", "confirmed", "alerts"}
 
 
+def market_now() -> datetime:
+    return datetime.now(HK_TIMEZONE)
+
+
 class AlertPerformanceReader:
     def __init__(self, db) -> None:
-        self._db = db
+        self._db = strict_reader(db)
+        self._tape = AlertPerformanceTapeReader(self._db)
 
     async def history(
         self,
@@ -27,6 +36,7 @@ class AlertPerformanceReader:
         trade_date: str | None = None,
         scope: str = "candidates",
     ) -> dict:
+        as_of = market_now()
         selected_date = self._validated_date(trade_date)
         if scope not in VALID_SCOPES:
             raise ValueError(
@@ -38,17 +48,20 @@ class AlertPerformanceReader:
         else:
             alerts = await self._candidate_alerts(selected_date, scope=scope)
         if not alerts:
-            return self._empty(selected_date, scope, exclusions=exclusions)
+            return {**self._empty(selected_date, scope, exclusions=exclusions), "as_of": as_of.isoformat()}
 
         codes = sorted({item["stock_code"] for item in alerts})
-        names, klines, intraday, intraday_closes = await asyncio.gather(
+        names, klines, intraday, raw_tape = await asyncio.gather(
             self._names(codes),
             self._klines(codes, selected_date),
             self._intraday(codes, selected_date),
-            self._intraday_closes(codes, selected_date),
+            self._tape.read(alerts, as_of),
         )
         items = [
-            evaluate_alert(item, names, klines, intraday, intraday_closes)
+            evaluate_alert(
+                item, names, klines, intraday, {},
+                raw_tape=raw_tape.get(item["event_id"]), as_of=as_of,
+            )
             for item in alerts
         ]
         summary_by_version = {
@@ -59,6 +72,7 @@ class AlertPerformanceReader:
         }
         return {
             "trade_date": selected_date,
+            "as_of": as_of.isoformat(),
             "scope": scope,
             "items": items,
             "count": len(items),
@@ -85,10 +99,15 @@ class AlertPerformanceReader:
             "JOIN v2_trade_intents i ON i.source_event_id=e.event_id "
             "LEFT JOIN v2_outcomes o ON o.decision_event_id=e.event_id "
             "WHERE n.channel='WECHAT' AND n.status='DELIVERED' "
-            "AND substr(e.exchange_time,1,10)=? "
+            "AND e.exchange_time>=? AND e.exchange_time<? "
             "ORDER BY e.exchange_time, e.id",
-            (selected_date,),
+            self._date_bounds(selected_date),
         )
+        rows = [
+            row for row in rows
+            if (observed := market_datetime(row[3], str(row[2]))) is not None
+            and observed.date().isoformat() == selected_date
+        ]
         eligible, exclusions = eligible_delivered(rows)
         return collapse_delivered(eligible), exclusions
 
@@ -109,11 +128,14 @@ class AlertPerformanceReader:
             "WHERE e.event_type IN "
             "('CANDIDATE_ENTERED','CANDIDATE_UPDATED','BUY_CONFIRMED') "
             f"AND e.new_state IN ({placeholders}) "
-            "AND substr(e.exchange_time,1,10)=? "
+            "AND e.exchange_time>=? AND e.exchange_time<? "
             "ORDER BY e.exchange_time, e.id",
-            (*states, selected_date),
+            (*states, *self._date_bounds(selected_date)),
         )
-        return collapse_candidates(rows)
+        return [
+            item for item in collapse_candidates(rows)
+            if item["signal_date"] == selected_date
+        ]
 
     async def _names(self, codes: list[str]) -> dict[str, str]:
         placeholders = ",".join("?" for _ in codes)
@@ -163,32 +185,23 @@ class AlertPerformanceReader:
             ))
         return dict(result)
 
-    async def _intraday_closes(self, codes: list[str], trade_date: str) -> dict[str, float]:
-        placeholders = ",".join("?" for _ in codes)
-        rows = await self._query(
-            "SELECT t.stock_code, t.price FROM ticker_data t JOIN ("
-            "SELECT stock_code, MAX(id) AS last_id FROM ticker_data "
-            f"WHERE stock_code IN ({placeholders}) AND trade_date=? "
-            "GROUP BY stock_code) latest ON latest.last_id=t.id",
-            (*codes, trade_date),
-        )
-        return {
-            str(row[0]): float(row[1])
-            for row in rows
-            if row[1] is not None
-        }
-
     async def _query(self, sql: str, params: tuple = ()) -> list:
         return await asyncio.to_thread(self._db.execute_query, sql, params)
 
     @staticmethod
     def _validated_date(value: str | None) -> str:
         if value is None:
-            return date.today().isoformat()
+            return market_now().date().isoformat()
         try:
             return date.fromisoformat(value).isoformat()
         except ValueError as error:
             raise ValueError("交易日期必须是 YYYY-MM-DD") from error
+
+    @staticmethod
+    def _date_bounds(value: str) -> tuple[str, str]:
+        day = date.fromisoformat(value)
+        # Include UTC and market-local encodings, then filter by market date.
+        return ((day - timedelta(days=1)).isoformat(), (day + timedelta(days=1)).isoformat())
 
     @staticmethod
     def _empty(trade_date: str, scope: str, *, exclusions: dict) -> dict:

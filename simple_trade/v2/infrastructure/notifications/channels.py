@@ -1,7 +1,7 @@
 """V2 notification channels backed by existing WebSocket and WeChat services."""
 
 from ...domain.decisions import NotificationEvent
-from ...domain.enums import NotificationChannel, NotificationDeliveryResult
+from ...domain.enums import IntentType, NotificationChannel, NotificationDeliveryResult
 
 
 class UnifiedNotifier:
@@ -32,6 +32,8 @@ class UnifiedNotifier:
                     "message": event.message,
                     "exchange_time": event.exchange_time.isoformat(),
                     "strategy_version": event.strategy_version,
+                    "actionable": event.actionable,
+                    "intent_type": event.intent_type.value if event.intent_type else None,
                 },
             )
             return NotificationDeliveryResult.DELIVERED
@@ -50,16 +52,21 @@ class UnifiedNotifier:
                 SEND_SUPPRESSED,
             )
 
-            critical = "退出" in event.title or "止损" in event.title
-            level = AlertLevel.CRITICAL if critical else AlertLevel.INFO
+            sell = event.intent_type is IntentType.SELL
+            critical = event.actionable and sell
+            level = AlertLevel.CRITICAL if critical else AlertLevel.WARNING if sell else AlertLevel.INFO
+            # Approved actions have already passed V2 risk and idempotency checks.
+            # Observations must not consume their daily notification allowance.
+            priority = 100 if critical else 95 if event.actionable else 80 if sell else None
             outcome = await self._wechat.send_with_outcome(
                 level,
                 event.title,
                 event.message,
                 event.idempotency_key,
-                category="持仓风险" if critical else "交易信号",
+                category="持仓风险" if sell else "交易信号",
                 stock_code=event.stock_code,
-                priority=100 if critical else None,
+                priority=priority,
+                price=event.reference_price,
                 retry=attempt > 1,
             )
             if outcome == SEND_DELIVERED:

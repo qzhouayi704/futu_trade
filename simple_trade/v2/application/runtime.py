@@ -7,13 +7,14 @@ import logging
 import threading
 import time
 from typing import TYPE_CHECKING
+from ...utils.trading_calendar import get_trading_calendar
 
 if TYPE_CHECKING:
     from ...database.core.db_manager import DatabaseManager
 from ..config.models import V2Config
 from ..domain.enums import EventType, RuntimeMode
 from ..domain.events import DomainEvent, MarketEvent
-from ..domain.events import QuoteEvent
+from ..domain.events import QuoteEvent, TickEvent
 from ..domain.events import PositionReconciledEvent
 from ..infrastructure.capital_seed_loader import CapitalSeedLoader
 from ..infrastructure.futu_market_adapter import FutuAdapterStats, FutuMarketAdapter
@@ -89,6 +90,7 @@ class V2Runtime:
         frequency_guard=None,
         execution_port=None,
         candidate_subscription_port: CandidateSubscriptionPort | None = None,
+        trading_calendar=None,
     ) -> None:
         self.config = config or V2Config.from_env()
         self.event_bus = EventBus(self.config.event_bus_capacity)
@@ -110,7 +112,9 @@ class V2Runtime:
         )
         self.capital_seed_loader = CapitalSeedLoader(db)
         self.feature_reference_loader = FeatureReferenceLoader(db)
-        self.overnight_priority_loader = OvernightPriorityLoader(db)
+        self.overnight_priority_loader = OvernightPriorityLoader(
+            db, calendar=trading_calendar or get_trading_calendar(), strategy_version=self.config.strategy_version,
+        )
         self.ticker_replay_loader = TickerReplayLoader(db)
         self.dual_track = DualTrackScoreboard()
         self.candidate_coordinator = CandidateCoordinator(
@@ -178,6 +182,8 @@ class V2Runtime:
         self._reference_lock = threading.RLock()
         self._overnight_priority_signature: tuple[str, ...] = ()
         self._overnight_priority_loaded_for_date = ""
+        self.overnight_status = "NOT_LOADED"
+        self.overnight_updated_at: datetime | None = None
 
     async def start(self) -> bool:
         if not self.config.enabled:
@@ -218,6 +224,7 @@ class V2Runtime:
                 critical=False,
             )
         except Exception:
+            await self.event_bus.stop(drain=False)
             await self.notification_coordinator.stop(drain=False)
             self.notification_coordinator.unregister()
             await self.risk_coordinator.stop(drain=False)
@@ -232,6 +239,7 @@ class V2Runtime:
             self.candidate_subscription_coordinator.unregister()
             self.feature_engine.unregister()
             self.market_projector.unregister()
+            await self.supervisor.stop()
             self._loop = None
             raise
         self._started = True
@@ -433,8 +441,12 @@ class V2Runtime:
         try:
             now = datetime.now(timezone(timedelta(hours=8)))
             trade_date = now.date().isoformat()
-            replay_rows = await self.ticker_replay_loader.load(trade_date, now)
+            replay_rows = await self.ticker_replay_loader.load(
+                trade_date, now,
+                minimum_large_turnover=self.feature_engine.capital.minimum_large_threshold,
+            )
             replayed = 0
+            failures_before = self.event_bus.snapshot().handler_failures
             for row in replay_rows:
                 events = self.market_adapter.adapt_ticker(
                     row,
@@ -445,16 +457,21 @@ class V2Runtime:
                     while not self.event_bus.publish_nowait(event):
                         await self.event_bus.join()
                     replayed += 1
-                    replayed_codes.add(event.stock_code)
+                    if isinstance(event, TickEvent):
+                        replayed_codes.add(event.stock_code)
             if replayed:
                 await self.event_bus.join()
+                if self.event_bus.snapshot().handler_failures > failures_before:
+                    raise RuntimeError("V2 ticker recovery event processing failed")
                 logging.info(
                     "V2 replayed capital recovery ticks: events=%s stocks=%s",
                     replayed,
                     len(replayed_codes),
                 )
-        except Exception as error:
-            logging.warning("V2 recent ticker replay skipped: %s", error)
+        except Exception:
+            # Starting with a silently truncated or failed replay changes buy/sell decisions.
+            logging.exception("V2 ticker recovery failed; strategy startup stopped")
+            raise
         try:
             now = datetime.now(timezone(timedelta(hours=8)))
             trade_date = now.date().isoformat()
@@ -540,20 +557,25 @@ class V2Runtime:
         trade_date = now.date().isoformat()
         if self._overnight_priority_loaded_for_date == trade_date:
             return
+        # Old-day priorities cannot stay active while today's calendar/load is unknown.
+        self.candidate_coordinator.set_overnight_priorities(())
+        self.candidate_subscription_coordinator.prime(())
         try:
             priorities = await self.overnight_priority_loader.load(now)
         except Exception as error:
+            self.overnight_status = "UNAVAILABLE"
+            self.overnight_updated_at = now
             logging.warning("V2 overnight priority restore skipped: %s", error)
             return
         self._overnight_priority_loaded_for_date = trade_date
+        self.overnight_status = "READY" if self.overnight_priority_loader.market_open else "MARKET_CLOSED"
+        self.overnight_updated_at = now
         signature = tuple(
             f"{item.source_date}:{item.stock_code}:{item.source_time.isoformat()}"
             for item in priorities
         )
-        if signature == self._overnight_priority_signature:
-            return
         self._overnight_priority_signature = signature
-        self.candidate_coordinator.set_overnight_priorities(priorities)
+        self.candidate_coordinator.set_overnight_priorities(priorities, self.overnight_priority_loader.observations)
         self.candidate_subscription_coordinator.prime(
             tuple(item.stock_code for item in priorities)
         )

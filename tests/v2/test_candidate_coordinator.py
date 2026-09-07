@@ -5,6 +5,11 @@ from datetime import timedelta
 from simple_trade.v2.application.event_bus import EventBus
 from simple_trade.v2.application.strategy.coordinator import CandidateCoordinator
 from simple_trade.v2.application.strategy.dual_track import DualTrackScoreboard
+from simple_trade.v2.domain.candidates import (
+    OvernightObservation,
+    OvernightPriority,
+    OvernightStatus,
+)
 from simple_trade.v2.domain.decisions import DecisionEvent
 from simple_trade.v2.domain.enums import EventType
 from simple_trade.v2.domain.events import FeatureSnapshotEvent, MarketEvent
@@ -51,6 +56,77 @@ def feature_event(item, suffix: str) -> FeatureSnapshotEvent:
 
 
 class CandidateCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _overnight_observation(status: OvernightStatus) -> OvernightObservation:
+        priority = OvernightPriority(
+            stock_code="HK.00100",
+            source_date="2026-08-30",
+            source_time=NOW - timedelta(days=1),
+            score=75,
+            reference_price=100,
+            daily_percentile=0.25,
+            atr_percent=4,
+            capital_memory_score=70,
+            day_main_net=2_000_000,
+            independent_buy_events=3,
+            source_reason="FAST_15M_MULTI_INFLOW_CONFIRMED",
+            setup_id="setup-1",
+            eligible_date=NOW.date().isoformat(),
+            expires_date=(NOW + timedelta(days=2)).date().isoformat(),
+        )
+        return OvernightObservation(
+            priority=priority,
+            status=status,
+            reason_code="FLOW_CONFIRMATION_EXPIRED",
+            last_event_time=NOW - timedelta(minutes=1),
+        )
+
+    def test_regular_update_does_not_reactivate_suspended_overnight_observation(self) -> None:
+        stores = MemoryStores()
+        coordinator = CandidateCoordinator(stores, stores, strategy_version="test-v2")
+        observation = self._overnight_observation(OvernightStatus.SUSPENDED)
+        coordinator.set_overnight_priorities((observation.priority,), (observation,))
+
+        coordinator._update_overnight_observation(DecisionEvent(
+            event_type=EventType.CANDIDATE_UPDATED,
+            stock_code="HK.00100",
+            exchange_time=NOW,
+            received_time=NOW,
+            source="test",
+            strategy_version="test-v2",
+            old_state="WATCHING",
+            new_state="WATCHING",
+            reason_code="RANKING_REFRESH",
+        ))
+
+        current = coordinator.overnight_observations()[0]
+        self.assertEqual(current.status, OvernightStatus.SUSPENDED)
+        self.assertEqual(current.reason_code, "FLOW_CONFIRMATION_EXPIRED")
+
+    def test_hard_invalidation_removes_overnight_priority(self) -> None:
+        stores = MemoryStores()
+        coordinator = CandidateCoordinator(stores, stores, strategy_version="test-v2")
+        observation = self._overnight_observation(OvernightStatus.WATCHING)
+        coordinator.set_overnight_priorities((observation.priority,), (observation,))
+
+        coordinator._update_overnight_observation(DecisionEvent(
+            event_type=EventType.CANDIDATE_INVALIDATED,
+            stock_code="HK.00100",
+            exchange_time=NOW,
+            received_time=NOW,
+            source="test",
+            strategy_version="test-v2",
+            old_state="WATCHING",
+            new_state="INVALIDATED",
+            reason_code="PRICE_ACCEPTANCE_BROKEN",
+        ))
+
+        self.assertEqual(coordinator.overnight_priority_codes(), ())
+        self.assertEqual(
+            coordinator.overnight_observations()[0].status,
+            OvernightStatus.INVALIDATED,
+        )
+
     async def test_transitions_persist_traceable_snapshots_without_notifications(self) -> None:
         stores = MemoryStores()
         scoreboard = DualTrackScoreboard()

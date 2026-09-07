@@ -52,10 +52,7 @@ const reasonLabel: Record<string, string> = {
 };
 
 function localDateKey(): string {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${now.getFullYear()}-${month}-${day}`;
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Hong_Kong" }).format(new Date());
 }
 
 function ratio(value: number | null): string {
@@ -93,9 +90,12 @@ function PeriodCell({ value }: { value: V2AlertPeriodResult }) {
   ) {
     return <span className="text-xs text-muted-foreground">待观察</span>;
   }
+  const live = value.status === "LIVE";
+  const partial = value.status === "PARTIAL";
+  const current = live || partial ? value.latest_return_pct ?? null : value.close_return_pct;
   return <div className="min-w-24 space-y-0.5 tabular-nums">
-    <div className={`text-xs font-semibold ${tone(value.close_return_pct)}`}>
-      收盘 {pct(value.close_return_pct)}
+    <div className={`text-xs font-semibold ${tone(current)}`}>
+      {live ? "当前" : partial ? "末次可见" : "收盘"} {pct(current)}
     </div>
     <div className="text-[11px] text-muted-foreground">
       最好 <span className={tone(value.max_return_pct)}>{pct(value.max_return_pct)}</span>
@@ -104,10 +104,15 @@ function PeriodCell({ value }: { value: V2AlertPeriodResult }) {
       最差 <span className={tone(value.max_drawdown_pct)}>{pct(value.max_drawdown_pct)}</span>
     </div>
     <div className="text-[10px] text-muted-foreground">
-      {value.intraday_covered
-        ? "信号后逐笔统计"
+      {value.observed_through
+        ? `截至 ${clock(value.observed_through)}`
+        : value.intraday_covered ? "信号后分钟统计"
         : value.status === "OBSERVING" ? "盘中跟踪" : value.trading_day?.slice(5) || "待观察"}
     </div>
+    {value.observed_from && <div className="text-[10px] text-muted-foreground">
+      可见路径自 {clock(value.observed_from)} 起
+    </div>}
+    {partial && <div className="text-[10px] text-amber-700 dark:text-amber-400">待补收盘数据</div>}
   </div>;
 }
 
@@ -128,7 +133,7 @@ export function AlertPerformance() {
           <TrendingUp className="h-4 w-4 text-emerald-500" />预警后续表现
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          按进入所选阶段时的实际价格计算；最高与最低只使用信号发生后的逐笔数据。
+          按首次进入所选阶段的参考价计算；盘中结果尚未结算，未计交易费用。
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -177,7 +182,7 @@ export function AlertPerformance() {
           return <div key={horizon} className="border-l border-border px-3 py-3">
             <div className="text-[11px] text-muted-foreground">{horizon}日胜率 · {metric.completed_count}个已完成</div>
             <div className="mt-1 flex items-baseline gap-2"><strong className="text-lg tabular-nums">{ratio(metric.win_ratio)}</strong><span className={`text-xs ${tone(metric.mean_return_pct)}`}>均值 {pct(metric.mean_return_pct)}</span></div>
-            <div className="mt-1 text-[11px] text-muted-foreground">最高达到1.5%：{ratio(metric.reached_1_5_ratio)} · {metric.opportunity_count}个有完整路径</div>
+            <div className="mt-1 text-[11px] text-muted-foreground">最高达到1.5%：{ratio(metric.reached_1_5_ratio)} · {metric.opportunity_count}个有路径数据</div>
           </div>;
         })}
       </div>
@@ -208,7 +213,7 @@ export function AlertPerformance() {
         {!data.items.length && <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">所选日期没有符合当前范围的复盘样本</div>}
       </div>
       <div className="mt-2 text-right text-[11px] text-muted-foreground">
-        信号后有效逐笔覆盖 {data.intraday_coverage_count}/{data.count} · 策略版本 {Object.keys(data.summary_by_strategy_version).length} 个 · 后续日线更新至 {data.available_kline_through || "尚无可用交易日"}
+        信号后有路径数据 {data.intraday_coverage_count}/{data.count} · 策略版本 {Object.keys(data.summary_by_strategy_version).length} 个 · 后续日线更新至 {data.available_kline_through || "尚无可用交易日"}
       </div>
     </>}
   </section>;

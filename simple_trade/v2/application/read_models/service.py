@@ -4,6 +4,8 @@ import asyncio
 from dataclasses import asdict, is_dataclass
 import json
 from typing import Protocol
+from datetime import datetime
+from ....utils.trade_time import HK_TIMEZONE
 
 from ...domain.serialization import to_primitive
 from .alert_performance import AlertPerformanceReader
@@ -74,6 +76,38 @@ class V2ReadModelService:
         )
         items = [self._candidate_row(row) for row in rows]
         return {"items": items, "count": len(items)}
+
+    async def overnight_candidates(self) -> dict:
+        now = datetime.now(HK_TIMEZONE)
+        runtime = self._runtime
+        observations = runtime.candidate_coordinator.overnight_observations() if runtime else ()
+        selected = set(runtime.candidate_coordinator.overnight_priority_codes()) if runtime else set()
+        updated_at = getattr(runtime, "overnight_updated_at", None)
+        status = getattr(runtime, "overnight_status", "UNAVAILABLE")
+        if updated_at is not None and updated_at.astimezone(HK_TIMEZONE).date() != now.date():
+            status = "STALE"
+        codes = tuple(item.priority.stock_code for item in observations)
+        names = {}
+        if codes:
+            rows = await self._query(
+                f"SELECT code, COALESCE(name,'') FROM stocks WHERE code IN ({','.join('?' for _ in codes)})",
+                codes,
+            )
+            names = dict(rows)
+        items = [{
+            **to_primitive(item.priority), "stock_name": names.get(item.priority.stock_code, ""),
+            "status": item.status.value, "reason_code": item.reason_code,
+            "last_event_time": item.last_event_time.isoformat(),
+            "selected": status == "READY" and item.priority.stock_code in selected
+            and item.retained and item.priority.is_valid_on(now.date().isoformat()),
+        } for item in observations]
+        return {
+            "status": status, "trade_date": now.date().isoformat(),
+            "updated_at": updated_at.isoformat() if updated_at else None,
+            "items": items, "count": len(items),
+            "selected_count": sum(item["selected"] for item in items),
+            "max_sessions": 3, "alerts_enabled": False,
+        }
 
     async def candidate_history(
         self,

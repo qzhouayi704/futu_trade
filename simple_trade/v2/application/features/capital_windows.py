@@ -102,6 +102,11 @@ class CapitalWindowEngine:
     def windows(self) -> tuple[int, ...]:
         return self._windows
 
+    @property
+    def minimum_large_threshold(self) -> float:
+        with self._lock:
+            return min([self._threshold] + [item.large_order_threshold for item in self._baselines.values()])
+
     def qualifies(self, tick: TickTrade) -> bool:
         return (
             tick.direction in {TickDirection.BUY, TickDirection.SELL}

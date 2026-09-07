@@ -206,6 +206,8 @@ def overnight_priority() -> OvernightPriority:
         day_main_net=5_000_000,
         independent_buy_events=4,
         source_reason="CAPITAL_MEMORY_REVERSAL_WATCH",
+        eligible_date=NOW.date().isoformat(),
+        expires_date=(NOW + timedelta(days=2)).date().isoformat(),
     )
 
 

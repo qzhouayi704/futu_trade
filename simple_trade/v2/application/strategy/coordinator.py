@@ -1,12 +1,15 @@
 """Asynchronous shadow coordinator for candidate ranking and state persistence."""
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime
 import logging
 import threading
 from typing import Protocol
 
-from ...domain.candidates import OvernightPriority, TradeCandidate
+from ...domain.candidates import (
+    OVERNIGHT_HARD_INVALIDATIONS, OvernightObservation, OvernightPriority, OvernightStatus, TradeCandidate,
+)
 from ...domain.decisions import DecisionEvent, StrategyState
 from ...domain.enums import CandidateStatus, EventType, StrategyStatus
 from ...domain.events import FeatureSnapshotEvent
@@ -75,6 +78,7 @@ class CandidateCoordinator:
         self._states: dict[str, StrategyState] = {}
         self._latest: dict[str, TradeCandidate] = {}
         self._overnight_priorities: dict[str, OvernightPriority] = {}
+        self._overnight_observations: dict[str, OvernightObservation] = {}
         self._lock = threading.RLock()
         self._queued = 0
         self._dropped = 0
@@ -157,12 +161,38 @@ class CandidateCoordinator:
             )
 
     def set_overnight_priorities(
-        self, priorities: tuple[OvernightPriority, ...]
+        self, priorities: tuple[OvernightPriority, ...], observations: tuple[OvernightObservation, ...] = (),
     ) -> None:
         with self._lock:
             self._overnight_priorities = {
                 item.stock_code: item for item in priorities
             }
+            self._overnight_observations = {item.priority.stock_code: item for item in observations}
+
+    def overnight_observations(self) -> tuple[OvernightObservation, ...]:
+        with self._lock:
+            return tuple(self._overnight_observations.values())
+
+    def _update_overnight_observation(self, event: DecisionEvent) -> None:
+        with self._lock:
+            current = self._overnight_observations.get(event.stock_code)
+            if current is None or event.exchange_time < current.last_event_time or not current.retained:
+                return
+            if event.reason_code in OVERNIGHT_HARD_INVALIDATIONS:
+                status = OvernightStatus.INVALIDATED
+                self._overnight_priorities.pop(event.stock_code, None)
+            elif event.reason_code == "OVERNIGHT_PRIORITY_EXPIRED":
+                status = OvernightStatus.EXPIRED
+                self._overnight_priorities.pop(event.stock_code, None)
+            elif event.new_state == StrategyStatus.INVALIDATED.value:
+                status = OvernightStatus.SUSPENDED
+            elif event.reason_code.startswith("OVERNIGHT_PRIORITY_"):
+                status = OvernightStatus.WATCHING
+            else:
+                return
+            self._overnight_observations[event.stock_code] = replace(
+                current, status=status, reason_code=event.reason_code, last_event_time=event.exchange_time,
+            )
 
     def overnight_priority_codes(self) -> tuple[str, ...]:
         with self._lock:
@@ -267,6 +297,7 @@ class CandidateCoordinator:
             if proposal is not None and inserted:
                 state = new_state
                 status = new_state.status
+                self._update_overnight_observation(event)
                 with self._lock:
                     self._states[snapshot.stock_code] = new_state
                     self._transitions += 1
