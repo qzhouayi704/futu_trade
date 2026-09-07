@@ -10,6 +10,8 @@ class OutcomeEvaluator:
     CLOSE_CUTOFF = time(15, 55)
 
     def apply_quote(self, outcome: OutcomeRecord, quote: QuoteSnapshot) -> OutcomeRecord:
+        if quote.exchange_time < outcome.signal_time:
+            return outcome
         if quote.stock_code == outcome.control_stock_code:
             control_return = self._return_pct(quote.last_price, outcome.control_signal_price)
             return outcome.evolve(

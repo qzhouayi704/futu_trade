@@ -4,7 +4,11 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, RefreshCw, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { v2Api, type V2AlertPeriodResult } from "@/lib/api/v2";
+import {
+  v2Api,
+  type V2AlertPerformanceItem,
+  type V2AlertPeriodResult,
+} from "@/lib/api/v2";
 import { clock, pct, tone } from "./format";
 
 const horizons = ["1", "3", "5", "10"] as const;
@@ -19,6 +23,7 @@ const actionLabel: Record<string, string> = {
 const scopes = [
   { id: "candidates", label: "候选池" },
   { id: "watching", label: "资金观察" },
+  { id: "confirmed", label: "买点确认" },
   { id: "alerts", label: "正式预警" },
 ] as const;
 
@@ -57,6 +62,29 @@ function ratio(value: number | null): string {
   return value == null ? "待观察" : `${(value * 100).toFixed(1)}%`;
 }
 
+function versionLabel(value: string): string {
+  const revision = value.split("-").at(-1) || value;
+  return `策略版本 ${revision.slice(0, 8)}`;
+}
+
+function reminderLabel(item: V2AlertPerformanceItem): string {
+  if (item.action === "CANDIDATE" && item.entry_stage === "CONFIRMED") {
+    return "买点确认";
+  }
+  return actionLabel[item.action] || "交易提醒";
+}
+
+function stagePath(item: V2AlertPerformanceItem): string {
+  return (["SETUP", "WATCHING", "CONFIRMED"] as const)
+    .flatMap((stage) => {
+      const point = item.stage_points[stage];
+      return point
+        ? [`${stageLabel[stage]} ${clock(point.time)} / ${point.price.toFixed(3)}`]
+        : [];
+    })
+    .join(" · ");
+}
+
 function PeriodCell({ value }: { value: V2AlertPeriodResult }) {
   if (
     value.status === "PENDING" &&
@@ -76,8 +104,8 @@ function PeriodCell({ value }: { value: V2AlertPeriodResult }) {
       最差 <span className={tone(value.max_drawdown_pct)}>{pct(value.max_drawdown_pct)}</span>
     </div>
     <div className="text-[10px] text-muted-foreground">
-      {value.source === "TICKER_MINUTE"
-        ? "逐笔分钟统计"
+      {value.intraday_covered
+        ? "信号后逐笔统计"
         : value.status === "OBSERVING" ? "盘中跟踪" : value.trading_day?.slice(5) || "待观察"}
     </div>
   </div>;
@@ -100,7 +128,7 @@ export function AlertPerformance() {
           <TrendingUp className="h-4 w-4 text-emerald-500" />预警后续表现
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          按首次进入所选阶段时的价格计算；同一股票当天后续升级合并统计。
+          按进入所选阶段时的实际价格计算；最高与最低只使用信号发生后的逐笔数据。
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -149,9 +177,14 @@ export function AlertPerformance() {
           return <div key={horizon} className="border-l border-border px-3 py-3">
             <div className="text-[11px] text-muted-foreground">{horizon}日胜率 · {metric.completed_count}个已完成</div>
             <div className="mt-1 flex items-baseline gap-2"><strong className="text-lg tabular-nums">{ratio(metric.win_ratio)}</strong><span className={`text-xs ${tone(metric.mean_return_pct)}`}>均值 {pct(metric.mean_return_pct)}</span></div>
+            <div className="mt-1 text-[11px] text-muted-foreground">最高达到1.5%：{ratio(metric.reached_1_5_ratio)} · {metric.opportunity_count}个有完整路径</div>
           </div>;
         })}
       </div>
+
+      {data.excluded.total > 0 && <div className="mt-3 border-l-2 border-amber-500 bg-amber-500/8 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+        已排除 {data.excluded.total} 条无效正式预警：风控未通过 {data.excluded.by_reason.RISK_NOT_APPROVED || 0} 条，非正常交易时段 {data.excluded.by_reason.OUTSIDE_REGULAR_SESSION || 0} 条。
+      </div>}
 
       <div className="mt-3 overflow-x-auto border-y border-border">
         <table className="w-full min-w-[1280px] text-left">
@@ -163,10 +196,10 @@ export function AlertPerformance() {
             {horizons.map((horizon) => <th key={horizon} className="px-3 py-2 font-medium">{horizon}个交易日</th>)}
           </tr></thead>
           <tbody className="divide-y divide-border/70 text-xs">
-            {data.items.map((item) => <tr key={`${item.signal_date}-${item.stock_code}-${item.action}`} className="align-top">
+            {data.items.map((item) => <tr key={`${item.signal_date}-${item.stock_code}-${item.action}-${item.strategy_version}`} className="align-top">
               <td className="px-3 py-3"><div className="font-semibold">{item.stock_name || item.stock_code}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{item.stock_code}</div></td>
-              <td className="px-3 py-3"><div className="font-medium">{actionLabel[item.action] || "交易提醒"}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{stageLabel[item.entry_stage]} → {stageLabel[item.max_stage]}</div><div className="mt-1 max-w-52 text-[11px] text-muted-foreground" title={reasonLabel[item.reason_code] || item.reason_code}>{reasonLabel[item.reason_code] || "系统交易条件确认"}</div></td>
-              <td className="px-3 py-3 tabular-nums"><div className="font-semibold">{item.signal_price.toFixed(3)}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{clock(item.signal_time)} · {item.alert_count}次</div><div className="text-[11px] text-muted-foreground">{item.risk_result === "NOT_REQUIRED" ? "候选跟踪" : `风控 ${item.risk_result === "APPROVED" ? "通过" : "受限"}`}</div></td>
+              <td className="px-3 py-3"><div className="font-medium">{reminderLabel(item)}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{stageLabel[item.entry_stage]} → {stageLabel[item.max_stage]}</div><div className="mt-1 max-w-72 text-[11px] text-muted-foreground">{stagePath(item)}</div><div className="mt-1 max-w-72 text-[11px] text-muted-foreground" title={reasonLabel[item.reason_code] || item.reason_code}>{reasonLabel[item.reason_code] || "系统交易条件确认"}</div></td>
+              <td className="px-3 py-3 tabular-nums"><div className="font-semibold">{item.signal_price.toFixed(3)}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{stageLabel[item.entry_stage]} · {clock(item.signal_time)} · {item.alert_count}次</div><div className="text-[11px] text-muted-foreground">{item.risk_result === "NOT_REQUIRED" ? "候选跟踪" : `风控 ${item.risk_result === "APPROVED" ? "通过" : "受限"}`}</div><div className="text-[10px] text-muted-foreground">{versionLabel(item.strategy_version)}</div></td>
               <td className="px-3 py-3"><PeriodCell value={item.same_day} /></td>
               {horizons.map((horizon) => <td key={horizon} className="px-3 py-3"><PeriodCell value={item.periods[horizon]} /></td>)}
             </tr>)}
@@ -175,7 +208,7 @@ export function AlertPerformance() {
         {!data.items.length && <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">所选日期没有符合当前范围的复盘样本</div>}
       </div>
       <div className="mt-2 text-right text-[11px] text-muted-foreground">
-        当日逐笔覆盖 {data.intraday_coverage_count}/{data.count} · 后续日线更新至 {data.available_kline_through || "尚无可用交易日"}
+        信号后有效逐笔覆盖 {data.intraday_coverage_count}/{data.count} · 策略版本 {Object.keys(data.summary_by_strategy_version).length} 个 · 后续日线更新至 {data.available_kline_through || "尚无可用交易日"}
       </div>
     </>}
   </section>;

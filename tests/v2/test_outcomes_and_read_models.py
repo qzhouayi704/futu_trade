@@ -36,6 +36,20 @@ class MemoryOutcomeStore:
 
 
 class OutcomeEvaluatorTests(unittest.TestCase):
+    def test_ignores_quote_older_than_signal(self) -> None:
+        signal_time = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+        outcome = OutcomeRecord(
+            decision_event_id="buy-stale", stock_code="HK.00100",
+            strategy_version="v2", signal_time=signal_time, signal_price=100,
+        )
+
+        result = OutcomeEvaluator().apply_quote(
+            outcome,
+            make_quote("HK.00100", signal_time - timedelta(minutes=1), 95, 95, 95),
+        )
+
+        self.assertEqual(result, outcome)
+
     def test_tracks_mfe_mae_milestones_close_and_next_day(self) -> None:
         signal_time = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
         outcome = OutcomeRecord(

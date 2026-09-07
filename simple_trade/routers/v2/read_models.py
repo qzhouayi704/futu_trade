@@ -122,7 +122,10 @@ async def get_outcome_distribution(container=Depends(get_container)):
 @router.get("/outcomes/alert-performance", response_model=APIResponse)
 async def get_alert_performance(
     trade_date: str | None = Query(default=None),
-    scope: str = Query(default="candidates", pattern="^(candidates|watching|alerts)$"),
+    scope: str = Query(
+        default="candidates",
+        pattern="^(candidates|watching|confirmed|alerts)$",
+    ),
     container=Depends(get_container),
 ):
     service = _service(container)

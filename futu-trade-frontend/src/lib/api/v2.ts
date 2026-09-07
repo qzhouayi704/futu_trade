@@ -169,6 +169,7 @@ export interface V2AlertPeriodResult {
   max_return_pct: number | null;
   max_drawdown_pct: number | null;
   source?: "OUTCOME" | "DAILY_KLINE" | "TICKER_MINUTE" | null;
+  intraday_covered?: boolean;
 }
 
 export interface V2AlertPerformanceItem {
@@ -187,6 +188,11 @@ export interface V2AlertPerformanceItem {
   risk_result: string;
   entry_stage: "SETUP" | "WATCHING" | "CONFIRMED";
   max_stage: "SETUP" | "WATCHING" | "CONFIRMED";
+  stage_points: Partial<Record<"SETUP" | "WATCHING" | "CONFIRMED", {
+    time: string;
+    price: number;
+    reason_code: string;
+  }>>;
   delivered_at: string | null;
   alert_count: number;
   same_day: V2AlertPeriodResult;
@@ -196,20 +202,37 @@ export interface V2AlertPerformanceItem {
 
 export interface V2AlertPerformance {
   trade_date: string;
-  scope: "candidates" | "watching" | "alerts";
+  scope: "candidates" | "watching" | "confirmed" | "alerts";
   items: V2AlertPerformanceItem[];
   count: number;
   available_kline_through: string | null;
   intraday_coverage_count: number;
+  excluded: {
+    total: number;
+    by_reason: Record<string, number>;
+  };
   summary: {
     alert_count: number;
-    periods: Record<"1" | "3" | "5" | "10", {
-      completed_count: number;
-      win_count: number;
-      win_ratio: number | null;
-      mean_return_pct: number | null;
-    }>;
+    same_day: V2AlertPerformanceMetric;
+    periods: Record<"1" | "3" | "5" | "10", V2AlertPerformanceMetric>;
   };
+  summary_by_strategy_version: Record<string, {
+    alert_count: number;
+    same_day: V2AlertPerformanceMetric;
+    periods: Record<"1" | "3" | "5" | "10", V2AlertPerformanceMetric>;
+  }>;
+}
+
+interface V2AlertPerformanceMetric {
+  completed_count: number;
+  win_count: number;
+  win_ratio: number | null;
+  mean_return_pct: number | null;
+  opportunity_count: number;
+  reached_1_5_count: number;
+  reached_1_5_ratio: number | null;
+  mean_max_return_pct: number | null;
+  mean_max_drawdown_pct: number | null;
 }
 
 interface DistributionMetric {
@@ -336,7 +359,7 @@ export const v2Api = {
   distribution: () => getData<V2Distribution>("/v2/outcomes/distribution"),
   alertPerformance: (
     tradeDate: string,
-    scope: "candidates" | "watching" | "alerts",
+    scope: "candidates" | "watching" | "confirmed" | "alerts",
   ) =>
     getData<V2AlertPerformance>(
       `/v2/outcomes/alert-performance?trade_date=${encodeURIComponent(tradeDate)}&scope=${scope}`,
