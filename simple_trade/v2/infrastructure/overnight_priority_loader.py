@@ -53,6 +53,7 @@ class OvernightPriorityLoader:
     MAX_ITEMS = 30
     MAX_SESSIONS = 3
     ROW_LIMIT = 30_000
+    READ_TIMEOUT_SECONDS = 15.0
     ENGAGED_STATES = {"SETUP", "WATCHING", "CONFIRMED"}
     POSITIVE_MEMORY_STATES = {"ABSORBING", "REVERSING", "ACCUMULATING"}
     LATE_OUTFLOW_REASONS = {
@@ -65,7 +66,7 @@ class OvernightPriorityLoader:
         self, db: OvernightPriorityDatabasePort, *, calendar: TradingDayCalendarPort | None = None,
         strategy_version: str | None = None,
     ) -> None:
-        self._db = strict_reader(db)
+        self._db = strict_reader(db, timeout_seconds=self.READ_TIMEOUT_SECONDS)
         self._calendar = calendar
         self._strategy_version = strategy_version
         self.observations: tuple[OvernightObservation, ...] = ()

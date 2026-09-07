@@ -260,6 +260,18 @@ class OvernightPriorityLoaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0].setup_id, "event-real-sqlite")
         self.assertEqual(result[0].independent_buy_events, 3)
 
+    def test_file_database_uses_overnight_specific_read_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "overnight.db"
+            sqlite3.connect(path).close()
+
+            subject = OvernightPriorityLoader(
+                type("Database", (), {"database_path": path})(),
+                calendar=FixedCalendar(),
+            )
+
+        self.assertEqual(subject._db._timeout, subject.READ_TIMEOUT_SECONDS)
+
 
 if __name__ == "__main__":
     unittest.main()
