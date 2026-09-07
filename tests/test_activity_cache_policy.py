@@ -126,6 +126,7 @@ def test_subscription_cleanup_requires_two_inactive_refreshes():
         realtime_activity_filter={'demotion_confirmation_cycles': 2}
     )
     helper.priority_stocks = set()
+    helper.candidate_priority_stocks = set()
     helper._inactive_refresh_counts = {}
     helper.subscription_manager = MagicMock()
     helper.subscription_manager.subscribed_stocks = {'HK.OLD', 'HK.KEEP'}

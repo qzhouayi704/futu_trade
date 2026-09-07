@@ -84,6 +84,8 @@ class AsyncQuotePusher:
 
         try:
             flow = get_flow_logger("行情推送启动")
+            initial_subscription_pending = False
+            initial_subscription_message = ""
 
             # 检查是否已有订阅
             subscribed_count = self.container.subscription_manager.subscribed_count
@@ -104,26 +106,34 @@ class AsyncQuotePusher:
                 )
 
                 if not subscription_result['success']:
-                    flow.error("订阅失败", reason=subscription_result['message'])
-                    result['message'] = f"股票订阅失败: {subscription_result['message']}"
-                    flow.end(success=False)
-                    return result
-
-                subscribed_count = subscription_result.get('subscribed_count', 0)
-
-                # 竞态保护：如果自己的订阅返回0，但其他路径（如系统协调器）
-                # 已在并行完成订阅，使用实际订阅数
-                if subscribed_count == 0:
-                    actual_count = self.container.subscription_manager.subscribed_count
-                    if actual_count > 0:
-                        subscribed_count = actual_count
-                        flow.step("使用已有订阅", count=actual_count)
-                    else:
-                        flow.step("订阅完成", count=0,
-                                  markets=','.join(current_markets))
+                    initial_subscription_pending = True
+                    initial_subscription_message = subscription_result['message']
+                    subscribed_count = self.container.subscription_manager.subscribed_count
+                    flow.step(
+                        "订阅待恢复",
+                        count=subscribed_count,
+                        reason=initial_subscription_message,
+                    )
+                    logging.warning(
+                        "【行情推送】初始订阅未完成，推送循环继续运行并将在开盘后自动重试: %s",
+                        initial_subscription_message,
+                    )
                 else:
-                    flow.step("订阅完成", count=subscribed_count,
-                              markets=','.join(current_markets))
+                    subscribed_count = subscription_result.get('subscribed_count', 0)
+
+                    # 竞态保护：如果自己的订阅返回0，但其他路径（如系统协调器）
+                    # 已在并行完成订阅，使用实际订阅数
+                    if subscribed_count == 0:
+                        actual_count = self.container.subscription_manager.subscribed_count
+                        if actual_count > 0:
+                            subscribed_count = actual_count
+                            flow.step("使用已有订阅", count=actual_count)
+                        else:
+                            flow.step("订阅完成", count=0,
+                                      markets=','.join(current_markets))
+                    else:
+                        flow.step("订阅完成", count=subscribed_count,
+                                  markets=','.join(current_markets))
 
             # 启动推送任务
             self.is_running = True
@@ -134,9 +144,19 @@ class AsyncQuotePusher:
             self.push_task = asyncio.create_task(self._push_loop())
 
             result['success'] = True
-            result['message'] = f"行情推送服务已启动，订阅 {subscribed_count} 只股票"
+            if initial_subscription_pending:
+                result['message'] = (
+                    f"行情推送服务已启动，当前订阅 {subscribed_count} 只股票；"
+                    f"等待交易时段自动恢复: {initial_subscription_message}"
+                )
+            else:
+                result['message'] = f"行情推送服务已启动，订阅 {subscribed_count} 只股票"
             result['subscribed_count'] = subscribed_count
-            flow.end(success=True, subscribed=subscribed_count)
+            flow.end(
+                success=True,
+                subscribed=subscribed_count,
+                pending=initial_subscription_pending,
+            )
 
         except Exception as e:
             result['message'] = f"行情推送服务启动异常: {str(e)}"

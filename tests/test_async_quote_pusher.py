@@ -58,6 +58,40 @@ async def test_start_with_existing_subscriptions_starts_push_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_start_with_empty_after_hours_subscription_keeps_recovery_loop_alive(monkeypatch):
+    pusher, _ = _make_pusher()
+    pusher.container.futu_client = SimpleNamespace(is_available=lambda: True)
+    pusher.container.subscription_manager = SimpleNamespace(subscribed_count=0)
+    pusher.container.subscription_helper = SimpleNamespace(
+        subscribe_target_stocks=MagicMock(return_value={
+            "success": False,
+            "message": "活跃度筛选后无股票，保留现有 0 只订阅",
+            "subscribed_count": 0,
+        })
+    )
+    pusher._push_loop = AsyncMock()
+    monkeypatch.setattr(
+        "simple_trade.services.core.async_quote_pusher."
+        "MarketTimeHelper.get_current_active_markets",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "simple_trade.services.core.async_quote_pusher."
+        "MarketTimeHelper.get_primary_market",
+        lambda: "HK",
+    )
+
+    result = await pusher.start()
+    await pusher.push_task
+
+    assert result["success"] is True
+    assert result["subscribed_count"] == 0
+    assert "等待交易时段自动恢复" in result["message"]
+    pusher.container.subscription_helper.subscribe_target_stocks.assert_called_once_with(["HK"])
+    pusher._push_loop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_scored_anomaly_broadcasts_and_forwards_trade_signal():
     pusher, socket_manager = _make_pusher()
     pusher._try_create_anomaly_trades = MagicMock()
