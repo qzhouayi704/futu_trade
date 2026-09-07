@@ -10,15 +10,12 @@ import {
   type V2AlertPeriodResult,
 } from "@/lib/api/v2";
 import { clock, pct, tone } from "./format";
+import {
+  lifecycleCounts, permissionText, signalHeadline, stageText, statusText,
+  strategySourceLabel, strategySourcesText,
+} from "./signal-lifecycle";
 
 const horizons = ["1", "3", "5", "10"] as const;
-
-const actionLabel: Record<string, string> = {
-  CANDIDATE: "进入候选",
-  BUY: "买入提醒",
-  SELL: "卖出提醒",
-  ROTATE: "换入提醒",
-};
 
 const scopes = [
   { id: "candidates", label: "候选池" },
@@ -28,12 +25,6 @@ const scopes = [
 ] as const;
 
 type PerformanceScope = (typeof scopes)[number]["id"];
-
-const stageLabel: Record<string, string> = {
-  SETUP: "候选准备",
-  WATCHING: "资金观察",
-  CONFIRMED: "买点确认",
-};
 
 const reasonLabel: Record<string, string> = {
   LOW_POSITION_15M_ACCUMULATION_CONFIRMED: "低位15分钟资金吸收确认",
@@ -64,19 +55,12 @@ function versionLabel(value: string): string {
   return `策略版本 ${revision.slice(0, 8)}`;
 }
 
-function reminderLabel(item: V2AlertPerformanceItem): string {
-  if (item.action === "CANDIDATE" && item.entry_stage === "CONFIRMED") {
-    return "买点确认";
-  }
-  return actionLabel[item.action] || "交易提醒";
-}
-
 function stagePath(item: V2AlertPerformanceItem): string {
   return (["SETUP", "WATCHING", "CONFIRMED"] as const)
     .flatMap((stage) => {
       const point = item.stage_points[stage];
       return point
-        ? [`${stageLabel[stage]} ${clock(point.time)} / ${point.price.toFixed(3)}`]
+        ? [`${stageText[stage]} ${clock(point.time)} / ${point.price.toFixed(3)}`]
         : [];
     })
     .join(" · ");
@@ -127,6 +111,7 @@ export function AlertPerformance() {
     refetchInterval: 60_000,
   });
   const data = query.data;
+  const lifecycle = data ? lifecycleCounts(data) : null;
 
   return <section>
     <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
@@ -194,6 +179,34 @@ export function AlertPerformance() {
         已排除 {data.excluded.total} 条无效正式预警：风控未通过 {data.excluded.by_reason.RISK_NOT_APPROVED || 0} 条，非正常交易时段 {data.excluded.by_reason.OUTSIDE_REGULAR_SESSION || 0} 条。
       </div>}
 
+      {lifecycle && <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-y border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+        <span>当前有效 <strong className="text-foreground">{lifecycle.active}</strong></span>
+        <span>当前已失效 <strong className="text-foreground">{lifecycle.invalidated}</strong></span>
+        <span>当日曾确认 <strong className="text-foreground">{lifecycle.confirmed}</strong></span>
+        <span>正式提醒资格或已送达 <strong className="text-foreground">{lifecycle.formal}</strong></span>
+      </div>}
+
+      {Object.keys(data.summary_by_strategy_source).length > 0 && <div className="mt-3 overflow-x-auto border-y border-border">
+        <table className="w-full min-w-[680px] text-left text-xs">
+          <thead className="bg-muted/25 text-[11px] text-muted-foreground"><tr>
+            <th className="px-3 py-2 font-medium">基准时策略</th>
+            <th className="px-3 py-2 font-medium">样本</th>
+            <th className="px-3 py-2 font-medium">当日平均涨跌</th>
+            <th className="px-3 py-2 font-medium">当日达到1.5%</th>
+            <th className="px-3 py-2 font-medium">1日平均涨跌</th>
+          </tr></thead>
+          <tbody className="divide-y divide-border/70">
+            {Object.entries(data.summary_by_strategy_source).map(([source, summary]) => <tr key={source}>
+              <td className="px-3 py-2 font-medium">{strategySourceLabel(source)}</td>
+              <td className="px-3 py-2 tabular-nums">{summary.alert_count}</td>
+              <td className={`px-3 py-2 tabular-nums ${tone(summary.same_day.mean_return_pct)}`}>{pct(summary.same_day.mean_return_pct)}</td>
+              <td className="px-3 py-2 tabular-nums">{ratio(summary.same_day.reached_1_5_ratio)}</td>
+              <td className={`px-3 py-2 tabular-nums ${tone(summary.periods["1"].mean_return_pct)}`}>{pct(summary.periods["1"].mean_return_pct)}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </div>}
+
       <div className="mt-3 overflow-x-auto border-y border-border">
         <table className="w-full min-w-[1280px] text-left">
           <thead className="bg-muted/35 text-[11px] text-muted-foreground"><tr>
@@ -206,8 +219,8 @@ export function AlertPerformance() {
           <tbody className="divide-y divide-border/70 text-xs">
             {data.items.map((item) => <tr key={`${item.signal_date}-${item.stock_code}-${item.action}-${item.strategy_version}`} className="align-top">
               <td className="px-3 py-3"><div className="font-semibold">{item.stock_name || item.stock_code}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{item.stock_code}</div></td>
-              <td className="px-3 py-3"><div className="font-medium">{reminderLabel(item)}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{stageLabel[item.entry_stage]} → {stageLabel[item.max_stage]}</div><div className="mt-1 max-w-72 text-[11px] text-muted-foreground">{stagePath(item)}</div><div className="mt-1 max-w-72 text-[11px] text-muted-foreground" title={reasonLabel[item.reason_code] || item.reason_code}>{reasonLabel[item.reason_code] || "系统交易条件确认"}</div></td>
-              <td className="px-3 py-3 tabular-nums"><div className="font-semibold">{item.signal_price.toFixed(3)}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{stageLabel[item.entry_stage]} · {clock(item.signal_time)} · {item.alert_count}次</div><div className="text-[11px] text-muted-foreground">{item.risk_result === "NOT_REQUIRED" ? "候选跟踪" : `风控 ${item.risk_result === "APPROVED" ? "通过" : "受限"}`}</div><div className="text-[10px] text-muted-foreground">{versionLabel(item.strategy_version)}</div></td>
+              <td className="px-3 py-3"><div className="font-medium">{signalHeadline(item)}</div><div className="mt-0.5 text-[11px] text-muted-foreground">当前：{statusText[item.current_status]} · {permissionText[item.alert_permission]}</div><div className="mt-0.5 text-[11px] text-muted-foreground">首次 {stageText[item.entry_stage]} → 最高 {stageText[item.max_stage]}</div><div className="mt-0.5 max-w-72 text-[11px] text-muted-foreground">基准时策略：{strategySourcesText(item.strategy_sources)}</div><div className="mt-1 max-w-72 text-[11px] text-muted-foreground">{stagePath(item)}</div><div className="mt-1 max-w-72 text-[11px] text-muted-foreground" title={reasonLabel[item.current_reason_code] || item.current_reason_code}>{reasonLabel[item.current_reason_code] || "查看当前判断详情"}</div></td>
+              <td className="px-3 py-3 tabular-nums"><div className="font-semibold">{item.signal_price.toFixed(3)}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{stageText[item.entry_stage]} · {clock(item.signal_time)} · {item.alert_count}次</div><div className="text-[11px] text-muted-foreground">状态更新 {clock(item.current_state_time)}</div><div className="text-[11px] text-muted-foreground">{item.risk_result === "NOT_REQUIRED" ? "候选跟踪" : `风控 ${item.risk_result === "APPROVED" ? "通过" : "受限"}`}</div><div className="text-[10px] text-muted-foreground">{versionLabel(item.strategy_version)}</div></td>
               <td className="px-3 py-3"><PeriodCell value={item.same_day} /></td>
               {horizons.map((horizon) => <td key={horizon} className="px-3 py-3"><PeriodCell value={item.periods[horizon]} /></td>)}
             </tr>)}

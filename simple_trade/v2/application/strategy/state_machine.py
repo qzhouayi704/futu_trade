@@ -16,7 +16,7 @@ from .portfolio import CandidateSignalRules
 
 
 class CandidateStateMachine:
-    FAST_WINDOW_SECONDS = 900
+    FAST_WINDOW_SECONDS = CandidateSignalRules.FLOW_WINDOW_SECONDS
     SLOW_WINDOW_SECONDS = 3600
     MIN_FAST_EVENT_SPAN_SECONDS = 300
     MIN_SLOW_EVENT_SPAN_SECONDS = 600

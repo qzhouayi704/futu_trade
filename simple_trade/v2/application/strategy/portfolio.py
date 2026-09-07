@@ -15,10 +15,22 @@ from .models import (
 
 
 class CandidateSignalRules:
+    FLOW_WINDOW_SECONDS = 900
     LOW_POSITION_MAX_PERCENTILE = 0.50
     MIN_MARKET_BREADTH = 0.40
     ENTRY_CUTOFF = time(11, 30)
     MEMORY_WATCH_CUTOFF = time(15, 15)
+    ABSORPTION_MIN_BUY_EVENTS = 3
+    ABSORPTION_MIN_EVENT_SPAN_SECONDS = 600
+    ABSORPTION_MIN_THRESHOLD_MULTIPLE = 3.0
+    ABSORPTION_MIN_SCALE_MULTIPLE = 1.0
+    ABSORPTION_MIN_BUY_RATIO = 0.65
+    MOMENTUM_MIN_BUY_EVENTS = 3
+    MOMENTUM_MIN_EVENT_SPAN_SECONDS = 600
+    MOMENTUM_MIN_THRESHOLD_MULTIPLE = 3.0
+    MOMENTUM_MIN_SCALE_MULTIPLE = 1.25
+    MOMENTUM_MIN_BUY_RATIO = 0.80
+    MOMENTUM_MIN_DAILY_CHANGE = 3.0
     MOMENTUM_MIN_RELATIVE_STRENGTH = 1.5
     MOMENTUM_MIN_ACTIVITY_PERCENTILE = 0.70
     MOMENTUM_MAX_EXTENSION_ATR = 1.0
@@ -27,7 +39,10 @@ class CandidateSignalRules:
     STRONG_TREND_MIN_RELATIVE_STRENGTH = 2.0
     STRONG_TREND_MIN_ACTIVITY_PERCENTILE = 0.70
     STRONG_TREND_MIN_MEMORY_SCORE = 65.0
+    STRONG_TREND_MIN_BUY_EVENTS = 3
     STRONG_TREND_MIN_EVENT_SPAN_SECONDS = 120
+    STRONG_TREND_MIN_THRESHOLD_MULTIPLE = 4.0
+    STRONG_TREND_MIN_SCALE_MULTIPLE = 1.5
     STRONG_TREND_MIN_BUY_RATIO = 0.72
     MOMENTUM_SOFT_UNIVERSE_REASONS = {
         "TURNOVER_RANK_NOT_HOT",
@@ -49,10 +64,16 @@ class CandidateSignalRules:
         threshold = window.large_order_threshold or 100_000.0
         scale = window.flow_scale or threshold
         return bool(
-            window.independent_buy_events >= 3
-            and window.independent_buy_span_seconds >= 600
-            and window.main_net >= max(3.0 * threshold, scale)
-            and (window.buy_sell_ratio or 0.0) >= 0.65
+            window.independent_buy_events
+            >= CandidateSignalRules.ABSORPTION_MIN_BUY_EVENTS
+            and window.independent_buy_span_seconds
+            >= CandidateSignalRules.ABSORPTION_MIN_EVENT_SPAN_SECONDS
+            and window.main_net >= max(
+                CandidateSignalRules.ABSORPTION_MIN_THRESHOLD_MULTIPLE * threshold,
+                CandidateSignalRules.ABSORPTION_MIN_SCALE_MULTIPLE * scale,
+            )
+            and (window.buy_sell_ratio or 0.0)
+            >= CandidateSignalRules.ABSORPTION_MIN_BUY_RATIO
             and not CandidateSignalRules.outflow_offsets_inflow(window)
         )
 
@@ -63,10 +84,16 @@ class CandidateSignalRules:
         threshold = window.large_order_threshold or 100_000.0
         scale = window.flow_scale or threshold
         return bool(
-            window.independent_buy_events >= 3
-            and window.independent_buy_span_seconds >= 600
-            and window.main_net >= max(3.0 * threshold, 1.25 * scale)
-            and (window.buy_sell_ratio or 0.0) >= 0.80
+            window.independent_buy_events
+            >= CandidateSignalRules.MOMENTUM_MIN_BUY_EVENTS
+            and window.independent_buy_span_seconds
+            >= CandidateSignalRules.MOMENTUM_MIN_EVENT_SPAN_SECONDS
+            and window.main_net >= max(
+                CandidateSignalRules.MOMENTUM_MIN_THRESHOLD_MULTIPLE * threshold,
+                CandidateSignalRules.MOMENTUM_MIN_SCALE_MULTIPLE * scale,
+            )
+            and (window.buy_sell_ratio or 0.0)
+            >= CandidateSignalRules.MOMENTUM_MIN_BUY_RATIO
             and not CandidateSignalRules.outflow_offsets_inflow(window)
         )
 
@@ -77,10 +104,14 @@ class CandidateSignalRules:
         threshold = window.large_order_threshold or 100_000.0
         scale = window.flow_scale or threshold
         return bool(
-            window.independent_buy_events >= 3
+            window.independent_buy_events
+            >= CandidateSignalRules.STRONG_TREND_MIN_BUY_EVENTS
             and window.independent_buy_span_seconds
             >= CandidateSignalRules.STRONG_TREND_MIN_EVENT_SPAN_SECONDS
-            and window.main_net >= max(4.0 * threshold, 1.5 * scale)
+            and window.main_net >= max(
+                CandidateSignalRules.STRONG_TREND_MIN_THRESHOLD_MULTIPLE * threshold,
+                CandidateSignalRules.STRONG_TREND_MIN_SCALE_MULTIPLE * scale,
+            )
             and (window.buy_sell_ratio or 0.0)
             >= CandidateSignalRules.STRONG_TREND_MIN_BUY_RATIO
             and not CandidateSignalRules.outflow_offsets_inflow(window)
@@ -110,7 +141,7 @@ class CandidateSignalRules:
             }
             and memory.score >= cls.STRONG_TREND_MIN_MEMORY_SCORE
             and memory.day_main_net > 0
-            and memory.recent_15m_buy_events >= 3
+            and memory.recent_15m_buy_events >= cls.STRONG_TREND_MIN_BUY_EVENTS
             and memory.recent_15m_main_net > 0
             and snapshot.computed_at.timetz().replace(tzinfo=None)
             <= cls.MEMORY_WATCH_CUTOFF
@@ -202,6 +233,11 @@ class CandidateSignalRules:
             if position.atr_percent > 0
             else None
         )
+        day_change = (
+            (snapshot.quote.last_price / snapshot.quote.prev_close - 1.0) * 100.0
+            if snapshot.quote.prev_close > 0
+            else None
+        )
         return bool(
             snapshot.quality is DataQuality.GOOD
             and context.quality is DataQuality.GOOD
@@ -210,6 +246,8 @@ class CandidateSignalRules:
             and context.turnover_rank_percentile >= cls.MOMENTUM_MIN_ACTIVITY_PERCENTILE
             and context.relative_strength is not None
             and context.relative_strength >= cls.MOMENTUM_MIN_RELATIVE_STRENGTH
+            and day_change is not None
+            and day_change >= cls.MOMENTUM_MIN_DAILY_CHANGE
             and position.quality is not DataQuality.INVALID
             and extension_atr is not None
             and extension_atr <= cls.MOMENTUM_MAX_EXTENSION_ATR

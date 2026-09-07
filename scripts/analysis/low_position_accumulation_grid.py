@@ -152,6 +152,7 @@ class Event:
     flow_net: float = float("nan")
     flow_scale: float = float("nan")
     flow_buy_ratio: float = float("nan")
+    day_main_net: float = float("nan")
 
 
 @dataclass
@@ -539,6 +540,7 @@ def build_event(
             if capital_total > 0
             else float("nan")
         ),
+        day_main_net=float(base["cum"][target]),
     )
 
 

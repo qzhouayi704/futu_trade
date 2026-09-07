@@ -141,7 +141,10 @@ class CandidateCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         ))
         strict = window(900, buys=3, buy_amount=1_200_000, span=600)
         coordinator.on_feature_snapshot(feature_event(
-            snapshot(as_of=NOW + timedelta(seconds=600), windows=(strict,)), "confirm"
+            snapshot(
+                as_of=NOW + timedelta(seconds=600), windows=(strict,), price=103.1
+            ),
+            "confirm",
         ))
         await coordinator.stop(drain=True)
 

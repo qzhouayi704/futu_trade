@@ -9,7 +9,7 @@ export interface TodaySignalRow {
 
 export const signalSortColumns = [
   { field: "stock", label: "股票", ascending: "stock-asc", descending: "stock-desc", initial: "asc" },
-  { field: "stage", label: "信号 / 阶段", ascending: "stage-asc", descending: "stage-desc", initial: "desc" },
+  { field: "stage", label: "当前状态", ascending: "stage-asc", descending: "stage-desc", initial: "desc" },
   { field: "time", label: "首次信号", ascending: "earliest", descending: "latest", initial: "desc" },
   { field: "price", label: "基准价", ascending: "price-asc", descending: "price-desc", initial: "desc" },
   { field: "change", label: "后续股价涨跌", ascending: "weakest", descending: "strongest", initial: "desc" },
@@ -91,7 +91,9 @@ export function sortTodaySignals(rows: TodaySignalRow[], sort: SignalSort): Toda
   const value = (row: TodaySignalRow): number | string | null => {
     switch (column.field) {
       case "stock": return row.item.stock_name || row.item.stock_code;
-      case "stage": return { SETUP: 1, WATCHING: 2, CONFIRMED: 3 }[row.item.entry_stage];
+      case "stage": return {
+        IDLE: 0, INVALIDATED: 0, SETUP: 1, WATCHING: 2, CONFIRMED: 3,
+      }[row.item.current_status];
       case "time": return finite(Date.parse(row.item.signal_time));
       case "price": return finite(row.item.signal_price);
       default: return row[column.field];

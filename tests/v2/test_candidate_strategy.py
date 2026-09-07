@@ -324,7 +324,9 @@ class CandidateStrategyTests(unittest.TestCase):
 
     def test_strategy_portfolio_keeps_consensus_as_diagnostic_without_bonus(self) -> None:
         fast = window(900, buys=3, buy_amount=1_500_000, span=600)
-        item = snapshot(as_of=NOW + timedelta(minutes=10), windows=(fast,))
+        item = snapshot(
+            as_of=NOW + timedelta(minutes=10), windows=(fast,), price=103.1
+        )
         item = replace(
             item,
             price_position=replace(item.price_position, daily_percentile=0.20),
@@ -425,14 +427,25 @@ class CandidateStrategyTests(unittest.TestCase):
     def test_strict_momentum_requires_three_spaced_inflows_and_context(self) -> None:
         two = window(900, buys=2, buy_amount=1_200_000, span=301)
         self.assertIsNone(self.machine.evaluate(
-            snapshot(as_of=NOW + timedelta(seconds=301), windows=(two,)),
+            snapshot(
+                as_of=NOW + timedelta(seconds=301), windows=(two,), price=103.1
+            ),
             state(StrategyStatus.WATCHING, metadata={"watch_price": 100}),
             ELIGIBLE,
         ))
 
         strict = window(900, buys=3, buy_amount=1_200_000, span=600)
+        self.assertIsNone(self.machine.evaluate(
+            snapshot(
+                as_of=NOW + timedelta(seconds=600), windows=(strict,), price=102.9
+            ),
+            state(StrategyStatus.WATCHING, metadata={"watch_price": 100}),
+            ELIGIBLE,
+        ))
         result = self.machine.evaluate(
-            snapshot(as_of=NOW + timedelta(seconds=600), windows=(strict,)),
+            snapshot(
+                as_of=NOW + timedelta(seconds=600), windows=(strict,), price=103.1
+            ),
             state(StrategyStatus.WATCHING, metadata={"watch_price": 100}),
             ELIGIBLE,
         )
@@ -442,12 +455,16 @@ class CandidateStrategyTests(unittest.TestCase):
 
         compressed = window(900, buys=3, buy_amount=1_200_000, span=10)
         self.assertIsNone(self.machine.evaluate(
-            snapshot(as_of=NOW + timedelta(seconds=10), windows=(compressed,)),
+            snapshot(
+                as_of=NOW + timedelta(seconds=10), windows=(compressed,), price=103.1
+            ),
             state(StrategyStatus.WATCHING, metadata={"watch_price": 100}), ELIGIBLE,
         ))
 
         degraded = replace(
-            snapshot(as_of=NOW + timedelta(seconds=600), windows=(strict,)),
+            snapshot(
+                as_of=NOW + timedelta(seconds=600), windows=(strict,), price=103.1
+            ),
             quality=DataQuality.DEGRADED,
         )
         self.assertIsNone(self.machine.evaluate(
@@ -459,14 +476,15 @@ class CandidateStrategyTests(unittest.TestCase):
         for weak_context in (
             snapshot(
                 as_of=NOW + timedelta(seconds=600), windows=(strict,),
-                distance_to_ma20=4.0,
+                distance_to_ma20=4.0, price=103.1,
             ),
             snapshot(
                 as_of=NOW + timedelta(seconds=600), windows=(strict,),
-                relative_strength=1.0,
+                relative_strength=1.0, price=103.1,
             ),
             snapshot(
                 as_of=NOW + timedelta(seconds=600), windows=(strict,), rank=0.65,
+                price=103.1,
             ),
         ):
             self.assertIsNone(self.machine.evaluate(
@@ -481,6 +499,7 @@ class CandidateStrategyTests(unittest.TestCase):
             as_of=NOW + timedelta(seconds=600),
             windows=(strict,),
             sector_breadth=0.30,
+            price=103.1,
         )
         soft = UniverseDecision(
             eligible=False,

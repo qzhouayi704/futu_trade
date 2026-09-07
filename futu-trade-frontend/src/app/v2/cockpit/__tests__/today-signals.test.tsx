@@ -34,6 +34,10 @@ function signal(overrides: Partial<V2AlertPerformanceItem> = {}): V2AlertPerform
     signal_time: "2026-09-07T09:40:00+08:00", last_alert_time: "2026-09-07T09:50:00+08:00",
     signal_date: "2026-09-07", signal_price: 100, reason_code: "FIRST_STRONG_INFLOW_WATCH", strategy_version: "test-v1",
     action: "CANDIDATE", direction: "BUY", risk_result: "NOT_REQUIRED", entry_stage: "WATCHING", max_stage: "CONFIRMED",
+    current_status: "CONFIRMED", current_reason_code: "CAPITAL_MEMORY_MULTI_INFLOW_SHADOW_CONFIRMED",
+    current_state_time: "2026-09-07T09:50:00+08:00", alert_eligible: false, alert_permission: "RESEARCH",
+    strategy_sources: ["capital_memory_reversal"], ever_strategy_sources: ["capital_memory_reversal"],
+    current_strategy_sources: ["capital_memory_reversal"],
     stage_points: {
       WATCHING: { time: "2026-09-07T09:40:00+08:00", price: 100, reason_code: "FIRST_STRONG_INFLOW_WATCH" },
       CONFIRMED: { time: "2026-09-07T09:50:00+08:00", price: 101, reason_code: "FAST_15M_MULTI_INFLOW_CONFIRMED" },
@@ -50,10 +54,20 @@ function signal(overrides: Partial<V2AlertPerformanceItem> = {}): V2AlertPerform
 }
 
 function performance(items: V2AlertPerformanceItem[]): V2AlertPerformance {
+  const counts = <T extends string>(values: T[]) => values.reduce<Partial<Record<T, number>>>((result, value) => {
+    result[value] = (result[value] || 0) + 1;
+    return result;
+  }, {});
   return {
     trade_date: "2026-09-07", as_of: "2026-09-07T10:02:00+08:00", scope: "candidates", count: items.length,
     available_kline_through: null, intraday_coverage_count: items.length,
     excluded: { total: 0, by_reason: {} }, summary_by_strategy_version: {},
+    summary_by_strategy_source: {},
+    lifecycle_summary: {
+      current_status: counts(items.map((item) => item.current_status)),
+      max_stage: counts(items.map((item) => item.max_stage)),
+      alert_permission: counts(items.map((item) => item.alert_permission)),
+    },
     summary: { alert_count: items.length, same_day: metric, periods: { "1": metric, "3": metric, "5": metric, "10": metric } },
     items,
   };
@@ -131,8 +145,8 @@ describe("今日信号统计口径", () => {
   });
 
   it.each(signalSortColumns)("sorts $label numerically or by localized stock name in both directions", (column) => {
-    const a = signal({ event_id: "a", stock_name: "样本2" });
-    const b = signal({ event_id: "b", stock_name: "样本10", signal_time: "2026-09-07T11:00:00+08:00", signal_price: 9, entry_stage: "SETUP",
+    const a = signal({ event_id: "a", stock_name: "样本2", current_status: "WATCHING" });
+    const b = signal({ event_id: "b", stock_name: "样本10", signal_time: "2026-09-07T11:00:00+08:00", signal_price: 9, entry_stage: "SETUP", current_status: "SETUP",
       same_day: { ...a.same_day, latest_return_pct: -3, max_return_pct: 1, max_drawdown_pct: -4 } });
     const c = signal({ event_id: "c", stock_name: "样本1", signal_time: "2026-09-07T10:00:00+08:00", signal_price: 500, entry_stage: "CONFIRMED",
       same_day: { ...a.same_day, latest_return_pct: 1, max_return_pct: 10, max_drawdown_pct: -1 } });
@@ -156,8 +170,8 @@ describe("驾驶舱今日信号展示", () => {
 
   it("shows Chinese scopes, baseline and visible performance without claiming a win rate", () => {
     const html = render();
-    for (const label of ["今日信号表现", "候选池", "资金观察", "买点确认", "正式预警", "09:40", "100.000", "+2.50%", "行情截至", "10:00", "盘中未结算", "阶段记录", "非实盘盈亏"]) expect(html).toContain(label);
-    expect(html).toContain("站内跟踪，非送达预警");
+    for (const label of ["今日信号表现", "候选池", "资金观察", "买点确认", "正式预警", "09:40", "100.000", "+2.50%", "行情截至", "10:00", "盘中未结算", "阶段记录", "非实盘盈亏", "当前已确认", "研究确认，暂不推送买入", "首次 资金观察", "最高 买点确认"]) expect(html).toContain(label);
+    expect(html).toContain("没有送达记录");
     expect(html).not.toContain("胜率");
     expect(html).not.toContain("WATCHING");
   });
@@ -176,13 +190,24 @@ describe("驾驶舱今日信号展示", () => {
   });
 
   it("warns about a sell followed by a rally without inverting the visible price return", () => {
-    const item = signal({ direction: "SELL", action: "SELL", delivered_at: "2026-09-07T09:40:02+08:00" });
+    const item = signal({ direction: "SELL", action: "SELL", delivered_at: "2026-09-07T09:40:02+08:00", alert_permission: "DELIVERED" });
     item.same_day.latest_return_pct = -3;
     state.data = performance([item]);
     const html = render();
     expect(html).toContain("卖出后反涨");
     expect(html).toContain("+3.00%");
     expect(html).toContain("已送达");
+  });
+
+  it("shows a later invalidation instead of leaving the row at its first stage", () => {
+    state.data = performance([signal({
+      current_status: "INVALIDATED", current_reason_code: "PRICE_ACCEPTANCE_BROKEN",
+      current_state_time: "2026-09-07T10:30:00+08:00", alert_permission: "NONE",
+    })]);
+    const html = render();
+    expect(html).toContain("当前已失效");
+    expect(html).toContain("当前无操作权限");
+    expect(html).toContain("当前状态时间：10:30");
   });
 
   it("shows missing and partial data explicitly", () => {

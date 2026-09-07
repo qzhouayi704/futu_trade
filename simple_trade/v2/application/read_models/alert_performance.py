@@ -15,9 +15,12 @@ from .alert_performance_metrics import (
     performance_summary,
 )
 from .alert_performance_records import (
+    CANDIDATE_EVENT_TYPES,
+    apply_candidate_lifecycle,
     collapse_candidates,
     collapse_delivered,
     eligible_delivered,
+    lifecycle_summary,
 )
 from .alert_performance_tape import AlertPerformanceTapeReader
 
@@ -134,6 +137,15 @@ class AlertPerformanceReader:
             ])
             for version in sorted({item["strategy_version"] for item in items})
         }
+        strategy_sources = sorted({
+            source for item in items for source in item.get("strategy_sources", [])
+        })
+        summary_by_strategy_source = {
+            source: performance_summary([
+                item for item in items if source in item.get("strategy_sources", [])
+            ])
+            for source in strategy_sources
+        }
         return {
             "trade_date": selected_date,
             "as_of": as_of.isoformat(),
@@ -150,6 +162,8 @@ class AlertPerformanceReader:
             "excluded": exclusions,
             "summary": performance_summary(items),
             "summary_by_strategy_version": summary_by_version,
+            "summary_by_strategy_source": summary_by_strategy_source,
+            "lifecycle_summary": lifecycle_summary(items),
         }
 
     async def _delivered_alerts(self, selected_date: str) -> tuple[list[dict], dict]:
@@ -157,7 +171,7 @@ class AlertPerformanceReader:
             "SELECT e.event_id, e.event_type, e.stock_code, e.exchange_time, "
             "e.reason_code, e.strategy_version, i.intent_type, i.risk_result, "
             "i.buy_leg_json, i.sell_leg_json, n.delivered_at, "
-            "o.mfe_pct, o.mae_pct, o.close_return_pct "
+            "o.mfe_pct, o.mae_pct, o.close_return_pct, e.payload_json "
             "FROM v2_notification_log n "
             "JOIN v2_decision_events e ON e.event_id=n.decision_event_id "
             "JOIN v2_trade_intents i ON i.source_event_id=e.event_id "
@@ -196,10 +210,30 @@ class AlertPerformanceReader:
             "ORDER BY e.exchange_time, e.id",
             (*states, *self._date_bounds(selected_date)),
         )
-        return [
+        alerts = [
             item for item in collapse_candidates(rows)
             if item["signal_date"] == selected_date
         ]
+        if not alerts:
+            return []
+        codes = sorted({item["stock_code"] for item in alerts})
+        event_placeholders = ",".join("?" for _ in CANDIDATE_EVENT_TYPES)
+        code_placeholders = ",".join("?" for _ in codes)
+        lifecycle_rows = await self._query(
+            "SELECT e.event_id, e.event_type, e.stock_code, e.exchange_time, "
+            "e.reason_code, e.strategy_version, e.new_state, e.payload_json "
+            "FROM v2_decision_events e "
+            f"WHERE e.event_type IN ({event_placeholders}) "
+            f"AND e.stock_code IN ({code_placeholders}) "
+            "AND e.exchange_time>=? AND e.exchange_time<? "
+            "ORDER BY e.exchange_time, e.id",
+            (
+                *CANDIDATE_EVENT_TYPES,
+                *codes,
+                *self._date_bounds(selected_date),
+            ),
+        )
+        return apply_candidate_lifecycle(alerts, lifecycle_rows)
 
     async def _names(self, codes: list[str]) -> dict[str, str]:
         placeholders = ",".join("?" for _ in codes)
@@ -279,4 +313,6 @@ class AlertPerformanceReader:
             "excluded": exclusions,
             "summary": performance_summary([]),
             "summary_by_strategy_version": {},
+            "summary_by_strategy_source": {},
+            "lifecycle_summary": lifecycle_summary([]),
         }

@@ -208,6 +208,10 @@ export interface V2AlertPeriodResult {
   coverage?: "OBSERVED" | "MISSING";
 }
 
+export type V2SignalStage = "SETUP" | "WATCHING" | "CONFIRMED";
+export type V2SignalStatus = "IDLE" | V2SignalStage | "INVALIDATED";
+export type V2SignalPermission = "NONE" | "TRACKING" | "RESEARCH" | "FORMAL_ELIGIBLE" | "DELIVERED";
+
 export interface V2AlertPerformanceItem {
   event_id: string;
   event_type: string;
@@ -222,9 +226,17 @@ export interface V2AlertPerformanceItem {
   action: "CANDIDATE" | "BUY" | "SELL" | "ROTATE";
   direction: "BUY" | "SELL";
   risk_result: string;
-  entry_stage: "SETUP" | "WATCHING" | "CONFIRMED";
-  max_stage: "SETUP" | "WATCHING" | "CONFIRMED";
-  stage_points: Partial<Record<"SETUP" | "WATCHING" | "CONFIRMED", {
+  entry_stage: V2SignalStage;
+  max_stage: V2SignalStage;
+  current_status: V2SignalStatus;
+  current_reason_code: string;
+  current_state_time: string;
+  alert_eligible: boolean;
+  alert_permission: V2SignalPermission;
+  strategy_sources: string[];
+  ever_strategy_sources: string[];
+  current_strategy_sources: string[];
+  stage_points: Partial<Record<V2SignalStage, {
     time: string;
     price: number;
     reason_code: string;
@@ -250,12 +262,22 @@ export interface V2AlertPerformance {
     total: number;
     by_reason: Record<string, number>;
   };
+  lifecycle_summary: {
+    current_status: Partial<Record<V2SignalStatus, number>>;
+    max_stage: Partial<Record<V2SignalStage, number>>;
+    alert_permission: Partial<Record<V2SignalPermission, number>>;
+  };
   summary: {
     alert_count: number;
     same_day: V2AlertPerformanceMetric;
     periods: Record<"1" | "3" | "5" | "10", V2AlertPerformanceMetric>;
   };
   summary_by_strategy_version: Record<string, {
+    alert_count: number;
+    same_day: V2AlertPerformanceMetric;
+    periods: Record<"1" | "3" | "5" | "10", V2AlertPerformanceMetric>;
+  }>;
+  summary_by_strategy_source: Record<string, {
     alert_count: number;
     same_day: V2AlertPerformanceMetric;
     periods: Record<"1" | "3" | "5" | "10", V2AlertPerformanceMetric>;

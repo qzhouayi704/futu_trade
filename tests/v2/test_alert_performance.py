@@ -66,8 +66,11 @@ class FakeAlertDatabase:
         self.ticker_rows = []
         self.ticker_close_rows = []
         self.raw_rows = []
+        self.candidate_lifecycle_rows = []
 
     def execute_query(self, query: str, params: tuple = ()) -> list:
+        if "FROM v2_decision_events e WHERE" in query and "e.stock_code IN" in query:
+            return [row[:8] for row in self.candidate_rows] + self.candidate_lifecycle_rows
         if "FROM v2_decision_events e LEFT JOIN v2_outcomes" in query:
             states = set(params[:-2])
             return [row for row in self.candidate_rows if row[6] in states]
@@ -166,6 +169,9 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["alert_count"], 2)
         self.assertEqual(item["stage_points"]["SETUP"]["price"], 98)
         self.assertEqual(item["stage_points"]["WATCHING"]["price"], 100)
+        self.assertEqual(item["current_status"], "WATCHING")
+        self.assertEqual(item["alert_permission"], "TRACKING")
+        self.assertEqual(result["lifecycle_summary"]["current_status"], {"WATCHING": 1})
         self.assertEqual(item["same_day"]["source"], "DAILY_KLINE")
         self.assertEqual(item["same_day"]["close_return_pct"], 3.0612)
 
@@ -367,6 +373,62 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         result = await AlertPerformanceReader(FakeAlertDatabase()).history(trade_date="2026-09-02")
         self.assertIsNone(result["items"][0]["intraday_mfe_pct"])
         self.assertIsNone(result["items"][0]["intraday_mae_pct"])
+
+    async def test_candidate_lifecycle_exposes_later_invalidation(self) -> None:
+        database = FakeAlertDatabase()
+        database.candidate_lifecycle_rows.append((
+            "invalid-1", "CANDIDATE_INVALIDATED", "HK.00100",
+            "2026-09-02T14:30:00+08:00", "PRICE_ACCEPTANCE_BROKEN",
+            "v2", "INVALIDATED",
+            '{"alert_eligible":false,"strategy_portfolio":'
+            '{"strategy_sources":["capital_absorption"]}}',
+        ))
+
+        result = await AlertPerformanceReader(database).history(
+            trade_date="2026-09-02", scope="candidates"
+        )
+
+        item = result["items"][0]
+        self.assertEqual(item["entry_stage"], "SETUP")
+        self.assertEqual(item["max_stage"], "WATCHING")
+        self.assertEqual(item["current_status"], "INVALIDATED")
+        self.assertEqual(item["current_reason_code"], "PRICE_ACCEPTANCE_BROKEN")
+        self.assertEqual(item["current_state_time"], "2026-09-02T14:30:00+08:00")
+        self.assertEqual(item["alert_permission"], "NONE")
+        self.assertEqual(item["strategy_sources"], [])
+        self.assertEqual(item["ever_strategy_sources"], ["capital_absorption"])
+        self.assertEqual(item["current_strategy_sources"], ["capital_absorption"])
+        self.assertEqual(result["lifecycle_summary"]["current_status"], {"INVALIDATED": 1})
+        self.assertEqual(result["summary_by_strategy_source"], {})
+
+    async def test_delivered_alert_has_delivery_permission(self) -> None:
+        result = await AlertPerformanceReader(FakeAlertDatabase()).history(
+            trade_date="2026-09-02", scope="alerts"
+        )
+
+        self.assertTrue(all(
+            item["alert_permission"] == "DELIVERED" for item in result["items"]
+        ))
+
+    async def test_strategy_summary_uses_only_sources_known_at_the_scope_basis(self) -> None:
+        database = FakeAlertDatabase()
+        row = list(database.candidate_rows[0])
+        row[7] = (
+            '{"alert_eligible":false,"feature_snapshot":{"quote":{"last_price":98}},'
+            '"strategy_portfolio":{"strategy_sources":[],"nominations":['
+            '{"strategy_id":"capital_absorption","stage":"WATCH"}]}}'
+        )
+        database.candidate_rows = [tuple(row)]
+
+        result = await AlertPerformanceReader(database).history(
+            trade_date="2026-09-02", scope="candidates"
+        )
+
+        self.assertEqual(result["items"][0]["strategy_sources"], ["capital_absorption"])
+        self.assertEqual(
+            result["summary_by_strategy_source"]["capital_absorption"]["alert_count"],
+            1,
+        )
 
 
 if __name__ == "__main__":
