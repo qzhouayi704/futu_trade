@@ -31,17 +31,20 @@ export default function V2WorkbenchPage() {
   const [tab, setTab] = useState<TabId>("cockpit");
   const client = useQueryClient();
   const { socket, isConnected } = useSocket();
-  const cockpit = useQuery({ queryKey: ["v2", "cockpit"], queryFn: v2Api.cockpit, refetchInterval: 30_000 });
-  const candidates = useQuery({ queryKey: ["v2", "candidates"], queryFn: v2Api.candidates, refetchInterval: 30_000 });
-  const positions = useQuery({ queryKey: ["v2", "positions"], queryFn: v2Api.positions, refetchInterval: 30_000 });
-  const decisions = useQuery({ queryKey: ["v2", "decisions"], queryFn: v2Api.decisions, refetchInterval: 30_000 });
-  const distribution = useQuery({ queryKey: ["v2", "distribution"], queryFn: v2Api.distribution, refetchInterval: 60_000 });
-  const acceptance = useQuery({ queryKey: ["v2", "shadow-acceptance"], queryFn: v2Api.shadowAcceptance, refetchInterval: 60_000 });
-  const health = useQuery({ queryKey: ["v2", "health"], queryFn: v2Api.health, refetchInterval: 15_000 });
+  const cockpit = useQuery({ queryKey: ["v2", "cockpit"], queryFn: v2Api.cockpit, refetchInterval: tab === "cockpit" ? 30_000 : false });
+  const candidates = useQuery({ queryKey: ["v2", "candidates"], queryFn: v2Api.candidates, enabled: tab === "candidates", refetchInterval: 30_000 });
+  const positions = useQuery({ queryKey: ["v2", "positions"], queryFn: v2Api.positions, enabled: tab === "positions", refetchInterval: 30_000 });
+  const decisions = useQuery({ queryKey: ["v2", "decisions"], queryFn: v2Api.decisions, enabled: tab === "review", refetchInterval: 30_000 });
+  const distribution = useQuery({ queryKey: ["v2", "distribution"], queryFn: v2Api.distribution, enabled: tab === "review", refetchInterval: 60_000 });
+  const acceptance = useQuery({ queryKey: ["v2", "shadow-acceptance"], queryFn: v2Api.shadowAcceptance, enabled: tab === "review", refetchInterval: 60_000 });
+  const health = useQuery({ queryKey: ["v2", "health"], queryFn: v2Api.health, enabled: tab === "system", refetchInterval: 15_000 });
 
   useEffect(() => {
     if (!socket) return;
-    const refresh = () => client.invalidateQueries({ queryKey: ["v2"] });
+    const refresh = () => client.invalidateQueries({
+      queryKey: ["v2"],
+      predicate: (query) => query.queryKey[1] !== "alert-performance",
+    });
     socket.on("v2_trade_alert", refresh);
     return () => { socket.off("v2_trade_alert", refresh); };
   }, [socket, client]);

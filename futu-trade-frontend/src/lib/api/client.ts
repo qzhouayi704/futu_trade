@@ -47,6 +47,7 @@ const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
 
 function isRetryable(error: AxiosError): boolean {
+  if (error.config?.url?.includes("/v2/outcomes/alert-performance")) return false;
   // 只对 GET 请求重试（幂等）
   if (error.config?.method && error.config.method.toUpperCase() !== "GET") return false;
   // 网络超时 / 连接失败
@@ -71,6 +72,7 @@ apiClient.interceptors.response.use(
     return response.data;
   },
   async (error: AxiosError<ApiError>) => {
+    if (axios.isCancel(error)) return Promise.reject(error);
     const config = error.config;
 
     // 自动重试

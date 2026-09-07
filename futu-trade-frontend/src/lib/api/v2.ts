@@ -1,4 +1,5 @@
 import apiClient from "./client";
+import type { AxiosRequestConfig } from "axios";
 import type { ApiResponse } from "@/types";
 
 export interface V2Candidate {
@@ -236,6 +237,8 @@ export interface V2AlertPerformanceItem {
 }
 
 export interface V2AlertPerformance {
+  refresh_status?: "READY" | "STALE";
+  cache_age_seconds?: number;
   trade_date: string;
   as_of?: string;
   scope: "candidates" | "watching" | "confirmed" | "alerts";
@@ -359,8 +362,8 @@ export interface V2Health {
   execution_enabled: boolean;
 }
 
-async function getData<T>(path: string): Promise<T> {
-  const response = await apiClient.get<never, ApiResponse<T>>(path);
+async function getData<T>(path: string, options?: AxiosRequestConfig): Promise<T> {
+  const response = await apiClient.get<never, ApiResponse<T>>(path, options);
   if (!response.success || response.data === undefined) {
     throw new Error(response.message || "V2 数据读取失败");
   }
@@ -397,9 +400,11 @@ export const v2Api = {
   alertPerformance: (
     tradeDate: string,
     scope: "candidates" | "watching" | "confirmed" | "alerts",
+    signal?: AbortSignal,
   ) =>
     getData<V2AlertPerformance>(
       `/v2/outcomes/alert-performance?trade_date=${encodeURIComponent(tradeDate)}&scope=${scope}`,
+      { timeout: 20_000, signal },
     ),
   shadowAcceptance: () => getData<V2ShadowAcceptance>("/v2/outcomes/shadow-acceptance?days=10"),
   health: () => getData<V2Health>("/v2/system/health"),

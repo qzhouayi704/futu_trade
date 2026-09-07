@@ -121,7 +121,9 @@ export function AlertPerformance() {
   const [scope, setScope] = useState<PerformanceScope>("candidates");
   const query = useQuery({
     queryKey: ["v2", "alert-performance", tradeDate, scope],
-    queryFn: () => v2Api.alertPerformance(tradeDate, scope),
+    queryFn: ({ signal }) => v2Api.alertPerformance(tradeDate, scope, signal),
+    retry: false,
+    staleTime: 45_000,
     refetchInterval: 60_000,
   });
   const data = query.data;
@@ -169,8 +171,9 @@ export function AlertPerformance() {
     </div>
 
     {query.isError && <div className="border-l-2 border-rose-500 bg-rose-500/8 px-3 py-3 text-sm text-rose-700 dark:text-rose-300">
-      预警后续数据读取失败，系统会继续重试。
+      预警后续数据读取失败，本次请求已结束，稍后自动刷新。
     </div>}
+    {data?.refresh_status === "STALE" && <div role="status" className="mb-3 border-l-2 border-amber-500 bg-amber-500/8 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">行情刷新暂时失败，当前为 {clock(data.as_of)} 的缓存快照，非最新结果。</div>}
 
     {query.isLoading && <div className="h-48 animate-pulse bg-muted/30" />}
 

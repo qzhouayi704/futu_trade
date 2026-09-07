@@ -19,10 +19,13 @@ class ReadDatabasePort(Protocol):
 
 
 class V2ReadModelService:
-    def __init__(self, db: ReadDatabasePort, runtime=None) -> None:
+    def __init__(
+        self, db: ReadDatabasePort, runtime=None,
+        *, alert_performance_reader: AlertPerformanceReader | None = None,
+    ) -> None:
         self._db = db
         self._runtime = runtime
-        self._alert_performance = AlertPerformanceReader(db)
+        self._alert_performance = alert_performance_reader or AlertPerformanceReader(db)
         self._candidate_history = CandidateHistoryReader(db)
 
     async def cockpit(self) -> dict:

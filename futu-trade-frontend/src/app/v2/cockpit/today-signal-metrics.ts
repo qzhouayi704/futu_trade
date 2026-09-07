@@ -7,7 +7,23 @@ export interface TodaySignalRow {
   low: number | null;
 }
 
-export type SignalSort = "latest" | "earliest" | "strongest" | "weakest";
+export const signalSortColumns = [
+  { field: "stock", label: "股票", ascending: "stock-asc", descending: "stock-desc", initial: "asc" },
+  { field: "stage", label: "信号 / 阶段", ascending: "stage-asc", descending: "stage-desc", initial: "desc" },
+  { field: "time", label: "首次信号", ascending: "earliest", descending: "latest", initial: "desc" },
+  { field: "price", label: "基准价", ascending: "price-asc", descending: "price-desc", initial: "desc" },
+  { field: "change", label: "后续股价涨跌", ascending: "weakest", descending: "strongest", initial: "desc" },
+  { field: "high", label: "信号后最高", ascending: "high-asc", descending: "high-desc", initial: "desc" },
+  { field: "low", label: "信号后最低", ascending: "low-asc", descending: "low-desc", initial: "asc" },
+] as const;
+export type SignalSortColumn = (typeof signalSortColumns)[number];
+export type SignalSort = SignalSortColumn["ascending" | "descending"];
+
+export function toggleSignalSort(current: SignalSort, column: SignalSortColumn): SignalSort {
+  if (current === column.ascending) return column.descending;
+  if (current === column.descending) return column.ascending;
+  return column.initial === "asc" ? column.ascending : column.descending;
+}
 
 export function marketDateKey(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Hong_Kong" }).format(now);
@@ -69,15 +85,28 @@ export function todaySignalSummary(rows: TodaySignalRow[]) {
 }
 
 export function sortTodaySignals(rows: TodaySignalRow[], sort: SignalSort): TodaySignalRow[] {
-  return [...rows].sort((a, b) => {
-    if (sort === "strongest" || sort === "weakest") {
-      if (a.change == null && b.change != null) return 1;
-      if (b.change == null && a.change != null) return -1;
-      if (a.change != null && b.change != null && a.change !== b.change) {
-        return sort === "strongest" ? b.change - a.change : a.change - b.change;
-      }
+  const column = signalSortColumns.find((option) => option.ascending === sort || option.descending === sort)!;
+  const direction = sort === column.ascending ? 1 : -1;
+  const names = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+  const value = (row: TodaySignalRow): number | string | null => {
+    switch (column.field) {
+      case "stock": return row.item.stock_name || row.item.stock_code;
+      case "stage": return { SETUP: 1, WATCHING: 2, CONFIRMED: 3 }[row.item.entry_stage];
+      case "time": return finite(Date.parse(row.item.signal_time));
+      case "price": return finite(row.item.signal_price);
+      default: return row[column.field];
     }
-    const difference = Date.parse(a.item.signal_time) - Date.parse(b.item.signal_time);
-    return (sort === "earliest" ? difference : -difference) || a.item.event_id.localeCompare(b.item.event_id);
+  };
+  return [...rows].sort((a, b) => {
+    const left = value(a), right = value(b);
+    if (left == null && right != null) return 1;
+    if (right == null && left != null) return -1;
+    if (left != null && right != null && left !== right) {
+      const difference = typeof left === "string" && typeof right === "string"
+        ? names.compare(left, right) : Number(left) - Number(right);
+      if (difference) return direction * difference;
+    }
+    return (finite(Date.parse(b.item.signal_time)) ?? 0) - (finite(Date.parse(a.item.signal_time)) ?? 0)
+      || a.item.event_id.localeCompare(b.item.event_id);
   });
 }

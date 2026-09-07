@@ -18,6 +18,30 @@ class TapeDatabase:
 
 
 class AlertPerformanceTapeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_last_trade_uses_time_then_id_and_never_the_highest_price(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tape.db"
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute(
+                    "CREATE TABLE ticker_data (id INTEGER PRIMARY KEY, stock_code TEXT, "
+                    "trade_date TEXT, trade_time TEXT, price REAL)"
+                )
+                connection.executemany("INSERT INTO ticker_data VALUES (?,?,?,?,?)", [
+                    (1, "HK.00100", "2026-09-02", "2026-09-02 10:00:00", 150),
+                    (2, "HK.00100", "2026-09-02", "2026-09-02 10:02:00", 105),
+                    (3, "HK.00100", "2026-09-02", "2026-09-02T02:02:00Z", 101),
+                    (4, "HK.00100", "2026-09-02", "2026-09-02 10:01:00", 90),
+                    (5, "HK.00100", "2026-09-02", "2026-09-02 10:03:00", 1000),
+                ])
+                connection.commit()
+            result = await AlertPerformanceTapeReader(TapeDatabase(path)).read([
+                {"event_id": "a", "stock_code": "HK.00100", "signal_time": "2026-09-02T10:00:00+08:00"},
+            ], datetime(2026, 9, 2, 2, 2, tzinfo=timezone.utc))
+        self.assertEqual(result["a"].last_price, 101)
+        self.assertEqual(result["a"].high_price, 150)
+        self.assertEqual(result["a"].low_price, 90)
+        self.assertEqual(result["a"].sample_count, 4)
+
     async def test_exact_seconds_timezone_and_trade_order_in_real_sqlite(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tape.db"

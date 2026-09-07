@@ -1,8 +1,11 @@
 """Delivered-alert performance across later trading sessions."""
 
 import asyncio
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import time
 
 from ....utils.trade_time import HK_TIMEZONE, market_datetime
 from ...infrastructure.db_read import strict_reader
@@ -21,14 +24,30 @@ from .alert_performance_tape import AlertPerformanceTapeReader
 VALID_SCOPES = {"candidates", "watching", "confirmed", "alerts"}
 
 
+@dataclass(frozen=True, slots=True)
+class PerformanceSnapshot:
+    value: dict
+    started_at: float
+
+
 def market_now() -> datetime:
     return datetime.now(HK_TIMEZONE)
 
 
 class AlertPerformanceReader:
+    CACHE_SECONDS = 30.0
+    STALE_SECONDS = 120.0
+    REFRESH_TIMEOUT_SECONDS = 18.0
+    MAX_CACHE_ENTRIES = 16
+    MAX_PENDING = 4
+
     def __init__(self, db) -> None:
+        self.source_db = db
         self._db = strict_reader(db)
         self._tape = AlertPerformanceTapeReader(self._db)
+        self._cache: OrderedDict[tuple[str, str], PerformanceSnapshot] = OrderedDict()
+        self._pending: dict[tuple[str, str], asyncio.Task[dict]] = {}
+        self._refresh_slot = asyncio.Semaphore(1)
 
     async def history(
         self,
@@ -36,12 +55,57 @@ class AlertPerformanceReader:
         trade_date: str | None = None,
         scope: str = "candidates",
     ) -> dict:
-        as_of = market_now()
         selected_date = self._validated_date(trade_date)
         if scope not in VALID_SCOPES:
             raise ValueError(
                 "复盘范围必须是 candidates、watching、confirmed 或 alerts"
             )
+        key = (selected_date, scope)
+        cached = self._cache.get(key)
+        if cached and time.monotonic() - cached.started_at < self.CACHE_SECONDS:
+            self._cache.move_to_end(key)
+            return self._snapshot_result(cached)
+        try:
+            task = self._pending.get(key)
+            if task is None:
+                if len(self._pending) >= self.MAX_PENDING:
+                    raise TimeoutError("复盘读取繁忙，请稍后刷新")
+                task = asyncio.create_task(self._refresh(key))
+                self._pending[key] = task
+                # A disconnected HTTP caller must not orphan a failed task.
+                task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            return deepcopy(await asyncio.shield(task))
+        except Exception:
+            if cached and time.monotonic() - cached.started_at <= self.STALE_SECONDS:
+                return self._snapshot_result(cached, stale=True)
+            raise
+
+    async def _refresh(self, key: tuple[str, str]) -> dict:
+        started_at = time.monotonic()
+        try:
+            async with asyncio.timeout(self.REFRESH_TIMEOUT_SECONDS):
+                async with self._refresh_slot:
+                    value = await self._history(trade_date=key[0], scope=key[1])
+            snapshot = PerformanceSnapshot(value=value, started_at=started_at)
+            self._cache[key] = snapshot
+            self._cache.move_to_end(key)
+            while len(self._cache) > self.MAX_CACHE_ENTRIES:
+                self._cache.popitem(last=False)
+            return self._snapshot_result(snapshot)
+        finally:
+            self._pending.pop(key, None)
+
+    @staticmethod
+    def _snapshot_result(snapshot: PerformanceSnapshot, *, stale: bool = False) -> dict:
+        return {
+            **deepcopy(snapshot.value),
+            "refresh_status": "STALE" if stale else "READY",
+            "cache_age_seconds": round(max(0.0, time.monotonic() - snapshot.started_at), 1),
+        }
+
+    async def _history(self, *, trade_date: str, scope: str) -> dict:
+        as_of = market_now()
+        selected_date = trade_date
         exclusions = {"total": 0, "by_reason": {}}
         if scope == "alerts":
             alerts, exclusions = await self._delivered_alerts(selected_date)

@@ -3,13 +3,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { V2AlertPerformance, V2AlertPerformanceItem, V2AlertPeriodResult } from "@/lib/api/v2";
 import { TodaySignals } from "../TodaySignals";
-import { marketDateKey, signalClock, sortTodaySignals, todaySignalRow, todaySignalSummary } from "../today-signal-metrics";
+import { marketDateKey, signalClock, signalSortColumns, sortTodaySignals, todaySignalRow, todaySignalSummary, toggleSignalSort } from "../today-signal-metrics";
 
 const state = vi.hoisted(() => ({
   data: undefined as V2AlertPerformance | undefined,
   isError: false,
   isLoading: false,
-  options: {} as { queryKey?: unknown[]; staleTime?: number; refetchInterval?: number; refetchIntervalInBackground?: boolean },
+  options: {} as { queryKey?: unknown[]; staleTime?: number; refetchInterval?: number; refetchIntervalInBackground?: boolean; retry?: boolean },
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQuery: (options: typeof state.options) => {
@@ -122,6 +122,33 @@ describe("今日信号统计口径", () => {
     expect(signalClock("2026-09-07 09:40:00")).toBe("09:40");
     expect(signalClock("invalid")).toBe("--");
   });
+
+  it.each(signalSortColumns)("toggles the $label header independently", (column) => {
+    expect(toggleSignalSort(column.ascending, column)).toBe(column.descending);
+    expect(toggleSignalSort(column.descending, column)).toBe(column.ascending);
+    const other = column.field === "time" ? "strongest" : "latest";
+    expect(toggleSignalSort(other, column)).toBe(column.initial === "asc" ? column.ascending : column.descending);
+  });
+
+  it.each(signalSortColumns)("sorts $label numerically or by localized stock name in both directions", (column) => {
+    const a = signal({ event_id: "a", stock_name: "样本2" });
+    const b = signal({ event_id: "b", stock_name: "样本10", signal_time: "2026-09-07T11:00:00+08:00", signal_price: 9, entry_stage: "SETUP",
+      same_day: { ...a.same_day, latest_return_pct: -3, max_return_pct: 1, max_drawdown_pct: -4 } });
+    const c = signal({ event_id: "c", stock_name: "样本1", signal_time: "2026-09-07T10:00:00+08:00", signal_price: 500, entry_stage: "CONFIRMED",
+      same_day: { ...a.same_day, latest_return_pct: 1, max_return_pct: 10, max_drawdown_pct: -1 } });
+    const rows = [a, b, c].map(todaySignalRow);
+    const expected = { stock: ["c", "a", "b"], stage: ["b", "a", "c"], time: ["a", "c", "b"], price: ["b", "a", "c"], change: ["b", "c", "a"], high: ["b", "a", "c"], low: ["b", "c", "a"] }[column.field];
+    expect(sortTodaySignals(rows, column.ascending).map((row) => row.item.event_id)).toEqual(expected);
+    expect(sortTodaySignals(rows, column.descending).map((row) => row.item.event_id)).toEqual([...expected].reverse());
+    expect(rows.map((row) => row.item.event_id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps unavailable extrema at the bottom in both directions", () => {
+    const rows = [signal({ event_id: "missing", same_day: pending }), signal()].map(todaySignalRow);
+    for (const sort of ["high-asc", "high-desc", "low-asc", "low-desc"] as const) {
+      expect(sortTodaySignals(rows, sort).at(-1)?.item.event_id).toBe("missing");
+    }
+  });
 });
 
 describe("驾驶舱今日信号展示", () => {
@@ -137,7 +164,15 @@ describe("驾驶舱今日信号展示", () => {
 
   it("shares the review query and only polls once per minute in foreground", () => {
     render();
-    expect(state.options).toMatchObject({ queryKey: ["v2", "alert-performance", "2026-09-07", "candidates"], staleTime: 45_000, refetchInterval: 60_000, refetchIntervalInBackground: false });
+    expect(state.options).toMatchObject({ queryKey: ["v2", "alert-performance", "2026-09-07", "candidates"], staleTime: 45_000, refetchInterval: 60_000, refetchIntervalInBackground: false, retry: false });
+  });
+
+  it("renders accessible sortable headers and a separate baseline price column", () => {
+    const html = render();
+    for (const column of signalSortColumns) expect(html).toContain(`aria-label="${column.label}排序"`);
+    expect(html.match(/aria-sort="descending"/g)).toHaveLength(1);
+    expect(html).toContain("按首次信号升序排列");
+    expect(html).toContain("基准价排序");
   });
 
   it("warns about a sell followed by a rally without inverting the visible price return", () => {
@@ -174,6 +209,14 @@ describe("驾驶舱今日信号展示", () => {
   it("marks retained data as stale when a refresh fails", () => {
     state.isError = true;
     expect(render()).toContain("下方保留上次成功数据，非最新结果");
+  });
+
+  it("discloses server-side stale fallback instead of claiming fresh results", () => {
+    state.data!.refresh_status = "STALE";
+    const html = render();
+    expect(html).toContain("行情刷新暂时失败");
+    expect(html).toContain("缓存快照，非最新结果");
+    expect(html).toContain("界面测试");
   });
 
   it("never shows yesterday's data as today or a different scope's data", () => {

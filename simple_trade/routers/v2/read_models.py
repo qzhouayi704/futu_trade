@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from ...dependencies import get_container
 from ...schemas.common import APIResponse
 from ...v2.application.read_models import V2ReadModelService
+from ...v2.application.read_models.alert_performance import AlertPerformanceReader
 
 
 router = APIRouter(prefix="/api/v2", tags=["V2交易工作台"])
@@ -14,9 +15,14 @@ logger = logging.getLogger("router.v2.read_models")
 
 
 def _service(container) -> V2ReadModelService:
+    reader = getattr(container, "v2_alert_performance_reader", None)
+    if reader is None or reader.source_db is not container.db_manager:
+        reader = AlertPerformanceReader(container.db_manager)
+        container.v2_alert_performance_reader = reader
     return V2ReadModelService(
         container.db_manager,
         runtime=getattr(container, "v2_runtime", None),
+        alert_performance_reader=reader,
     )
 
 

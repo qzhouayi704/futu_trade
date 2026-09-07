@@ -2,14 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Minus, RefreshCw, Search, TrendingUp } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Minus, RefreshCw, Search, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { v2Api, type V2AlertPerformanceItem } from "@/lib/api/v2";
 import { candidateReasonText } from "../CandidateTable";
 import { pct, tone } from "../format";
 import {
-  marketDateKey, signalClock, sortTodaySignals, todaySignalRow, todaySignalSummary,
-  type SignalSort, type TodaySignalRow,
+  marketDateKey, signalClock, signalSortColumns, sortTodaySignals, todaySignalRow, todaySignalSummary, toggleSignalSort,
+  type SignalSort, type SignalSortColumn, type TodaySignalRow,
 } from "./today-signal-metrics";
 
 const scopes = [
@@ -19,6 +19,20 @@ const scopes = [
   { id: "alerts", label: "正式预警" },
 ] as const;
 const stages = { SETUP: "候选准备", WATCHING: "资金观察", CONFIRMED: "买点确认" };
+
+function SortHeader({ column, sort, onSort }: { column: SignalSortColumn; sort: SignalSort; onSort: (value: SignalSort) => void }) {
+  const ascending = sort === column.ascending;
+  const descending = sort === column.descending;
+  const next = toggleSignalSort(sort, column);
+  const Icon = ascending ? ArrowUp : descending ? ArrowDown : ArrowUpDown;
+  return <th scope="col" aria-sort={ascending ? "ascending" : descending ? "descending" : undefined} className="border-b border-border px-3 py-2 font-medium">
+    <button type="button" onClick={() => onSort(next)} aria-label={`${column.label}排序`}
+      title={`按${column.label}${next === column.ascending ? "升序" : "降序"}排列`}
+      className={`inline-flex min-h-7 items-center gap-1 whitespace-nowrap rounded-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring ${ascending || descending ? "text-foreground" : "text-muted-foreground"}`}>
+      {column.label}<Icon aria-hidden="true" className="h-3 w-3 shrink-0" />
+    </button>
+  </th>;
+}
 
 function signalLabel(item: V2AlertPerformanceItem): string {
   if (item.action === "SELL") return "卖出提醒";
@@ -79,6 +93,7 @@ export function TodaySignals() {
   const [search, setSearch] = useState("");
   const [version, setVersion] = useState("");
   const [sort, setSort] = useState<SignalSort>("latest");
+  const [slowQuery, setSlowQuery] = useState(false);
   useEffect(() => {
     const update = () => setTradeDate(marketDateKey());
     const timer = window.setInterval(update, 60_000);
@@ -87,11 +102,18 @@ export function TodaySignals() {
   }, []);
   const query = useQuery({
     queryKey: ["v2", "alert-performance", tradeDate, scope],
-    queryFn: () => v2Api.alertPerformance(tradeDate, scope),
+    queryFn: ({ signal }) => v2Api.alertPerformance(tradeDate, scope, signal),
+    retry: false,
     staleTime: 45_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
+  useEffect(() => {
+    setSlowQuery(false);
+    if (!query.isFetching) return;
+    const timer = window.setTimeout(() => setSlowQuery(true), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [query.isFetching, tradeDate, scope]);
   // Never carry a previous date or scope into today's scorecard.
   const data = query.data?.trade_date === tradeDate && query.data.scope === scope ? query.data : undefined;
   const versions = [...new Set(data?.items.map((item) => item.strategy_version) || [])].sort();
@@ -122,9 +144,10 @@ export function TodaySignals() {
     </div>
 
     {query.isError && <div role="alert" className="mb-3 border-l-2 border-rose-500 bg-rose-500/8 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
-      今日信号读取失败，正在重试。{data ? "下方保留上次成功数据，非最新结果。" : "暂时无法判断今日信号表现。"}
+      今日信号读取失败，本次请求已结束，稍后自动刷新。{data ? "下方保留上次成功数据，非最新结果。" : "暂时无法判断今日信号表现。"}
     </div>}
-    {query.isLoading && <div role="status" className="flex h-40 items-center justify-center bg-muted/20 text-xs text-muted-foreground">正在读取今日信号与后续行情...</div>}
+    {query.isLoading && <div role="status" className="flex h-40 items-center justify-center bg-muted/20 text-xs text-muted-foreground">{slowQuery ? "服务器查询较慢，本次请求最长等待20秒..." : "正在读取今日信号与后续行情..."}</div>}
+    {data?.refresh_status === "STALE" && <div role="status" className="mb-3 border-l-2 border-amber-500 bg-amber-500/8 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">行情刷新暂时失败，保留 {signalClock(data.as_of)} 的缓存快照，非最新结果。</div>}
     {data && <>
       <div className="grid grid-cols-2 divide-y divide-border border-y border-border xl:grid-cols-4 xl:divide-y-0">
         <div className="px-3 py-3">
@@ -153,15 +176,21 @@ export function TodaySignals() {
         <label className="flex h-8 w-full items-center gap-2 border border-border px-2 sm:w-56"><Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /><input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索今日信号股票" placeholder="股票名称或代码" className="min-w-0 w-full bg-transparent text-xs outline-none" /></label>
         <div className="flex max-w-full flex-wrap items-center gap-2 text-xs">
           {versions.length > 1 && <select aria-label="今日信号策略版本" value={activeVersion} onChange={(event) => setVersion(event.target.value)} className="h-8 max-w-full border border-border bg-background px-2"><option value="">全部策略版本</option>{versions.map((value) => <option key={value} value={value}>{versionLabel(value)}</option>)}</select>}
-          <select aria-label="今日信号排序" value={sort} onChange={(event) => setSort(event.target.value as SignalSort)} className="h-8 border border-border bg-background px-2"><option value="latest">信号时间：新到旧</option><option value="earliest">信号时间：旧到新</option><option value="strongest">后续涨跌：高到低</option><option value="weakest">后续涨跌：低到高</option></select>
+          <select aria-label="今日信号排序" value={sort} onChange={(event) => setSort(event.target.value as SignalSort)} className="h-8 max-w-full border border-border bg-background px-2">
+            {signalSortColumns.map((column) => <optgroup key={column.field} label={column.label}>
+              <option value={column.descending}>{column.label}：{column.field === "time" ? "新到旧" : "降序"}</option>
+              <option value={column.ascending}>{column.label}：{column.field === "time" ? "旧到新" : "升序"}</option>
+            </optgroup>)}
+          </select>
           <span className="text-[11px] text-muted-foreground">{rows.length} / {data.count} 条</span>
         </div>
       </div>
       {data.excluded.total > 0 && <div className="mb-2 text-xs text-amber-700 dark:text-amber-400">已排除 {data.excluded.total} 条风控未通过或非正常交易时段的正式预警</div>}
       <div className="max-h-[480px] overflow-auto border-y border-border" role="region" aria-label="今日信号明细" tabIndex={0}>
-        <table className="hidden w-full min-w-[960px] text-left text-xs md:table">
+        <table className="hidden w-full min-w-[1080px] text-left text-xs md:table">
           <thead className="sticky top-0 z-10 bg-background text-[11px] text-muted-foreground"><tr>
-            {["股票", "信号 / 阶段", "首次信号 / 基准价", "后续股价涨跌", "信号后最高", "信号后最低", "后续情况"].map((title) => <th scope="col" key={title} className="border-b border-border px-3 py-2 font-medium">{title}</th>)}
+            {signalSortColumns.map((column) => <SortHeader key={column.field} column={column} sort={sort} onSort={setSort} />)}
+            <th scope="col" className="border-b border-border px-3 py-2 font-medium">后续情况</th>
           </tr></thead>
           <tbody className="divide-y divide-border/70">
             {rows.map((row) => {
@@ -171,7 +200,8 @@ export function TodaySignals() {
                 <td className="w-48 px-3 py-3"><div className="font-medium">{signalLabel(item)}</div><div className="mt-1 text-[11px] text-muted-foreground">{item.delivered_at ? `已送达 ${signalClock(item.delivered_at)}` : "站内跟踪，非送达预警"}</div>
                   <SignalDetails item={item} />
                 </td>
-                <td className="px-3 py-3 tabular-nums"><div className="font-medium">{signalClock(item.signal_time)}</div><div className="mt-1 text-muted-foreground">{item.signal_price.toFixed(3)}</div></td>
+                <td className="px-3 py-3 tabular-nums"><div className="font-medium">{signalClock(item.signal_time)}</div></td>
+                <td className="px-3 py-3 tabular-nums">{item.signal_price.toFixed(3)}</td>
                 <td className="px-3 py-3 tabular-nums"><div className={`font-semibold ${tone(row.change)}`}>{pct(row.change)}</div><div className="mt-1 text-[11px] text-muted-foreground">{item.same_day.status === "READY" ? "收盘" : "末次可见"}</div></td>
                 <td className={`px-3 py-3 tabular-nums ${tone(row.high)}`}>{pct(row.high)}</td>
                 <td className={`px-3 py-3 tabular-nums ${tone(row.low)}`}>{pct(row.low)}</td>
