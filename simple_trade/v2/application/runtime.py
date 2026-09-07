@@ -79,6 +79,9 @@ class V2RuntimeSnapshot:
 
 
 class V2Runtime:
+    OVERNIGHT_REFRESH_SECONDS = 600
+    OVERNIGHT_RETRY_SECONDS = 60
+
     def __init__(
         self,
         db: "DatabaseManager",
@@ -587,8 +590,15 @@ class V2Runtime:
 
     async def _overnight_priority_refresh_loop(self) -> None:
         while True:
-            await asyncio.sleep(600)
+            await asyncio.sleep(self._overnight_priority_refresh_delay())
             await self._refresh_overnight_priorities()
+
+    def _overnight_priority_refresh_delay(self) -> int:
+        return (
+            self.OVERNIGHT_RETRY_SECONDS
+            if self.overnight_status == "UNAVAILABLE"
+            else self.OVERNIGHT_REFRESH_SECONDS
+        )
 
     async def _refresh_broker_positions(self) -> None:
         reconciliation = await self.position_provider.fetch()

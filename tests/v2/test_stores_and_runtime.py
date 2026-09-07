@@ -334,6 +334,21 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.stop()
         self.assertFalse(runtime.snapshot().started)
 
+    def test_overnight_restore_retries_quickly_only_while_unavailable(self) -> None:
+        runtime = V2Runtime(self.db, V2Config(enabled=False))
+
+        runtime.overnight_status = "UNAVAILABLE"
+        self.assertEqual(
+            runtime._overnight_priority_refresh_delay(),
+            runtime.OVERNIGHT_RETRY_SECONDS,
+        )
+
+        runtime.overnight_status = "READY"
+        self.assertEqual(
+            runtime._overnight_priority_refresh_delay(),
+            runtime.OVERNIGHT_REFRESH_SECONDS,
+        )
+
     async def test_failed_replay_stops_runtime_and_background_workers(self):
         runtime = V2Runtime(self.db, V2Config(enabled=True, mode=RuntimeMode.SHADOW))
         runtime.ticker_replay_loader.load = AsyncMock(side_effect=RuntimeError("replay failed"))
