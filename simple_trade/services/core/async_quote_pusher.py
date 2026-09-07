@@ -92,7 +92,6 @@ class AsyncQuotePusher:
             else:
                 # 没有订阅，通过 subscription_helper 订阅目标股票
                 flow.step("开始订阅")
-                from ...utils.market_helper import MarketTimeHelper
                 current_markets = MarketTimeHelper.get_current_active_markets()
                 if not current_markets:
                     current_markets = [MarketTimeHelper.get_primary_market()]

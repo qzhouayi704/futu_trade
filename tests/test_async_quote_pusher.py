@@ -35,6 +35,29 @@ def _make_pusher():
 
 
 @pytest.mark.asyncio
+async def test_start_with_existing_subscriptions_starts_push_loop(monkeypatch):
+    pusher, _ = _make_pusher()
+    pusher.container.futu_client = SimpleNamespace(is_available=lambda: True)
+    pusher.container.subscription_manager = SimpleNamespace(subscribed_count=5)
+    pusher._push_loop = AsyncMock()
+    monkeypatch.setattr(
+        "simple_trade.services.core.async_quote_pusher."
+        "MarketTimeHelper.get_current_active_markets",
+        lambda: ["HK"],
+    )
+
+    result = await pusher.start()
+    await pusher.push_task
+
+    assert result == {
+        "success": True,
+        "message": "行情推送服务已启动，订阅 5 只股票",
+        "subscribed_count": 5,
+    }
+    pusher._push_loop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_scored_anomaly_broadcasts_and_forwards_trade_signal():
     pusher, socket_manager = _make_pusher()
     pusher._try_create_anomaly_trades = MagicMock()
