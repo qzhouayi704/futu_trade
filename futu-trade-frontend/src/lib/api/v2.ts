@@ -205,6 +205,8 @@ export interface V2AlertPeriodResult {
   latest_return_pct?: number | null;
   observed_from?: string | null;
   observed_through?: string | null;
+  is_stale?: boolean;
+  lag_seconds?: number | null;
   coverage?: "OBSERVED" | "MISSING";
 }
 

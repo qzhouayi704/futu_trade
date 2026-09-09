@@ -87,9 +87,11 @@ function PeriodCell({ value }: { value: V2AlertPeriodResult }) {
     <div className="text-[11px] text-muted-foreground">
       最差 <span className={tone(value.max_drawdown_pct)}>{pct(value.max_drawdown_pct)}</span>
     </div>
-    <div className="text-[10px] text-muted-foreground">
+    <div className={value.is_stale ? "text-[10px] font-medium text-amber-700 dark:text-amber-400" : "text-[10px] text-muted-foreground"}>
       {value.observed_through
-        ? `截至 ${clock(value.observed_through)}`
+        ? value.is_stale
+          ? `行情已中断，末次 ${clock(value.observed_through)}`
+          : `截至 ${clock(value.observed_through)}`
         : value.intraday_covered ? "信号后分钟统计"
         : value.status === "OBSERVING" ? "盘中跟踪" : value.trading_day?.slice(5) || "待观察"}
     </div>

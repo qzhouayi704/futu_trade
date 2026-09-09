@@ -208,6 +208,7 @@ class V2Runtime:
             await self.candidate_coordinator.start(self.supervisor)
             await self.candidate_subscription_coordinator.start(self.supervisor)
             await self._refresh_overnight_priorities()
+            await self._restore_intraday_signal_subscriptions()
             await self.position_coordinator.start(self.supervisor)
             await self.outcome_coordinator.start(self.supervisor)
             if self.config.mode is RuntimeMode.ALERT:
@@ -558,6 +559,7 @@ class V2Runtime:
     async def _refresh_overnight_priorities(self) -> None:
         now = datetime.now(timezone(timedelta(hours=8)))
         trade_date = now.date().isoformat()
+        self.candidate_subscription_coordinator.begin_session(trade_date)
         if self._overnight_priority_loaded_for_date == trade_date:
             return
         # Old-day priorities cannot stay active while today's calendar/load is unknown.
@@ -587,6 +589,28 @@ class V2Runtime:
             priorities[0].source_date if priorities else "none",
             len(priorities),
         )
+
+    async def _restore_intraday_signal_subscriptions(self) -> None:
+        now = datetime.now(timezone(timedelta(hours=8)))
+        trade_date = now.date().isoformat()
+        try:
+            stock_codes = await self.state_store.list_session_signal_codes(
+                self.config.strategy_version,
+                trade_date,
+            )
+        except Exception as error:
+            logging.warning("V2 intraday signal subscription restore skipped: %s", error)
+            return
+        self.candidate_subscription_coordinator.restore_intraday(
+            stock_codes,
+            trade_date,
+        )
+        if stock_codes:
+            logging.info(
+                "V2 restored intraday signal subscriptions: date=%s stocks=%s",
+                trade_date,
+                len(stock_codes),
+            )
 
     async def _overnight_priority_refresh_loop(self) -> None:
         while True:

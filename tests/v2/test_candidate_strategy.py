@@ -541,8 +541,26 @@ class CandidateStrategyTests(unittest.TestCase):
         self.assertEqual(result.reason_code, "LARGE_OUTFLOW_OFFSETS_INFLOW")
 
         price_break = self.machine.evaluate(
-            snapshot(price=98.5, accepted=False),
-            state(StrategyStatus.WATCHING, metadata={"watch_price": 100}), ELIGIBLE,
+            replace(
+                snapshot(
+                    as_of=NOW + timedelta(minutes=4),
+                    price=98.5,
+                    accepted=False,
+                ),
+                price_acceptance=replace(
+                    snapshot().price_acceptance,
+                    as_of=NOW + timedelta(minutes=4),
+                    current_price=98.5,
+                    accepted=False,
+                    distance_to_vwap_pct=-1.0,
+                ),
+            ),
+            state(
+                StrategyStatus.WATCHING,
+                updated_at=NOW,
+                metadata={"watch_price": 100},
+            ),
+            ELIGIBLE,
         )
         self.assertEqual(price_break.reason_code, "PRICE_ACCEPTANCE_BROKEN")
         self.assertEqual(
@@ -560,6 +578,28 @@ class CandidateStrategyTests(unittest.TestCase):
                 StrategyStatus.WATCHING,
                 updated_at=NOW,
                 metadata={"watch_price": 100, "watch_started_at": NOW},
+            ),
+            ELIGIBLE,
+        )
+
+        self.assertIsNone(result)
+
+    def test_single_large_outflow_does_not_cancel_an_active_watch(self) -> None:
+        single_outflow = window(
+            900,
+            buys=1,
+            sells=1,
+            buy_amount=500_000,
+            sell_amount=800_000,
+            span=600,
+        )
+
+        result = self.machine.evaluate(
+            snapshot(as_of=NOW + timedelta(minutes=10), windows=(single_outflow,)),
+            state(
+                StrategyStatus.WATCHING,
+                updated_at=NOW,
+                metadata={"watch_price": 100},
             ),
             ELIGIBLE,
         )
@@ -610,11 +650,26 @@ class CandidateStrategyTests(unittest.TestCase):
 
         self.assertIsNone(self.machine.evaluate(normal_pullback, watching, ELIGIBLE))
 
-        broken = replace(
+        pre_signal_peak_break = replace(
             normal_pullback,
             price_acceptance=replace(
                 normal_pullback.price_acceptance,
                 drawdown_from_peak_pct=-2.01,
+            ),
+        )
+        self.assertIsNone(
+            self.machine.evaluate(pre_signal_peak_break, watching, ELIGIBLE)
+        )
+
+        broken = replace(
+            pre_signal_peak_break,
+            computed_at=NOW + timedelta(minutes=4),
+            quote=replace(pre_signal_peak_break.quote, last_price=97.9),
+            price_acceptance=replace(
+                pre_signal_peak_break.price_acceptance,
+                as_of=NOW + timedelta(minutes=4),
+                current_price=97.9,
+                distance_to_vwap_pct=-1.6,
             ),
         )
         invalidated = self.machine.evaluate(broken, watching, ELIGIBLE)
@@ -817,6 +872,45 @@ class CandidateStrategyTests(unittest.TestCase):
 
         self.assertEqual(watching.new_status, StrategyStatus.WATCHING)
         self.assertEqual(watching.reason_code, "LOW_POSITION_ACCUMULATION_WATCH")
+
+    def test_low_position_absorption_takes_priority_over_memory_shadow(self) -> None:
+        slow = window(3600, buys=4, buy_amount=1_800_000, span=900)
+        item = snapshot(
+            as_of=NOW + timedelta(minutes=15),
+            windows=(slow,),
+            memory=capital_memory(as_of=NOW + timedelta(minutes=15)),
+        )
+        item = replace(
+            item,
+            price_position=replace(item.price_position, daily_percentile=0.20),
+        )
+
+        watching = self.machine.evaluate(
+            item,
+            state(StrategyStatus.SETUP, updated_at=NOW),
+            SOFT_INELIGIBLE,
+        )
+
+        self.assertEqual(watching.reason_code, "LOW_POSITION_ACCUMULATION_WATCH")
+        self.assertEqual(watching.metadata["watch_kind"], "low_position_accumulation")
+        confirmed = self.machine.evaluate(
+            snapshot(
+                as_of=NOW + timedelta(minutes=16),
+                windows=(slow,),
+                memory=capital_memory(as_of=NOW + timedelta(minutes=16)),
+            ),
+            state(
+                StrategyStatus.WATCHING,
+                updated_at=NOW + timedelta(minutes=15),
+                metadata=watching.metadata,
+            ),
+            SOFT_INELIGIBLE,
+        )
+        self.assertEqual(
+            confirmed.reason_code,
+            "LOW_POSITION_15M_ACCUMULATION_CONFIRMED",
+        )
+        self.assertTrue(confirmed.alert_eligible)
 
     def test_low_position_watch_can_confirm_through_soft_universe_gates(self) -> None:
         slow = window(3600, buys=4, buy_amount=1_800_000, span=900)

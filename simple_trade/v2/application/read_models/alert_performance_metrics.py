@@ -3,10 +3,11 @@
 from datetime import datetime, time
 from math import isfinite
 
-from ....utils.trade_time import market_datetime
+from ....utils.trade_time import is_hk_continuous_session, market_datetime
 from .alert_performance_tape import TapePerformance
 
 HORIZONS = (1, 3, 5, 10)
+LIVE_TAPE_STALE_SECONDS = 180
 
 
 def evaluate_alert(
@@ -93,6 +94,23 @@ def evaluate_alert(
     status = "OBSERVING"
     if same_close is not None:
         status = "READY" if settled else "PARTIAL" if day_finished else "LIVE"
+    observed_at = (
+        market_datetime(raw_tape.last_time, alert["stock_code"])
+        if raw_tape is not None
+        else None
+    )
+    lag_seconds = (
+        max(0, int((now - observed_at).total_seconds()))
+        if now is not None
+        and observed_at is not None
+        and alert["signal_date"] == today
+        and not settled
+        and is_hk_continuous_session(now)
+        else None
+    )
+    is_stale = bool(
+        lag_seconds is not None and lag_seconds > LIVE_TAPE_STALE_SECONDS
+    )
     return {
         **alert,
         "stock_name": names.get(alert["stock_code"], ""),
@@ -107,6 +125,8 @@ def evaluate_alert(
             "intraday_covered": raw_tape is not None or bool(minute_rows),
             "observed_from": raw_tape.first_time if raw_tape else None,
             "observed_through": raw_tape.last_time if raw_tape else None,
+            "is_stale": is_stale,
+            "lag_seconds": lag_seconds,
             "coverage": "OBSERVED" if raw_tape or minute_rows else "MISSING",
         },
         "periods": periods,

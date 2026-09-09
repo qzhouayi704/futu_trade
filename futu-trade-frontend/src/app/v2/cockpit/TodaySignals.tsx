@@ -71,6 +71,7 @@ function ChangeCounts({ counts }: { counts: { up: number; down: number; flat: nu
 function Observation({ row }: { row: TodaySignalRow }) {
   const result = row.item.same_day;
   const settled = result.status === "READY";
+  const staleMinutes = result.lag_seconds == null ? null : Math.max(1, Math.floor(result.lag_seconds / 60));
   const label = row.change == null ? "等待行情"
     : row.change === 0 ? "与信号价持平"
     : row.item.direction === "SELL"
@@ -83,7 +84,9 @@ function Observation({ row }: { row: TodaySignalRow }) {
       {settled ? "已补收盘" : result.status === "PARTIAL" ? "待补收盘" : "盘中未结算"}
     </div>
     {result.observed_through
-      ? <div className="text-[11px] text-muted-foreground">行情截至 {signalClock(result.observed_through)}</div>
+      ? <div className={result.is_stale ? "text-[11px] font-medium text-amber-700 dark:text-amber-400" : "text-[11px] text-muted-foreground"}>
+        {result.is_stale ? `行情已中断${staleMinutes == null ? "" : ` ${staleMinutes} 分钟`}，末次 ${signalClock(result.observed_through)}` : `行情截至 ${signalClock(result.observed_through)}`}
+      </div>
       : row.change != null && !settled && <div className="text-[11px] text-amber-700 dark:text-amber-400">采样时间未提供</div>}
     {!result.intraday_covered && <div className="text-[11px] text-amber-700 dark:text-amber-400">缺少信号后路径</div>}
   </div>;
@@ -167,7 +170,7 @@ export function TodaySignals() {
         <div className="px-3 py-3">
           <div className="text-[11px] text-muted-foreground">当前范围样本</div>
           <div className="mt-1 text-xl font-semibold tabular-nums">{summary.count}</div>
-          <div className="mt-1 text-[11px] text-muted-foreground">有行情 {summary.observed} · 待行情 {summary.count - summary.observed} · 已结算 {summary.settled}</div>
+          <div className="mt-1 text-[11px] text-muted-foreground">有效行情 {summary.observed} · 断流 {summary.stale} · 待行情 {summary.count - summary.observed - summary.stale} · 已结算 {summary.settled}</div>
           {lifecycle && <div className="mt-1 grid grid-cols-2 gap-x-3 text-[11px] text-muted-foreground"><span>有效 {lifecycle.active}</span><span>失效 {lifecycle.invalidated}</span><span>曾确认 {lifecycle.confirmed}</span><span>可正式提醒 {lifecycle.formal}</span></div>}
         </div>
         <div className="border-l border-border px-3 py-3">

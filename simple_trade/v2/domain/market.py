@@ -172,6 +172,15 @@ class TickAggregate:
         )
 
     @property
+    def independent_sell_span_seconds(self) -> float:
+        if self.first_independent_sell_at is None or self.last_independent_sell_at is None:
+            return 0.0
+        return max(
+            0.0,
+            (self.last_independent_sell_at - self.first_independent_sell_at).total_seconds(),
+        )
+
+    @property
     def net_direction(self) -> TickDirection:
         if self.main_net > 0:
             return TickDirection.BUY

@@ -353,8 +353,34 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(value["source"], "TICKER_DATA")
         self.assertEqual(value["latest_return_pct"], 3.0612)
         self.assertIsNone(value["close_return_pct"])
+        self.assertFalse(value["is_stale"])
+        self.assertEqual(value["lag_seconds"], 30)
         self.assertEqual(result["summary"]["same_day"]["completed_count"], 0)
         self.assertEqual(result["items"][0]["periods"]["1"]["status"], "PENDING")
+
+    async def test_live_raw_tape_marks_an_intraday_subscription_gap(self) -> None:
+        self.mock_now.return_value = datetime(2026, 9, 2, 6, tzinfo=timezone.utc)
+        database = FakeAlertDatabase()
+        database.candidate_rows = [database.candidate_rows[0]]
+        database.raw_rows = [
+            (
+                "setup-1",
+                101,
+                103,
+                97,
+                "2026-09-02 09:41:00",
+                "2026-09-02 13:50:00",
+                4,
+            )
+        ]
+
+        result = await AlertPerformanceReader(database).history(
+            trade_date="2026-09-02"
+        )
+
+        value = result["items"][0]["same_day"]
+        self.assertTrue(value["is_stale"])
+        self.assertEqual(value["lag_seconds"], 600)
 
     async def test_signal_minute_extremes_before_confirmation_are_not_used(self) -> None:
         database = FakeAlertDatabase()

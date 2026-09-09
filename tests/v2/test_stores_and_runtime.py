@@ -1,5 +1,6 @@
 import concurrent.futures
 from contextlib import closing, contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import importlib.util
 import asyncio
@@ -27,7 +28,10 @@ from simple_trade.v2.domain.orders import OrderLeg, RiskDecision, TradeIntent
 from simple_trade.v2.domain.positions import PositionState
 from simple_trade.v2.infrastructure.sqlite_event_store import SqliteEventStore
 from simple_trade.v2.infrastructure.sqlite_position_state_store import SqlitePositionStateStore
-from simple_trade.v2.infrastructure.sqlite_state_store import StateConflictError
+from simple_trade.v2.infrastructure.sqlite_state_store import (
+    SqliteStateStore,
+    StateConflictError,
+)
 from simple_trade.v2.infrastructure.capital_seed_loader import CapitalSeedLoader
 from simple_trade.v2.infrastructure.notifications import SqliteNotificationStore
 from simple_trade.v2.infrastructure.risk import SqliteTradeIntentStore
@@ -150,6 +154,24 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].event_id, event.event_id)
         self.assertEqual(loaded[0].payload["score"], 82.5)
+
+    async def test_lists_signals_that_need_intraday_subscription_restoration(self) -> None:
+        hk = timezone(timedelta(hours=8))
+        event_time = datetime(2026, 9, 9, 10, tzinfo=hk)
+        event = replace(
+            make_event("event-restore"),
+            stock_code="HK.00819",
+            exchange_time=event_time,
+            received_time=event_time,
+        )
+        await self.store.append(event)
+
+        stock_codes = await SqliteStateStore(self.db).list_session_signal_codes(
+            event.strategy_version,
+            "2026-09-09",
+        )
+
+        self.assertEqual(stock_codes, ("HK.00819",))
 
     async def test_all_v2_tables_and_indexes_initialize(self) -> None:
         tables = {
@@ -333,6 +355,42 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.snapshot().tasks[0].name, "v2-event-bus")
         await runtime.stop()
         self.assertFalse(runtime.snapshot().started)
+
+    async def test_runtime_restores_today_signal_subscriptions(self) -> None:
+        class SubscriptionPort:
+            def __init__(self) -> None:
+                self.protected: tuple[str, ...] = ()
+
+            def subscribe_candidate(self, stock_code: str) -> bool:
+                return True
+
+            def protect_candidates(self, stock_codes: tuple[str, ...]) -> None:
+                self.protected = stock_codes
+
+        port = SubscriptionPort()
+        runtime = V2Runtime(
+            self.db,
+            V2Config(enabled=True, mode=RuntimeMode.SHADOW),
+            candidate_subscription_port=port,
+        )
+        hk = timezone(timedelta(hours=8))
+        now = datetime.now(hk)
+        event = replace(
+            make_event("event-runtime-restore", runtime.config.strategy_version),
+            stock_code="HK.00819",
+            exchange_time=now,
+            received_time=now,
+        )
+        await runtime.event_store.append(event)
+
+        await runtime.start()
+        try:
+            await asyncio.wait_for(
+                runtime.candidate_subscription_coordinator._queue.join(), timeout=1
+            )
+            self.assertIn("HK.00819", port.protected)
+        finally:
+            await runtime.stop()
 
     def test_overnight_restore_retries_quickly_only_while_unavailable(self) -> None:
         runtime = V2Runtime(self.db, V2Config(enabled=False))

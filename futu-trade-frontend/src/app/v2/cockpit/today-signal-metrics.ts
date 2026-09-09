@@ -69,13 +69,15 @@ function changeSummary(rows: TodaySignalRow[]) {
 }
 
 export function todaySignalSummary(rows: TodaySignalRow[]) {
-  const buys = rows.filter(({ item }) => item.direction !== "SELL");
-  const sells = rows.filter(({ item }) => item.direction === "SELL");
+  const freshRows = rows.filter(({ item }) => !item.same_day.is_stale);
+  const buys = freshRows.filter(({ item }) => item.direction !== "SELL");
+  const sells = freshRows.filter(({ item }) => item.direction === "SELL");
   const paths = buys.filter(({ high }) => high != null);
   return {
     count: rows.length,
-    observed: rows.filter(({ change }) => change != null).length,
-    settled: rows.filter(({ item, change }) => item.same_day.status === "READY" && change != null).length,
+    observed: freshRows.filter(({ change }) => change != null).length,
+    stale: rows.filter(({ item }) => item.same_day.is_stale).length,
+    settled: freshRows.filter(({ item, change }) => item.same_day.status === "READY" && change != null).length,
     buys: changeSummary(buys),
     sells: changeSummary(sells),
     paths: paths.length,

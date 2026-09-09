@@ -24,6 +24,10 @@ class CandidateStateMachine:
     SOFT_REENTRY_SECONDS = 300
     FLOW_REENTRY_SECONDS = 120
     UNIVERSE_GRACE_SECONDS = 300
+    PRICE_INVALIDATION_GRACE_SECONDS = 180
+    OUTFLOW_INVALIDATION_GRACE_SECONDS = 300
+    FAST_OUTFLOW_MIN_EVENTS = 2
+    SLOW_OUTFLOW_MIN_EVENTS = 3
     SETUP_ENRICHMENT_GRACE_SECONDS = 600
     OVERNIGHT_WATCH_SECONDS = 7200
     OVERNIGHT_ENTRY_MIN_BREADTH = 0.35
@@ -97,16 +101,16 @@ class CandidateStateMachine:
             strong_trend = self._confirm_strong_trend_reentry(snapshot, universe)
             if strong_trend is not None:
                 return strong_trend
-            memory_watch = self._enter_capital_memory_watch(
-                snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
-            )
-            if memory_watch is not None:
-                return memory_watch
             low_position_watch = self._enter_low_position_watch(
                 snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
             )
             if low_position_watch is not None:
                 return low_position_watch
+            memory_watch = self._enter_capital_memory_watch(
+                snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
+            )
+            if memory_watch is not None:
+                return memory_watch
             momentum_watch = self._enter_strict_momentum_watch(
                 snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
             )
@@ -471,16 +475,16 @@ class CandidateStateMachine:
             elapsed >= self.SOFT_REENTRY_SECONDS
             and invalidation_reason in self.SOFT_UNIVERSE_REASONS
         ):
-            memory_watch = self._enter_capital_memory_watch(
-                snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
-            )
-            if memory_watch is not None:
-                return memory_watch
             low_position_watch = self._enter_low_position_watch(
                 snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
             )
             if low_position_watch is not None:
                 return low_position_watch
+            memory_watch = self._enter_capital_memory_watch(
+                snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
+            )
+            if memory_watch is not None:
+                return memory_watch
             momentum_watch = self._enter_strict_momentum_watch(
                 snapshot, universe, event_type=EventType.CANDIDATE_ENTERED
             )
@@ -524,10 +528,21 @@ class CandidateStateMachine:
             )
         fast = self._window(snapshot, self.FAST_WINDOW_SECONDS)
         slow = self._window(snapshot, self.SLOW_WINDOW_SECONDS)
-        fast_outflow = fast is not None and self._outflow_offsets_inflow(fast)
-        slow_outflow = slow is not None and self._outflow_offsets_inflow(slow)
-        if fast_outflow or (
-            slow_outflow and not self._recent_inflow_recovered(snapshot, fast)
+        state_age = self._state_age(snapshot, state) if state is not None else 0.0
+        fast_outflow = self._confirmed_outflow(
+            fast,
+            minimum_events=self.FAST_OUTFLOW_MIN_EVENTS,
+            minimum_span_seconds=self.MIN_FAST_EVENT_SPAN_SECONDS,
+        )
+        slow_outflow = self._confirmed_outflow(
+            slow,
+            minimum_events=self.SLOW_OUTFLOW_MIN_EVENTS,
+            minimum_span_seconds=self.MIN_SLOW_EVENT_SPAN_SECONDS,
+        )
+        if (
+            state_age >= self.OUTFLOW_INVALIDATION_GRACE_SECONDS
+            and (fast_outflow or slow_outflow)
+            and not self._recent_inflow_recovered(snapshot, fast)
         ):
             return self._active_invalidated(snapshot, "LARGE_OUTFLOW_OFFSETS_INFLOW")
         acceptance = snapshot.price_acceptance
@@ -542,33 +557,30 @@ class CandidateStateMachine:
             state and state.metadata.get("watch_kind") == "overnight_priority"
         )
         tolerant_watch = low_position_watch or capital_memory_watch or overnight_priority_watch
-        vwap_floor = -1.0 if tolerant_watch else -0.3
+        vwap_floor = -1.5 if tolerant_watch else -0.5
         pullback_limit = CandidateSignalRules.adaptive_pullback_limit_pct(
             snapshot,
-            minimum=1.5 if tolerant_watch else 1.0,
+            minimum=2.0 if tolerant_watch else 1.2,
         )
-        drawdown_floor = -pullback_limit
         watch_return_floor = -pullback_limit
         watch_return = (
             (snapshot.quote.last_price / watch_price - 1.0) * 100.0
             if watch_price and snapshot.quote.last_price > 0
             else None
         )
+        watch_price_broken = bool(
+            watch_return is not None and watch_return < watch_return_floor
+        )
+        vwap_broken = bool(
+            acceptance is not None
+            and acceptance.distance_to_vwap_pct is not None
+            and acceptance.distance_to_vwap_pct < vwap_floor
+        )
         if (
-            (watch_return is not None and watch_return < watch_return_floor)
-            or (
-                acceptance is not None
-                and (
-                    (
-                        acceptance.distance_to_vwap_pct is not None
-                        and acceptance.distance_to_vwap_pct < vwap_floor
-                    )
-                    or (
-                        acceptance.drawdown_from_peak_pct is not None
-                        and acceptance.drawdown_from_peak_pct < drawdown_floor
-                    )
-                )
-            )
+            state_age >= self.PRICE_INVALIDATION_GRACE_SECONDS
+            and watch_price_broken
+            and vwap_broken
+            and not self._recent_inflow_recovered(snapshot, fast)
         ):
             return self._active_invalidated(snapshot, "PRICE_ACCEPTANCE_BROKEN")
         if (
@@ -894,6 +906,21 @@ class CandidateStateMachine:
     @staticmethod
     def _outflow_offsets_inflow(window: TickAggregate) -> bool:
         return CandidateSignalRules.outflow_offsets_inflow(window)
+
+    @classmethod
+    def _confirmed_outflow(
+        cls,
+        window: TickAggregate | None,
+        *,
+        minimum_events: int,
+        minimum_span_seconds: int,
+    ) -> bool:
+        return bool(
+            window is not None
+            and window.independent_sell_events >= minimum_events
+            and window.independent_sell_span_seconds >= minimum_span_seconds
+            and cls._outflow_offsets_inflow(window)
+        )
 
     @staticmethod
     def _recent_inflow_recovered(

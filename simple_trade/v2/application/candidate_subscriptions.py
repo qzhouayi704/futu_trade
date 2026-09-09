@@ -5,8 +5,9 @@ from dataclasses import dataclass
 import logging
 import time
 from typing import Protocol
-from ..domain.candidates import OVERNIGHT_HARD_INVALIDATIONS
 
+from ...utils.trade_time import market_datetime
+from ..domain.candidates import OVERNIGHT_HARD_INVALIDATIONS
 from ..domain.decisions import DecisionEvent
 from ..domain.enums import EventType, StrategyStatus
 from .event_bus import EventBus
@@ -50,7 +51,9 @@ class CandidateSubscriptionCoordinator:
         self._completed = 0
         self._failed = 0
         self._deduplicated = 0
-        self._protected: tuple[str, ...] = ()
+        self._overnight_protected: tuple[str, ...] = ()
+        self._intraday_protected: set[str] = set()
+        self._intraday_session_date = ""
 
     def register(self, bus: EventBus) -> None:
         if self._bus is bus:
@@ -58,6 +61,8 @@ class CandidateSubscriptionCoordinator:
         if self._bus is not None:
             raise RuntimeError("CandidateSubscriptionCoordinator already registered")
         bus.subscribe(EventType.CANDIDATE_ENTERED, self.on_candidate_entered)
+        bus.subscribe(EventType.CANDIDATE_UPDATED, self.on_candidate_activity)
+        bus.subscribe(EventType.BUY_CONFIRMED, self.on_candidate_activity)
         bus.subscribe(EventType.CANDIDATE_INVALIDATED, self.on_candidate_invalidated)
         bus.subscribe(EventType.BUY_INVALIDATED, self.on_candidate_invalidated)
         self._bus = bus
@@ -66,6 +71,8 @@ class CandidateSubscriptionCoordinator:
         if self._bus is None:
             return
         self._bus.unsubscribe(EventType.CANDIDATE_ENTERED, self.on_candidate_entered)
+        self._bus.unsubscribe(EventType.CANDIDATE_UPDATED, self.on_candidate_activity)
+        self._bus.unsubscribe(EventType.BUY_CONFIRMED, self.on_candidate_activity)
         self._bus.unsubscribe(EventType.CANDIDATE_INVALIDATED, self.on_candidate_invalidated)
         self._bus.unsubscribe(EventType.BUY_INVALIDATED, self.on_candidate_invalidated)
         self._bus = None
@@ -105,24 +112,79 @@ class CandidateSubscriptionCoordinator:
             }
         ):
             return
+        if event.new_state == StrategyStatus.WATCHING.value:
+            self._remember_intraday(event)
         self._request(event.stock_code)
 
     def prime(self, stock_codes: tuple[str, ...]) -> None:
-        self._protected = stock_codes
-        if self._port is None:
-            return
-        protect = getattr(self._port, "protect_candidates", None)
-        if callable(protect):
-            protect(stock_codes)
+        self._overnight_protected = tuple(dict.fromkeys(stock_codes))
+        self._apply_protection()
         for code in stock_codes:
             self._request(code)
 
-    def on_candidate_invalidated(self, event) -> None:
+    def restore_intraday(self, stock_codes: tuple[str, ...], session_date: str) -> None:
+        self.begin_session(session_date)
+        self._intraday_protected.update(stock_codes)
+        self._apply_protection()
+        for code in stock_codes:
+            self._request(code)
+
+    def begin_session(self, session_date: str) -> None:
+        if session_date == self._intraday_session_date:
+            return
+        self._intraday_session_date = session_date
+        self._intraday_protected.clear()
+        self._apply_protection()
+
+    def on_candidate_activity(self, event) -> None:
         if (
-            isinstance(event, DecisionEvent) and event.stock_code in self._protected
-            and event.reason_code in OVERNIGHT_HARD_INVALIDATIONS | {"OVERNIGHT_PRIORITY_EXPIRED"}
+            not self._running
+            or not isinstance(event, DecisionEvent)
+            or event.new_state not in {
+                StrategyStatus.WATCHING.value,
+                StrategyStatus.CONFIRMED.value,
+            }
         ):
-            self.prime(tuple(code for code in self._protected if code != event.stock_code))
+            return
+        self._remember_intraday(event)
+        self._request(event.stock_code)
+
+    def on_candidate_invalidated(self, event) -> None:
+        if not isinstance(event, DecisionEvent):
+            return
+        if event.old_state in {
+            StrategyStatus.WATCHING.value,
+            StrategyStatus.CONFIRMED.value,
+        }:
+            self._remember_intraday(event)
+        if (
+            event.stock_code in self._overnight_protected
+            and event.reason_code
+            in OVERNIGHT_HARD_INVALIDATIONS | {"OVERNIGHT_PRIORITY_EXPIRED"}
+        ):
+            self.prime(tuple(
+                code for code in self._overnight_protected if code != event.stock_code
+            ))
+
+    def _remember_intraday(self, event: DecisionEvent) -> None:
+        exchange_time = market_datetime(event.exchange_time, event.stock_code)
+        if exchange_time is None:
+            return
+        session_date = exchange_time.date().isoformat()
+        self.begin_session(session_date)
+        self._intraday_protected.add(event.stock_code)
+        self._apply_protection()
+
+    def _apply_protection(self) -> None:
+        if self._port is None:
+            return
+        protected = tuple(dict.fromkeys((
+            *self._overnight_protected,
+            *sorted(self._intraday_protected),
+        )))
+        protect = getattr(self._port, "protect_candidates", None)
+        if callable(protect):
+            protect(protected)
 
     def _request(self, code: str) -> None:
         if not self._running:

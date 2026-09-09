@@ -1,7 +1,7 @@
 """V2 策略状态 SQLite 适配器。"""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import sqlite3
 from typing import TYPE_CHECKING, Protocol
@@ -107,6 +107,32 @@ class SqliteStateStore:
             expected_version,
             timeout=self._write_timeout,
         )
+
+    async def list_session_signal_codes(
+        self,
+        strategy_version: str,
+        session_date: str,
+    ) -> tuple[str, ...]:
+        day = datetime.fromisoformat(session_date).date()
+        next_day = day + timedelta(days=1)
+        rows = await asyncio.to_thread(
+            self._db.execute_query,
+            "SELECT DISTINCT stock_code FROM v2_decision_events "
+            "WHERE strategy_version=? AND exchange_time>=? AND exchange_time<? "
+            "AND event_type IN (?, ?, ?) AND new_state IN (?, ?) "
+            "ORDER BY stock_code",
+            (
+                strategy_version,
+                day.isoformat(),
+                next_day.isoformat(),
+                "CANDIDATE_ENTERED",
+                "CANDIDATE_UPDATED",
+                "BUY_CONFIRMED",
+                StrategyStatus.WATCHING.value,
+                StrategyStatus.CONFIRMED.value,
+            ),
+        )
+        return tuple(require_stock_code(row[0]) for row in rows)
 
     def _save_sync(self, state: StrategyState, expected_version: int) -> None:
         with self._db.transaction() as cursor:

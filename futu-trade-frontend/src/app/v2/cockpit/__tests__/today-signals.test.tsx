@@ -118,6 +118,25 @@ describe("今日信号统计口径", () => {
     expect(todaySignalSummary([])).toMatchObject({ count: 0, buys: { mean: null }, sells: { mean: null }, reached5: 0 });
   });
 
+  it("excludes interrupted live quotes from the aggregate scorecard", () => {
+    const fresh = signal();
+    const stale = signal({
+      event_id: "stale",
+      same_day: {
+        ...fresh.same_day,
+        latest_return_pct: 12,
+        max_return_pct: 15,
+        is_stale: true,
+        lag_seconds: 600,
+      },
+    });
+
+    const summary = todaySignalSummary([fresh, stale].map(todaySignalRow));
+
+    expect(summary).toMatchObject({ count: 2, observed: 1, stale: 1, paths: 1 });
+    expect(summary.buys).toEqual({ count: 1, up: 1, down: 0, flat: 0, mean: 2.5 });
+  });
+
   it("sorts the entire day, keeps missing returns last and does not mutate input", () => {
     const early = todaySignalRow(signal());
     const late = todaySignalRow(signal({ event_id: "late", signal_time: "2026-09-07T11:00:00+08:00", same_day: { ...signal().same_day, latest_return_pct: -1 } }));
@@ -221,6 +240,18 @@ describe("驾驶舱今日信号展示", () => {
     expect(html).toContain("缺少信号后路径");
     expect(html).toContain("待补收盘");
     expect(html).toContain("采样时间未提供");
+  });
+
+  it("shows interrupted market data instead of presenting it as current", () => {
+    const stale = signal();
+    stale.same_day.is_stale = true;
+    stale.same_day.lag_seconds = 600;
+    state.data = performance([stale]);
+
+    const html = render();
+
+    expect(html).toContain("行情已中断 10 分钟");
+    expect(html).toContain("断流 1");
   });
 
   it("shows query failure instead of asserting there were no signals", () => {
