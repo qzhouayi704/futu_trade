@@ -1,7 +1,7 @@
 """Read persisted ticker rows needed to rebuild V2 intraday capital state."""
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from math import isfinite
 from typing import Protocol
 
@@ -46,44 +46,64 @@ class TickerReplayLoader:
             raise ValueError("replay threshold must be positive")
         cutoff = as_of - timedelta(seconds=self._window_seconds)
         us_time = market_datetime(as_of, "US.")
-        us_midnight = us_time.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() if us_time else None
-        us_offset = f"{-int(us_time.utcoffset().total_seconds() / 60):+d} minutes" if us_time else None
-        trade_jd = (
-            "CASE WHEN substr(trade_time,-6,1) IN ('+','-') "
-            "OR upper(substr(trade_time,-1))='Z' THEN julianday(trade_time) "
-            "WHEN stock_code LIKE 'US.%' THEN julianday(trade_time, (SELECT us_offset FROM settings)) "
-            "ELSE julianday(trade_time,'-8 hours') END"
+        local_midnight = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
+        receipt_start = min(
+            local_midnight.astimezone(timezone.utc),
+            us_time.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc),
         )
+        receipt_end_ms = int(as_of.timestamp() * 1000)
+        recent_start_ms = int(cutoff.timestamp() * 1000)
+        receipt_start_ms = int(receipt_start.timestamp() * 1000)
         rows = await asyncio.to_thread(
             self._db.execute_query,
-            "WITH settings(us_offset) AS (VALUES (?)) "
-            "SELECT stock_code, trade_time, price, volume, turnover, direction, sequence "
-            "FROM ticker_data WHERE trade_date BETWEEN ? AND ? AND direction IN ('BUY','SELL') "
-            f"AND {trade_jd}>=julianday(CASE WHEN stock_code LIKE 'US.%' THEN ? ELSE ? END) "
-            f"AND {trade_jd}<=julianday(?) "
-            f"AND ({trade_jd}>=julianday(?) OR turnover>=?) "
-            f"ORDER BY {trade_jd}, id LIMIT ?",
+            "WITH selected AS ("
+            "SELECT id, stock_code, trade_time, price, volume, turnover, direction, sequence "
+            "FROM ticker_data WHERE timestamp BETWEEN ? AND ? AND direction IN ('BUY','SELL') "
+            "UNION "
+            "SELECT id, stock_code, trade_time, price, volume, turnover, direction, sequence "
+            "FROM ticker_data WHERE timestamp BETWEEN ? AND ? AND turnover>=? "
+            "AND direction IN ('BUY','SELL')) "
+            "SELECT id, stock_code, trade_time, price, volume, turnover, direction, sequence "
+            "FROM selected ORDER BY id LIMIT ?",
             (
-                us_offset,
-                (as_of.date() - timedelta(days=1)).isoformat(),
-                (as_of.date() + timedelta(days=1)).isoformat(),
-                us_midnight,
-                as_of.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(),
-                as_of.isoformat(), cutoff.isoformat(), threshold, self._row_limit + 1,
+                recent_start_ms,
+                receipt_end_ms,
+                receipt_start_ms,
+                receipt_end_ms,
+                threshold,
+                self._row_limit + 1,
             ),
         )
         if len(rows) > self._row_limit:
             raise TickerReplayLimitExceeded(f"V2 ticker replay exceeds {self._row_limit} rows")
-        return tuple(
-            {
-                "stock_code": str(row[0]),
-                "time": market_datetime(row[1], str(row[0])).isoformat(),
-                "price": row[2],
-                "volume": row[3],
-                "turnover": row[4],
-                "direction": row[5],
-                # Futu sequence restarts across requests and is not a stable replay key.
-                "sequence": None,
-            }
-            for row in rows
-        )
+        selected: list[tuple[datetime, int, dict]] = []
+        for row in rows:
+            stock_code = str(row[1])
+            trade_time = market_datetime(row[2], stock_code)
+            market_now = market_datetime(as_of, stock_code)
+            if trade_time is None or market_now is None:
+                continue
+            market_open = market_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            turnover = float(row[5] or 0.0)
+            if not market_open <= trade_time <= market_now:
+                continue
+            if trade_time < cutoff.astimezone(trade_time.tzinfo) and turnover < threshold:
+                continue
+            selected.append((
+                trade_time,
+                int(row[0]),
+                {
+                    "stock_code": stock_code,
+                    "time": trade_time.isoformat(),
+                    "price": row[3],
+                    "volume": row[4],
+                    "turnover": row[5],
+                    "direction": row[6],
+                    # Futu sequence restarts across requests and is not a stable replay key.
+                    "sequence": None,
+                },
+            ))
+        selected.sort(key=lambda item: (item[0], item[1]))
+        if len(selected) > self._row_limit:
+            raise TickerReplayLimitExceeded(f"V2 ticker replay exceeds {self._row_limit} rows")
+        return tuple(item[2] for item in selected)
