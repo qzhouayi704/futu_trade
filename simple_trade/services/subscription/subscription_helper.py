@@ -4,6 +4,7 @@
 
 import logging
 import threading
+import time
 from typing import Dict, Any, List, Optional
 
 from ...database.core.db_manager import DatabaseManager
@@ -23,6 +24,9 @@ from ..market_data.kline.background_kline_task import BackgroundKlineTask
 class SubscriptionHelper:
     """订阅管理辅助服务 - 负责股票订阅的核心逻辑"""
 
+    _TICKER_PRIORITY_HEADROOM = 5
+    _MIN_SUBSCRIPTION_SECONDS = 65.0
+
     def __init__(self, db_manager: DatabaseManager, futu_client: FutuClient,
                  subscription_manager: SubscriptionManager = None,
                  quote_service: QuoteService = None, config=None, container=None):
@@ -33,6 +37,7 @@ class SubscriptionHelper:
         self.container = container
         self.priority_stocks = set()
         self.candidate_priority_stocks = set()
+        self._candidate_priority_order = ()
         self._subscription_refresh_lock = threading.Lock()
         self._inactive_refresh_counts: Dict[str, int] = {}
 
@@ -99,7 +104,8 @@ class SubscriptionHelper:
 
     def set_candidate_priority_stocks(self, stock_codes: List[str]):
         """设置 V2 跨日候选，保护其逐笔订阅但不冒充持仓。"""
-        self.candidate_priority_stocks = set(stock_codes) if stock_codes else set()
+        self._candidate_priority_order = tuple(dict.fromkeys(stock_codes or ()))
+        self.candidate_priority_stocks = set(self._candidate_priority_order)
         if self.candidate_priority_stocks:
             logging.info(
                 "【V2跨日优先订阅】保护 %s 只股票",
@@ -451,18 +457,73 @@ class SubscriptionHelper:
             result['errors'].extend(subscribe_result.get('errors', []))
         logging.info(f"按优先级和市场筛选{msg}")
 
-        # QUOTE 订阅成功后，自动为所有活跃股补充 TICKER 订阅
-        # 使资金异动扫描可以覆盖全部活跃股，而非仅手动分析过的个股
+        # TICKER 只有 100 个席位，按交易价值同步并预留盘中新候选机动位。
         try:
-            from futu import SubType
-            ticker_codes = list(final)
-            ticker_result = self.subscription_manager.subscribe_multi_types(
-                ticker_codes, [SubType.TICKER]
-            )
-            ticker_ok = ticker_result.get('subscribed_count', 0)
-            logging.info(f"【TICKER批量订阅】成功订阅 {ticker_ok}/{len(ticker_codes)} 只股票的逐笔数据")
+            self._sync_ticker_subscriptions(target_stocks)
         except Exception as e:
-            logging.warning(f"【TICKER批量订阅】失败（不影响QUOTE）: {e}")
+            logging.warning(f"【TICKER优先订阅】同步失败（不影响QUOTE）: {e}")
+
+    def _sync_ticker_subscriptions(self, target_stocks: List[Dict[str, Any]]) -> None:
+        """按持仓、V2 候选、活跃排名同步稀缺的逐笔订阅席位。"""
+        from futu import SubType
+
+        manager = self.subscription_manager
+        if manager is None:
+            return
+        max_quota = max(0, int(manager._max_ticker_subscription))
+        if max_quota <= 0:
+            return
+
+        position_order = sorted(getattr(self, 'priority_stocks', set()))
+        candidate_set = set(getattr(self, 'candidate_priority_stocks', set()))
+        candidate_order = list(getattr(self, '_candidate_priority_order', ()))
+        candidate_order.extend(sorted(candidate_set - set(candidate_order)))
+        active_order = [
+            str(stock.get('code') or '').strip().upper()
+            for stock in target_stocks
+            if isinstance(stock, dict) and stock.get('code')
+        ]
+        protected_order = list(dict.fromkeys((*position_order, *candidate_order)))
+        protected = set(protected_order)
+        desired_capacity = min(
+            max_quota,
+            max(len(protected_order), max_quota - self._TICKER_PRIORITY_HEADROOM),
+        )
+        desired = list(dict.fromkeys((*protected_order, *active_order)))[:desired_capacity]
+        desired_set = set(desired)
+
+        current = manager.ticker_subscribed_stocks
+        now = time.time()
+        stale = sorted(
+            current - desired_set - protected,
+            key=lambda code: (manager.get_subscribe_time(code), code),
+        )
+        releasable = [
+            code for code in stale
+            if manager.get_subscribe_time(code) <= 0
+            or now - manager.get_subscribe_time(code) >= self._MIN_SUBSCRIPTION_SECONDS
+        ]
+        if releasable:
+            manager.unsubscribe_multi_types(releasable, [SubType.TICKER])
+
+        current = manager.ticker_subscribed_stocks
+        available = max(0, desired_capacity - len(current))
+        missing = [code for code in desired if code not in current]
+        requested = missing[:available]
+        if requested:
+            manager.subscribe_multi_types(requested, [SubType.TICKER])
+
+        current = manager.ticker_subscribed_stocks
+        pending = [code for code in desired if code not in current]
+        logging.info(
+            "【TICKER优先订阅】已订阅=%s/%s 保护=%s 活跃目标=%s 机动位=%s 待补=%s",
+            len(current),
+            max_quota,
+            len(protected),
+            len(desired_set - protected),
+            max(0, max_quota - len(current)),
+            len(pending),
+        )
 
     def _handle_subscribe_failure(self, result, subscribe_result, stock_count):
         """处理订阅失败的结果"""
@@ -673,8 +734,25 @@ class SubscriptionHelper:
             # 查找不在活跃列表中的股票
             replaceable = subscribed_stocks - active_stocks
             if replaceable:
-                # 返回第一个不在活跃列表中的股票
-                return list(replaceable)[0]
+                now = time.time()
+                get_time = getattr(self.subscription_manager, 'get_subscribe_time', None)
+                eligible = [
+                    code for code in replaceable
+                    if not callable(get_time)
+                    or get_time(code) <= 0
+                    or now - get_time(code) >= self._MIN_SUBSCRIPTION_SECONDS
+                ]
+                if eligible:
+                    # 优先释放订阅时间最早的低价值席位，结果稳定且尊重 1 分钟限制。
+                    return min(
+                        eligible,
+                        key=lambda code: (
+                            get_time(code) if callable(get_time) else 0,
+                            code,
+                        ),
+                    )
+                logging.info("低优先级逐笔订阅均未满1分钟，暂不替换")
+                return None
 
             # 如果都在活跃列表中，返回 None（避免影响活跃个股页面）
             logging.warning("所有已订阅股票都在活跃列表中，无法替换")

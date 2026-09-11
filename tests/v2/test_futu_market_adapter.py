@@ -2,6 +2,7 @@ import ast
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from simple_trade.api.ticker_push_handler import TickerPushHandler
 from simple_trade.v2.domain.enums import DataQuality, EventType, TickDirection
@@ -240,6 +241,59 @@ class FutuMarketAdapterTests(unittest.TestCase):
         self.assertEqual(handler._process_queue.qsize(), 1)
         self.assertEqual(handler._tick_count, 0)
         self.assertEqual(handler._db_buffer, [])
+
+    def test_protected_stock_uses_priority_process_queue(self) -> None:
+        class FakeColumn:
+            iloc = ["HK.00100"]
+
+        class FakeFrame:
+            empty = False
+            columns = ("code",)
+
+            def __getitem__(self, key):
+                return FakeColumn()
+
+            def copy(self, deep=True):
+                return FakeFrame()
+
+        handler = TickerPushHandler()
+        handler._ensure_processor = lambda: None
+        handler.set_container(SimpleNamespace(
+            subscription_helper=SimpleNamespace(
+                priority_stocks=set(),
+                candidate_priority_stocks={"HK.00100"},
+            )
+        ))
+
+        handler._handle_ticker_push(FakeFrame())
+
+        self.assertEqual(handler._priority_process_queue.qsize(), 1)
+        self.assertEqual(handler._process_queue.qsize(), 0)
+
+    def test_full_process_queue_replaces_oldest_batch_once(self) -> None:
+        handler = TickerPushHandler()
+        handler._process_queue = type(handler._process_queue)(maxsize=1)
+        first = object()
+        latest = object()
+
+        handler._enqueue_process_batch(handler._process_queue, "HK.00001", first)
+        handler._enqueue_process_batch(handler._process_queue, "HK.00002", latest)
+
+        self.assertEqual(handler._process_queue.qsize(), 1)
+        self.assertEqual(handler._process_queue.get_nowait(), ("HK.00002", latest))
+        self.assertEqual(handler._process_drop_count, 1)
+
+    def test_process_scheduler_gives_normal_queue_a_turn(self) -> None:
+        handler = TickerPushHandler()
+        handler._priority_process_queue.put_nowait(("HK.PRI", object()))
+        handler._process_queue.put_nowait(("HK.NORMAL", object()))
+
+        source_queue, stock_code, _ = handler._next_process_batch(
+            handler._PRIORITY_BURST_LIMIT
+        )
+
+        self.assertIs(source_queue, handler._process_queue)
+        self.assertEqual(stock_code, "HK.NORMAL")
 
 
 if __name__ == "__main__":

@@ -45,6 +45,8 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
     _DB_FLUSH_MAX_ROWS = 1000    # 缓冲到量立即唤醒 flusher
     _DB_BUFFER_HARD_CAP = 50000  # DB 长时间不可写时的内存保护上限（丢最旧）
     _PROCESS_QUEUE_CAP = 256      # SDK 回调只投递 DataFrame 批次，防止下游卡顿反压 OpenD
+    _PRIORITY_PROCESS_QUEUE_CAP = 128
+    _PRIORITY_BURST_LIMIT = 8
 
     def __init__(self):
         if FUTU_AVAILABLE:
@@ -58,8 +60,12 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
         self._db_buffer_lock = threading.Lock()
         self._db_flush_event = threading.Event()
         self._db_flusher: Optional[threading.Thread] = None
-        self._db_write_fail_log_time = 0.0
+        self._warning_log_times: dict[str, float] = {}
         self._process_queue: queue.Queue = queue.Queue(maxsize=self._PROCESS_QUEUE_CAP)
+        self._priority_process_queue: queue.Queue = queue.Queue(
+            maxsize=self._PRIORITY_PROCESS_QUEUE_CAP
+        )
+        self._process_enqueue_lock = threading.Lock()
         self._processor: Optional[threading.Thread] = None
         self._process_drop_count = 0
 
@@ -91,21 +97,48 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
                 return
             owned_df = df.copy(deep=True)
             self._ensure_processor()
-            try:
-                self._process_queue.put_nowait((stock_code, owned_df))
-            except queue.Full:
-                try:
-                    self._process_queue.get_nowait()
-                    self._process_queue.task_done()
-                except queue.Empty:
-                    pass
-                self._process_drop_count += 1
-                self._process_queue.put_nowait((stock_code, owned_df))
-                self._warn_throttled(
-                    f"[TickerPush] 处理队列已满，丢弃最旧批次，累计 {self._process_drop_count} 批"
-                )
+            target_queue = (
+                self._priority_process_queue
+                if self._is_priority_stock(stock_code)
+                else self._process_queue
+            )
+            self._enqueue_process_batch(target_queue, stock_code, owned_df)
         except Exception as e:
             logger.error(f"[TickerPush] SDK 入队失败: {e}")
+
+    def _is_priority_stock(self, stock_code: str) -> bool:
+        helper = getattr(self._container, 'subscription_helper', None) if self._container else None
+        if helper is None:
+            return False
+        protected = (
+            set(getattr(helper, 'priority_stocks', set()))
+            | set(getattr(helper, 'candidate_priority_stocks', set()))
+        )
+        return stock_code in protected
+
+    def _enqueue_process_batch(self, target_queue, stock_code: str, df) -> None:
+        dropped = False
+        with self._process_enqueue_lock:
+            try:
+                target_queue.put_nowait((stock_code, df))
+                return
+            except queue.Full:
+                try:
+                    target_queue.get_nowait()
+                    target_queue.task_done()
+                    dropped = True
+                except queue.Empty:
+                    pass
+                target_queue.put_nowait((stock_code, df))
+        if not dropped:
+            return
+        self._process_drop_count += 1
+        queue_name = "优先" if target_queue is self._priority_process_queue else "普通"
+        self._warn_throttled(
+            f"[TickerPush] {queue_name}处理队列已满，丢弃最旧批次，"
+            f"累计 {self._process_drop_count} 批",
+            key=f"process-{queue_name}",
+        )
 
     def _ensure_processor(self) -> None:
         if self._processor is not None and self._processor.is_alive():
@@ -121,43 +154,74 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             self._processor.start()
 
     def _process_loop(self) -> None:
+        priority_streak = 0
         while True:
-            stock_code, df = self._process_queue.get()
+            next_batch = self._next_process_batch(priority_streak)
+            if next_batch is None:
+                continue
+            source_queue, stock_code, df = next_batch
+            priority_streak = (
+                priority_streak + 1
+                if source_queue is self._priority_process_queue
+                else 0
+            )
             try:
                 self._process_ticker_push(stock_code, df)
             except Exception as e:
                 logger.error(f"[TickerPush] 异步处理推送失败: {e}")
             finally:
-                self._process_queue.task_done()
+                source_queue.task_done()
+
+    def _next_process_batch(self, priority_streak: int):
+        if priority_streak < self._PRIORITY_BURST_LIMIT:
+            try:
+                stock_code, df = self._priority_process_queue.get_nowait()
+                return self._priority_process_queue, stock_code, df
+            except queue.Empty:
+                pass
+        try:
+            stock_code, df = self._process_queue.get(timeout=0.05)
+            return self._process_queue, stock_code, df
+        except queue.Empty:
+            try:
+                stock_code, df = self._priority_process_queue.get(timeout=0.05)
+                return self._priority_process_queue, stock_code, df
+            except queue.Empty:
+                return None
 
     def _process_ticker_push(self, stock_code: str, df) -> None:
         """Process one owned batch outside the Futu SDK callback thread."""
         try:
-            self._tick_count += len(df)
+            records = df.to_dict('records')
+            if not records:
+                return
+            self._tick_count += len(records)
             self._stocks_seen.add(stock_code)
 
             # V2 shadow ingress only validates/adapts and enqueues immutable events.
             # The V2 path performs no DB I/O, notification, or strategy calculation here.
-            self._feed_v2_shadow(stock_code, df)
+            self._feed_v2_shadow(stock_code, records)
 
             # 1. 更新 TickerDataFrameCache
             self._update_cache(stock_code, df)
 
             # 2. 喂给 MomentumEngine
-            self._feed_momentum(stock_code, df)
+            self._feed_momentum(stock_code, records)
 
             # 2b. 喂给逐笔主力资金累加器（推送驱动，全天累计+滚动窗口；flag OFF 时零开销）
-            self._feed_capital_accumulator(stock_code, df)
+            self._feed_capital_accumulator(stock_code, records)
 
             # 3. 落库到 ticker_data 表（供资金流时间线等查询）
-            self._persist_to_db(stock_code, df)
+            self._persist_records(stock_code, records)
 
             # 定期日志
             now = time.time()
             if now - self._last_log_time > 300:  # 每5分钟
                 logger.info(
                     f"[TickerPush] 已接收 {self._tick_count} 条推送, "
-                    f"覆盖 {len(self._stocks_seen)} 只股票"
+                    f"覆盖 {len(self._stocks_seen)} 只股票, "
+                    f"队列 优先={self._priority_process_queue.qsize()} "
+                    f"普通={self._process_queue.qsize()} 丢批={self._process_drop_count}"
                 )
                 self._last_log_time = now
 
@@ -175,18 +239,18 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
         except Exception as e:
             logger.debug(f"[TickerPush] 更新缓存失败: {e}")
 
-    def _feed_v2_shadow(self, stock_code: str, df) -> None:
+    def _feed_v2_shadow(self, stock_code: str, records: list[dict]) -> None:
         if not self._container:
             return
         runtime = getattr(self._container, 'v2_runtime', None)
         if runtime is None or not getattr(runtime, 'started', False):
             return
         try:
-            runtime.ingest_ticker_records(stock_code, df.to_dict('records'))
+            runtime.ingest_ticker_records(stock_code, records)
         except Exception as error:
             logger.debug(f"[TickerPush] V2 shadow 入队失败: {error}")
 
-    def _feed_momentum(self, stock_code: str, df):
+    def _feed_momentum(self, stock_code: str, records: list[dict]):
         """将推送数据喂给动量引擎"""
         if not self._container:
             return
@@ -199,7 +263,7 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             market = MarketTimeHelper.get_market_from_code(stock_code)
             market_day = MarketTimeHelper.get_market_today(market)
 
-            for _, row in df.iterrows():
+            for row in records:
                 trade_time = normalize_futu_trade_time(row.get('time'))
                 trade_day = futu_trade_date(trade_time)
                 if trade_day is not None and trade_day != market_day:
@@ -217,7 +281,7 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
         except Exception as e:
             logger.debug(f"[TickerPush] 喂动量引擎失败: {e}")
 
-    def _feed_capital_accumulator(self, stock_code: str, df):
+    def _feed_capital_accumulator(self, stock_code: str, records: list[dict]):
         """将推送逐笔喂给逐笔主力资金累加器（按成交额分级累加主力净流入）。"""
         if not self._container:
             return
@@ -233,7 +297,7 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             if not MarketTimeHelper.is_market_trading(market):
                 return
             market_day = MarketTimeHelper.get_market_today(market)
-            for _, row in df.iterrows():
+            for row in records:
                 trade_time = normalize_futu_trade_time(row.get('time'))
                 trade_day = futu_trade_date(trade_time)
                 if trade_day is not None and trade_day != market_day:
@@ -252,9 +316,13 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             logger.debug(f"[TickerPush] 喂逐笔资金累加器失败: {e}")
 
     def _persist_to_db(self, stock_code: str, df):
+        """Compatibility wrapper for callers that still provide a DataFrame."""
+        self._persist_records(stock_code, df.to_dict('records'))
+
+    def _persist_records(self, stock_code: str, records: list[dict]):
         """将推送的逐笔数据攒批落库到 ticker_data 表
 
-        本方法运行在富途 SDK 推送线程上，只做行构造 + 内存缓冲（无磁盘 I/O），
+        本方法运行在异步处理线程，只做行构造 + 内存缓冲（无磁盘 I/O），
         实际写库由 `_db_flush_loop` flusher 线程经 DatabaseWriteQueue 串行执行。
         """
         if not self._container:
@@ -265,7 +333,7 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             market = MarketTimeHelper.get_market_from_code(stock_code)
             fallback_day = MarketTimeHelper.get_market_today(market)
             rows = []
-            for _, row in df.iterrows():
+            for row in records:
                 price = float(row.get('price', 0) or 0)
                 volume = int(row.get('volume', 0) or 0)
                 turnover = float(row.get('turnover', 0) or 0)
@@ -385,11 +453,11 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
             if excess > 0:
                 del self._db_buffer[:excess]
 
-    def _warn_throttled(self, msg: str):
+    def _warn_throttled(self, msg: str, *, key: str = "database"):
         """落库类异常升为 warning，60s 内重复只降级 debug 防刷屏。"""
         now = time.time()
-        if now - self._db_write_fail_log_time >= 60:
-            self._db_write_fail_log_time = now
+        if now - self._warning_log_times.get(key, 0.0) >= 60:
+            self._warning_log_times[key] = now
             logger.warning(msg)
         else:
             logger.debug(msg)

@@ -689,6 +689,9 @@ class SubscriptionManager:
                 if ret == RET_OK:
                     success_stocks.extend(batch)
                     subscribed_set.update(batch)
+                    subscribed_at = time.time()
+                    for code in batch:
+                        self._subscribe_times[code] = subscribed_at
                 else:
                     failed_stocks.extend(batch)
                     self.logger.warning(f"订阅 {type_name} 批次失败: {err}")

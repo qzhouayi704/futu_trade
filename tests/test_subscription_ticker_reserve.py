@@ -53,6 +53,7 @@ def test_ticker_can_use_reserved_seats():
     result = manager._subscribe_by_type(_codes('T', 10), 'TICKER')
     assert len(result['success']) == 10, 'TICKER 应能使用为其预留的席位'
     assert len(manager._ticker_subscribed) == 10
+    assert all(manager.get_subscribe_time(code) > 0 for code in result['success'])
 
 
 def test_reserve_zero_when_ticker_full_keeps_legacy_behavior():
