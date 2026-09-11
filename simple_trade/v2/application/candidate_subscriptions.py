@@ -12,6 +12,7 @@ from ..domain.decisions import DecisionEvent
 from ..domain.enums import EventType, StrategyStatus
 from .event_bus import EventBus
 from .runtime_supervisor import RuntimeSupervisor
+from .strategy.post_invalidation_recovery import PostInvalidationRecoveryPolicy
 
 
 class CandidateSubscriptionPort(Protocol):
@@ -39,10 +40,14 @@ class CandidateSubscriptionCoordinator:
         *,
         queue_capacity: int = 100,
         cooldown_seconds: int = 300,
+        recovery_hold_seconds: float = 3600,
+        max_recovery_holds: int = 40,
     ) -> None:
         self._port = port
         self._queue: asyncio.Queue[str | object] = asyncio.Queue(maxsize=queue_capacity)
         self._cooldown_seconds = cooldown_seconds
+        self._recovery_hold_seconds = recovery_hold_seconds
+        self._max_recovery_holds = max_recovery_holds
         self._last_requested: dict[str, float] = {}
         self._bus: EventBus | None = None
         self._worker: asyncio.Task | None = None
@@ -53,6 +58,8 @@ class CandidateSubscriptionCoordinator:
         self._deduplicated = 0
         self._overnight_protected: tuple[str, ...] = ()
         self._intraday_protected: set[str] = set()
+        self._recovery_protected: dict[str, float] = {}
+        self._recovery_release_tasks: dict[str, asyncio.Task] = {}
         self._intraday_session_date = ""
 
     def register(self, bus: EventBus) -> None:
@@ -99,6 +106,12 @@ class CandidateSubscriptionCoordinator:
         await self._queue.put(self._STOP)
         if self._worker is not None:
             await asyncio.gather(self._worker, return_exceptions=True)
+        recovery_tasks = tuple(self._recovery_release_tasks.values())
+        for task in recovery_tasks:
+            task.cancel()
+        if recovery_tasks:
+            await asyncio.gather(*recovery_tasks, return_exceptions=True)
+        self._recovery_release_tasks.clear()
         self._worker = None
         self._running = False
 
@@ -134,6 +147,10 @@ class CandidateSubscriptionCoordinator:
             return
         self._intraday_session_date = session_date
         self._intraday_protected.clear()
+        self._recovery_protected.clear()
+        for task in self._recovery_release_tasks.values():
+            task.cancel()
+        self._recovery_release_tasks.clear()
         self._apply_protection()
 
     def on_candidate_activity(self, event) -> None:
@@ -152,11 +169,15 @@ class CandidateSubscriptionCoordinator:
     def on_candidate_invalidated(self, event) -> None:
         if not isinstance(event, DecisionEvent):
             return
-        if event.old_state in {
+        active_candidate = event.old_state in {
+            StrategyStatus.SETUP.value,
             StrategyStatus.WATCHING.value,
             StrategyStatus.CONFIRMED.value,
-        }:
-            self._remember_intraday(event)
+        }
+        if active_candidate and self._eligible_for_recovery_hold(event):
+            self._hold_for_recovery(event)
+        elif active_candidate:
+            self._forget_intraday(event)
         if (
             event.stock_code in self._overnight_protected
             and event.reason_code
@@ -166,14 +187,105 @@ class CandidateSubscriptionCoordinator:
                 code for code in self._overnight_protected if code != event.stock_code
             ))
 
+    def _forget_intraday(self, event: DecisionEvent) -> None:
+        """候选已失效时释放日内订阅保护，给新异动股腾出逐笔席位。"""
+        exchange_time = market_datetime(event.exchange_time, event.stock_code)
+        if exchange_time is None:
+            return
+        session_date = exchange_time.date().isoformat()
+        if self._intraday_session_date and session_date != self._intraday_session_date:
+            return
+        self.begin_session(session_date)
+        self._intraday_protected.discard(event.stock_code)
+        self._recovery_protected.pop(event.stock_code, None)
+        task = self._recovery_release_tasks.pop(event.stock_code, None)
+        if task is not None:
+            task.cancel()
+        self._apply_protection()
+
     def _remember_intraday(self, event: DecisionEvent) -> None:
         exchange_time = market_datetime(event.exchange_time, event.stock_code)
         if exchange_time is None:
             return
         session_date = exchange_time.date().isoformat()
         self.begin_session(session_date)
+        self._recovery_protected.pop(event.stock_code, None)
+        task = self._recovery_release_tasks.pop(event.stock_code, None)
+        if task is not None:
+            task.cancel()
         self._intraday_protected.add(event.stock_code)
         self._apply_protection()
+
+    @staticmethod
+    def _eligible_for_recovery_hold(event: DecisionEvent) -> bool:
+        if (
+            event.reason_code
+            not in PostInvalidationRecoveryPolicy.ALLOWED_INVALIDATION_REASONS
+        ):
+            return False
+        feature = event.payload.get("feature_snapshot") or {}
+        activity = feature.get("activity") or {}
+        liquidity = feature.get("liquidity") or {}
+        quote = feature.get("quote") or {}
+        return bool(
+            activity.get("is_active") is True
+            and float(liquidity.get("score") or 0) >= 30
+            and float(quote.get("low_price") or 0) > 0
+        )
+
+    def _hold_for_recovery(self, event: DecisionEvent) -> None:
+        exchange_time = market_datetime(event.exchange_time, event.stock_code)
+        if exchange_time is None:
+            return
+        session_date = exchange_time.date().isoformat()
+        self.begin_session(session_date)
+        self._intraday_protected.discard(event.stock_code)
+        if (
+            event.stock_code not in self._recovery_protected
+            and len(self._recovery_protected) >= self._max_recovery_holds
+        ):
+            oldest_code = min(
+                self._recovery_protected,
+                key=self._recovery_protected.__getitem__,
+            )
+            self._recovery_protected.pop(oldest_code, None)
+            old_task = self._recovery_release_tasks.pop(oldest_code, None)
+            if old_task is not None:
+                old_task.cancel()
+        expires_at = time.monotonic() + self._recovery_hold_seconds
+        self._recovery_protected[event.stock_code] = expires_at
+        previous = self._recovery_release_tasks.pop(event.stock_code, None)
+        if previous is not None:
+            previous.cancel()
+        if self._running:
+            self._recovery_release_tasks[event.stock_code] = asyncio.create_task(
+                self._release_recovery_hold(
+                    event.stock_code,
+                    session_date,
+                    expires_at,
+                ),
+                name=f"v2-recovery-hold-{event.stock_code}",
+            )
+        self._apply_protection()
+
+    async def _release_recovery_hold(
+        self,
+        stock_code: str,
+        session_date: str,
+        expires_at: float,
+    ) -> None:
+        try:
+            await asyncio.sleep(max(0.0, expires_at - time.monotonic()))
+            if (
+                self._intraday_session_date == session_date
+                and self._recovery_protected.get(stock_code) == expires_at
+            ):
+                self._recovery_protected.pop(stock_code, None)
+                self._apply_protection()
+        finally:
+            current = self._recovery_release_tasks.get(stock_code)
+            if current is asyncio.current_task():
+                self._recovery_release_tasks.pop(stock_code, None)
 
     def _apply_protection(self) -> None:
         if self._port is None:
@@ -181,6 +293,7 @@ class CandidateSubscriptionCoordinator:
         protected = tuple(dict.fromkeys((
             *self._overnight_protected,
             *sorted(self._intraday_protected),
+            *sorted(self._recovery_protected),
         )))
         protect = getattr(self._port, "protect_candidates", None)
         if callable(protect):

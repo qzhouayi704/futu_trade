@@ -213,7 +213,7 @@ class ActivityCalculator:
                     'turnover': self._safe_float(row.get('turnover', 0)),
                     'volume': int(self._safe_float(row.get('volume', 0))),
                     'last_price': self._safe_float(row.get('last_price', 0)),
-                    'change_rate': self._safe_float(row.get('change_rate', 0)),
+                    'change_rate': self._snapshot_change_rate(row),
                     'amplitude': self._safe_float(row.get('amplitude', 0)),
                 }
 
@@ -252,6 +252,20 @@ class ActivityCalculator:
             hard_active = self.is_active_stock(
                 quote, market_turnover_rate, min_turnover_amount, market_min_volume
             )
+            activity_config = (
+                getattr(self.config, 'realtime_activity_filter', {})
+                if self.config else {}
+            )
+            high_turnover_active = self.is_high_turnover_active_stock(
+                quote=quote,
+                min_turnover_rate=market_turnover_rate,
+                min_turnover_amount=min_turnover_amount,
+                turnover_multiple=float(
+                    activity_config.get(
+                        'high_turnover_volume_bypass_multiple', 5.0
+                    )
+                ),
+            )
             discovery_score = self.calculate_discovery_score(
                 quote=quote,
                 ranks={key: values.get(code, 0.0) for key, values in percentile_ranks.items()},
@@ -265,7 +279,7 @@ class ActivityCalculator:
                 min_volume=market_min_volume,
             )
 
-            if hard_active or emerging_active:
+            if hard_active or high_turnover_active or emerging_active:
                 stock_with_activity = dict(stock)
                 stock_with_activity.update(quote)
                 activity_score = max(
@@ -274,7 +288,9 @@ class ActivityCalculator:
                 stock_with_activity['activity_score'] = activity_score
                 stock_with_activity['discovery_score'] = discovery_score
                 stock_with_activity['activity_reason'] = (
-                    'hard_threshold' if hard_active else 'emerging_hotspot'
+                    'hard_threshold' if hard_active else
+                    'high_turnover' if high_turnover_active else
+                    'emerging_hotspot'
                 )
                 active.append(stock_with_activity)
 
@@ -381,6 +397,24 @@ class ActivityCalculator:
 
         return turnover_rate_score * 0.6 + turnover_amount_score * 0.4
 
+    @staticmethod
+    def is_high_turnover_active_stock(
+        quote: Dict[str, Any],
+        min_turnover_rate: float,
+        min_turnover_amount: float,
+        turnover_multiple: float = 5.0,
+    ) -> bool:
+        """高价股可用足够大的成交额替代绝对成交量门槛。"""
+        turnover_rate = float(quote.get('turnover_rate', 0) or 0)
+        turnover = float(quote.get('turnover', 0) or 0)
+        last_price = float(quote.get('last_price', 0) or 0)
+        multiple = max(float(turnover_multiple), 1.0)
+        return (
+            last_price > 0
+            and turnover_rate >= min_turnover_rate
+            and turnover >= min_turnover_amount * multiple
+        )
+
     def calculate_discovery_score(
         self,
         quote: Dict[str, Any],
@@ -455,6 +489,15 @@ class ActivityCalculator:
         except (TypeError, ValueError):
             return 0.0
         return result if math.isfinite(result) else 0.0
+
+    @classmethod
+    def _snapshot_change_rate(cls, row) -> float:
+        """快照涨幅字段不可靠时，使用最新价和昨收价计算。"""
+        last_price = cls._safe_float(row.get('last_price', 0))
+        prev_close = cls._safe_float(row.get('prev_close_price', 0))
+        if last_price > 0 and prev_close > 0:
+            return (last_price / prev_close - 1.0) * 100.0
+        return cls._safe_float(row.get('change_rate', 0))
 
     def save_activity_cache(
         self,

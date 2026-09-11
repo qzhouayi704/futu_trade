@@ -13,9 +13,11 @@ from ...domain.features import FeatureSnapshot
 from ...domain.market import TickAggregate
 from .models import TransitionProposal, UniverseDecision
 from .portfolio import CandidateSignalRules
+from .post_invalidation_recovery import PostInvalidationRecoveryPolicy
 
 
 class CandidateStateMachine:
+    POST_INVALIDATION_RECOVERY = PostInvalidationRecoveryPolicy()
     FAST_WINDOW_SECONDS = CandidateSignalRules.FLOW_WINDOW_SECONDS
     SLOW_WINDOW_SECONDS = 3600
     MIN_FAST_EVENT_SPAN_SECONDS = 300
@@ -88,6 +90,11 @@ class CandidateStateMachine:
         )
         if overnight_watch is not None:
             return overnight_watch
+        if state is not None and not self._same_session(snapshot, state):
+            return (
+                self._confirm_strong_trend_reentry(snapshot, universe)
+                or self._enter_setup(snapshot, universe)
+            )
         if status is StrategyStatus.IDLE:
             # Every new stock first enters SETUP. This creates a deterministic
             # subscription/enrichment boundary before any fund-flow state.
@@ -151,6 +158,19 @@ class CandidateStateMachine:
                 )
             return None
 
+        if (
+            status is StrategyStatus.WATCHING
+            and state is not None
+            and state.metadata.get("watch_kind") == "post_invalidation_reversal"
+            and self.POST_INVALIDATION_RECOVERY.confirmation_evidence(
+                snapshot, state, universe
+            ) is not None
+        ):
+            return self._confirm(
+                snapshot,
+                state,
+                "POST_INVALIDATION_FLOW_RECOVERY_CONFIRMED",
+            )
         if status is StrategyStatus.WATCHING:
             strong_trend = self._confirm_strong_trend_reentry(snapshot, universe)
             if strong_trend is not None:
@@ -471,6 +491,24 @@ class CandidateStateMachine:
             strong_trend = self._confirm_strong_trend_reentry(snapshot, universe)
             if strong_trend is not None:
                 return strong_trend
+        recovery = self.POST_INVALIDATION_RECOVERY.watch_evidence(
+            snapshot, state, universe
+        )
+        if recovery is not None:
+            return TransitionProposal(
+                new_status=StrategyStatus.WATCHING,
+                event_type=EventType.CANDIDATE_ENTERED,
+                reason_code="POST_INVALIDATION_REVERSAL_WATCH",
+                confirmation_price=snapshot.quote.last_price,
+                alert_eligible=False,
+                metadata={
+                    **recovery.metadata(),
+                    "watch_started_at": snapshot.computed_at,
+                    "watch_price": snapshot.quote.last_price,
+                    "prior_invalidation_reason": invalidation_reason,
+                    "alert_eligible": False,
+                },
+            )
         if (
             elapsed >= self.SOFT_REENTRY_SECONDS
             and invalidation_reason in self.SOFT_UNIVERSE_REASONS
@@ -547,6 +585,15 @@ class CandidateStateMachine:
             return self._active_invalidated(snapshot, "LARGE_OUTFLOW_OFFSETS_INFLOW")
         acceptance = snapshot.price_acceptance
         watch_price = self._number(state.metadata.get("watch_price")) if state else None
+        if (
+            watch_price is None
+            and state is not None
+            and state.status is StrategyStatus.CONFIRMED
+        ):
+            watch_price = (
+                self._number(state.confirmed_price)
+                or self._number(state.metadata.get("confirmed_price"))
+            )
         low_position_watch = bool(
             state and state.metadata.get("watch_kind") == "low_position_accumulation"
         )
@@ -556,7 +603,15 @@ class CandidateStateMachine:
         overnight_priority_watch = bool(
             state and state.metadata.get("watch_kind") == "overnight_priority"
         )
-        tolerant_watch = low_position_watch or capital_memory_watch or overnight_priority_watch
+        recovery_watch = bool(
+            state and state.metadata.get("watch_kind") == "post_invalidation_reversal"
+        )
+        tolerant_watch = (
+            low_position_watch
+            or capital_memory_watch
+            or overnight_priority_watch
+            or recovery_watch
+        )
         vwap_floor = -1.5 if tolerant_watch else -0.5
         pullback_limit = CandidateSignalRules.adaptive_pullback_limit_pct(
             snapshot,
@@ -1046,6 +1101,11 @@ class CandidateStateMachine:
     @staticmethod
     def _state_age(snapshot: FeatureSnapshot, state: StrategyState) -> float:
         return max(0.0, (snapshot.computed_at - state.updated_at).total_seconds())
+
+    @staticmethod
+    def _same_session(snapshot: FeatureSnapshot, state: StrategyState) -> bool:
+        state_date = state.updated_at.astimezone(snapshot.computed_at.tzinfo).date()
+        return state_date == snapshot.computed_at.date()
 
     @staticmethod
     def _window(snapshot: FeatureSnapshot, seconds: int) -> TickAggregate | None:

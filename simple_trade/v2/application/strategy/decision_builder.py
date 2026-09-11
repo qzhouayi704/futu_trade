@@ -27,9 +27,34 @@ def build_transition(
     proposal_metadata = dict(proposal.metadata)
     if proposal.new_status is StrategyStatus.INVALIDATED:
         proposal_metadata["invalidation_reason"] = proposal.reason_code
+    lifecycle_strategy_source = str(
+        proposal_metadata.get("strategy_source")
+        or (state.metadata.get("strategy_source") if state is not None else "")
+        or ""
+    ).strip()
+    new_session = bool(
+        state is not None
+        and state.updated_at.astimezone(source.exchange_time.tzinfo).date()
+        != source.exchange_time.date()
+    )
+    starts_new_lifecycle = bool(
+        state is None
+        or new_session
+        or proposal.new_status is StrategyStatus.SETUP
+        or (
+            state.status is StrategyStatus.INVALIDATED
+            and proposal.new_status
+            in {
+                StrategyStatus.SETUP,
+                StrategyStatus.WATCHING,
+                StrategyStatus.CONFIRMED,
+            }
+        )
+    )
     merged_metadata = (
         proposal_metadata
-        if proposal.new_status in {StrategyStatus.SETUP, StrategyStatus.WATCHING}
+        if new_session
+        or proposal.new_status in {StrategyStatus.SETUP, StrategyStatus.WATCHING}
         else {**(dict(state.metadata) if state is not None else {}), **proposal_metadata}
     )
     event = DecisionEvent(
@@ -51,14 +76,14 @@ def build_transition(
             "universe": to_primitive(universe),
             "candidate_score": to_primitive(score),
             "strategy_portfolio": to_primitive(portfolio),
+            "lifecycle_strategy_source": lifecycle_strategy_source or None,
             "feature_snapshot": to_primitive(source.snapshot),
         },
     )
     confirmed_price = (
         proposal.confirmation_price
         if proposal.new_status is StrategyStatus.CONFIRMED
-        else None
-        if proposal.new_status is StrategyStatus.SETUP
+        else None if starts_new_lifecycle
         else state.confirmed_price if state is not None else None
     )
     new_state = StrategyState(
@@ -69,9 +94,15 @@ def build_transition(
         last_event_id=event.event_id,
         updated_at=source.exchange_time,
         confirmed_price=confirmed_price,
-        peak_price=max(
-            source.snapshot.quote.last_price,
-            state.peak_price if state is not None and state.peak_price is not None else 0.0,
+        peak_price=(
+            source.snapshot.quote.last_price
+            if starts_new_lifecycle
+            else max(
+                source.snapshot.quote.last_price,
+                state.peak_price
+                if state is not None and state.peak_price is not None
+                else 0.0,
+            )
         ),
         last_sequence=source.sequence,
         metadata=merged_metadata,

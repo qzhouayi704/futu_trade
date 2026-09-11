@@ -10,8 +10,8 @@ from simple_trade.v2.domain.candidates import (
     OvernightPriority,
     OvernightStatus,
 )
-from simple_trade.v2.domain.decisions import DecisionEvent
-from simple_trade.v2.domain.enums import EventType
+from simple_trade.v2.domain.decisions import DecisionEvent, StrategyState
+from simple_trade.v2.domain.enums import EventType, StrategyStatus
 from simple_trade.v2.domain.events import FeatureSnapshotEvent, MarketEvent
 
 from tests.v2.test_candidate_strategy import NOW, snapshot, window
@@ -176,6 +176,37 @@ class CandidateCoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(stores.events), 1)
         self.assertEqual(stores.events[0].event_type, EventType.CANDIDATE_ENTERED)
+
+    async def test_new_session_resets_previous_candidate_lifecycle_values(self) -> None:
+        stores = MemoryStores()
+        stores.states[("test-v2", "HK.00100")] = StrategyState(
+            stock_code="HK.00100",
+            strategy_version="test-v2",
+            status=StrategyStatus.CONFIRMED,
+            version=4,
+            last_event_id="yesterday-confirmed",
+            updated_at=NOW - timedelta(days=1),
+            confirmed_price=105,
+            peak_price=110,
+            metadata={
+                "confirmed_at": NOW - timedelta(days=1),
+                "confirmed_price": 105,
+                "alert_eligible": True,
+            },
+        )
+        coordinator = CandidateCoordinator(stores, stores, strategy_version="test-v2")
+        await coordinator.start()
+
+        coordinator.on_feature_snapshot(feature_event(snapshot(), "new-session"))
+        await coordinator.stop(drain=True)
+
+        current = stores.states[("test-v2", "HK.00100")]
+        self.assertEqual(current.status, StrategyStatus.SETUP)
+        self.assertIsNone(current.confirmed_price)
+        self.assertEqual(current.peak_price, 101)
+        self.assertNotIn("confirmed_at", current.metadata)
+        self.assertEqual(stores.events[-1].old_state, StrategyStatus.CONFIRMED.value)
+        self.assertEqual(stores.events[-1].event_type, EventType.CANDIDATE_ENTERED)
 
     async def test_idle_rejection_is_persisted_and_rate_limited(self) -> None:
         stores = MemoryStores()

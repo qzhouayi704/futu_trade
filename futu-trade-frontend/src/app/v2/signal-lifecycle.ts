@@ -26,6 +26,7 @@ const strategySourceText: Record<string, string> = {
   capital_absorption: "低位资金吸收",
   capital_memory_reversal: "低位资金记忆",
   strong_trend_reentry: "趋势回踩再启动",
+  post_invalidation_flow_recovery: "失效后低位资金反转",
   momentum_continuation: "严格动量",
 };
 

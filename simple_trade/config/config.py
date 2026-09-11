@@ -69,6 +69,7 @@ class RealtimeActivityFilterConfig(_ConfigMixin):
     regular_refilter_interval_seconds: int = 300
     discovery_score_threshold: float = 0.65
     emerging_liquidity_floor_ratio: float = 0.35
+    high_turnover_volume_bypass_multiple: float = 5.0
     demotion_confirmation_cycles: int = 2
 
 

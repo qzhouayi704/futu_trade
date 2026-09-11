@@ -456,6 +456,25 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
+    async def test_lifecycle_strategy_source_is_included_in_performance(self) -> None:
+        database = FakeAlertDatabase()
+        row = list(database.candidate_rows[0])
+        row[7] = (
+            '{"alert_eligible":true,"feature_snapshot":{"quote":{"last_price":98}},'
+            '"strategy_portfolio":{"strategy_sources":[]},'
+            '"lifecycle_strategy_source":"post_invalidation_flow_recovery"}'
+        )
+        database.candidate_rows = [tuple(row)]
+
+        result = await AlertPerformanceReader(database).history(
+            trade_date="2026-09-02", scope="candidates"
+        )
+
+        self.assertEqual(
+            result["items"][0]["strategy_sources"],
+            ["post_invalidation_flow_recovery"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

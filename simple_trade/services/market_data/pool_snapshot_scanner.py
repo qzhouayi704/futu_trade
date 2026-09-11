@@ -13,6 +13,7 @@
 """
 
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -198,7 +199,7 @@ class PoolSnapshotScanner:
                             'open_price': float(row.get('open_price', 0) or 0),
                             'high_price': float(row.get('high_price', 0) or 0),
                             'low_price': float(row.get('low_price', 0) or 0),
-                            'change_rate': float(row.get('change_rate', 0)),
+                            'change_rate': self._snapshot_change_rate(row),
                             'volume_ratio': float(row.get('volume_ratio', 0) or 0),
                             'turnover_rate': float(row.get('turnover_rate', 0) or 0),
                             'turnover': float(row.get('turnover', 0) or 0),
@@ -212,6 +213,28 @@ class PoolSnapshotScanner:
                 logger.warning(f"[异动扫描] 批次快照失败: {e}")
 
         return all_data
+
+    @staticmethod
+    def _snapshot_change_rate(row) -> float:
+        """优先用最新价和昨收价计算涨幅，兼容快照缺失该字段。"""
+        try:
+            last_price = float(row.get('last_price', 0) or 0)
+            prev_close = float(row.get('prev_close_price', 0) or 0)
+            if (
+                math.isfinite(last_price)
+                and math.isfinite(prev_close)
+                and last_price > 0
+                and prev_close > 0
+            ):
+                return (last_price / prev_close - 1.0) * 100.0
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            raw_change = float(row.get('change_rate', 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return raw_change if math.isfinite(raw_change) else 0.0
 
     def _filter_by_snapshot(self, data: List[Dict]) -> List[Dict]:
         """第一层：资金流驱动筛选（所有入口必须经过资金验证）

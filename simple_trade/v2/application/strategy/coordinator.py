@@ -315,6 +315,15 @@ class CandidateCoordinator:
             else ()
         )
 
+        lifecycle_strategy_source = str(
+            (proposal.metadata.get("strategy_source") if proposal is not None else "")
+            or (state.metadata.get("strategy_source") if state is not None else "")
+            or ""
+        ).strip()
+        strategy_sources = tuple(dict.fromkeys((
+            *portfolio.strategy_sources,
+            *((lifecycle_strategy_source,) if lifecycle_strategy_source else ()),
+        )))
         candidate = TradeCandidate(
             stock_code=snapshot.stock_code,
             as_of=snapshot.computed_at,
@@ -332,8 +341,8 @@ class CandidateCoordinator:
                 "data quality becomes invalid",
             ),
             confirmation_price=(state.confirmed_price if state is not None else None),
-            strategy_sources=portfolio.strategy_sources,
-            consensus_count=portfolio.consensus_count,
+            strategy_sources=strategy_sources,
+            consensus_count=len(strategy_sources),
             alert_eligible=(
                 proposal.alert_eligible
                 if proposal is not None

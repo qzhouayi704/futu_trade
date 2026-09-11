@@ -83,6 +83,8 @@ def snapshot(
     regime: MarketRegime = MarketRegime.NORMAL,
     windows: tuple[TickAggregate, ...] = (),
     price: float = 101,
+    high_price: float = 0,
+    low_price: float = 0,
     accepted: bool = True,
     rank: float = 0.95,
     relative_strength: float = 3.0,
@@ -98,6 +100,8 @@ def snapshot(
         exchange_time=as_of,
         last_price=price,
         prev_close=100,
+        high_price=high_price,
+        low_price=low_price,
         volume=2_000_000,
         turnover=100_000_000,
         turnover_rate=2,
@@ -178,10 +182,13 @@ def state(
     *,
     updated_at: datetime = NOW,
     metadata: dict | None = None,
+    confirmed_price: float | None = None,
+    peak_price: float | None = None,
 ) -> StrategyState:
     return StrategyState(
         stock_code="HK.00100", strategy_version="test-v2", status=status,
         version=1, last_event_id="previous", updated_at=updated_at,
+        confirmed_price=confirmed_price, peak_price=peak_price,
         metadata=metadata or {},
     )
 
@@ -568,6 +575,49 @@ class CandidateStrategyTests(unittest.TestCase):
             "PRICE_ACCEPTANCE_BROKEN",
         )
 
+    def test_confirmed_price_is_fallback_for_post_confirmation_invalidation(self) -> None:
+        item = snapshot(
+            as_of=NOW + timedelta(minutes=4),
+            price=98.5,
+            accepted=False,
+        )
+        item = replace(
+            item,
+            price_acceptance=replace(
+                item.price_acceptance,
+                distance_to_vwap_pct=-1.0,
+            ),
+        )
+
+        result = self.machine.evaluate(
+            item,
+            state(
+                StrategyStatus.CONFIRMED,
+                confirmed_price=100,
+                metadata={"confirmed_at": NOW},
+            ),
+            ELIGIBLE,
+        )
+
+        self.assertEqual(result.new_status, StrategyStatus.INVALIDATED)
+        self.assertEqual(result.reason_code, "PRICE_ACCEPTANCE_BROKEN")
+
+    def test_previous_session_confirmed_state_starts_a_fresh_setup(self) -> None:
+        result = self.machine.evaluate(
+            snapshot(),
+            state(
+                StrategyStatus.CONFIRMED,
+                updated_at=NOW - timedelta(days=1),
+                confirmed_price=105,
+                peak_price=110,
+                metadata={"confirmed_at": NOW - timedelta(days=1)},
+            ),
+            ELIGIBLE,
+        )
+
+        self.assertEqual(result.new_status, StrategyStatus.SETUP)
+        self.assertEqual(result.event_type, EventType.CANDIDATE_ENTERED)
+
     def test_same_timestamp_cannot_enter_and_immediately_invalidate(self) -> None:
         outflow = window(
             900, buys=1, sells=2, buy_amount=500_000, sell_amount=700_000
@@ -685,6 +735,243 @@ class CandidateStrategyTests(unittest.TestCase):
         )
         self.assertEqual(reentry.new_status, StrategyStatus.SETUP)
         self.assertEqual(reentry.reason_code, "COOLDOWN_COMPLETE_REENTER_SETUP")
+
+    def test_hk02685_pattern_enters_post_invalidation_reversal_watch(self) -> None:
+        one_minute = window(
+            60,
+            buys=1,
+            buy_amount=300_000,
+            sell_amount=200_000,
+            active_buy_amount=900_000,
+            active_sell_amount=300_000,
+        )
+        five_minutes = window(
+            300,
+            buys=2,
+            sells=2,
+            buy_amount=400_000,
+            sell_amount=500_000,
+            span=120,
+            active_buy_amount=1_500_000,
+            active_sell_amount=1_000_000,
+        )
+        memory = replace(
+            capital_memory(state=CapitalMemoryState.DISTRIBUTING),
+            day_main_net=-3_000_000,
+            day_trough=-4_000_000,
+            recent_15m_main_net=-900_000,
+        )
+        invalidated = state(
+            StrategyStatus.INVALIDATED,
+            metadata={"invalidation_reason": "MARKET_CONTEXT_INCOMPLETE"},
+        )
+        incomplete_market = UniverseDecision(
+            eligible=False,
+            reason_codes=("MARKET_CONTEXT_INCOMPLETE",),
+        )
+
+        item = snapshot(
+            as_of=NOW + timedelta(minutes=2),
+            windows=(one_minute, five_minutes),
+            price=4.50,
+            high_price=4.59,
+            low_price=4.35,
+            memory=memory,
+        )
+        item = replace(
+            item,
+            price_acceptance=replace(
+                item.price_acceptance,
+                confirmation_price=4.42,
+                current_price=4.50,
+                vwap=4.448,
+                return_from_confirmation_pct=1.81,
+                distance_to_vwap_pct=1.17,
+            ),
+        )
+        proposal = self.machine.evaluate(
+            item,
+            invalidated,
+            incomplete_market,
+        )
+
+        self.assertEqual(proposal.new_status, StrategyStatus.WATCHING)
+        self.assertEqual(proposal.reason_code, "POST_INVALIDATION_REVERSAL_WATCH")
+        self.assertEqual(proposal.metadata["watch_kind"], "post_invalidation_reversal")
+        self.assertEqual(
+            proposal.metadata["strategy_source"],
+            "post_invalidation_flow_recovery",
+        )
+        self.assertFalse(proposal.alert_eligible)
+
+    def test_hk02685_pattern_confirms_persistent_flow_recovery(self) -> None:
+        watching = state(
+            StrategyStatus.WATCHING,
+            updated_at=NOW + timedelta(minutes=2),
+            metadata={
+                "watch_kind": "post_invalidation_reversal",
+                "strategy_source": "post_invalidation_flow_recovery",
+                "watch_price": 4.50,
+                "local_low_price": 4.35,
+            },
+        )
+        one_minute = window(
+            60,
+            buys=2,
+            buy_amount=500_000,
+            sell_amount=100_000,
+            active_buy_amount=1_200_000,
+            active_sell_amount=200_000,
+        )
+        five_minutes = window(
+            300,
+            buys=4,
+            sells=2,
+            buy_amount=700_000,
+            sell_amount=800_000,
+            span=180,
+            active_buy_amount=4_000_000,
+            active_sell_amount=1_500_000,
+        )
+        memory = replace(
+            capital_memory(state=CapitalMemoryState.DISTRIBUTING),
+            day_main_net=-1_500_000,
+            day_trough=-4_000_000,
+        )
+
+        item = snapshot(
+            as_of=NOW + timedelta(minutes=4),
+            windows=(one_minute, five_minutes),
+            price=4.58,
+            high_price=4.70,
+            low_price=4.35,
+            memory=memory,
+        )
+        item = replace(
+            item,
+            price_acceptance=replace(
+                item.price_acceptance,
+                confirmation_price=4.50,
+                current_price=4.58,
+                vwap=4.52,
+                return_from_confirmation_pct=1.78,
+                distance_to_vwap_pct=1.33,
+            ),
+        )
+        proposal = self.machine.evaluate(
+            item,
+            watching,
+            ELIGIBLE,
+        )
+
+        self.assertEqual(proposal.new_status, StrategyStatus.CONFIRMED)
+        self.assertEqual(
+            proposal.reason_code,
+            "POST_INVALIDATION_FLOW_RECOVERY_CONFIRMED",
+        )
+        self.assertTrue(proposal.alert_eligible)
+
+    def test_post_invalidation_reversal_rejects_one_minute_pulse(self) -> None:
+        watching = state(
+            StrategyStatus.WATCHING,
+            updated_at=NOW,
+            metadata={
+                "watch_kind": "post_invalidation_reversal",
+                "watch_price": 100,
+                "local_low_price": 96,
+            },
+        )
+        one_minute = window(
+            60,
+            buys=2,
+            active_buy_amount=1_200_000,
+            active_sell_amount=100_000,
+        )
+        weak_five_minutes = window(
+            300,
+            buys=1,
+            sells=3,
+            active_buy_amount=1_000_000,
+            active_sell_amount=2_000_000,
+        )
+
+        proposal = self.machine.evaluate(
+            snapshot(
+                as_of=NOW + timedelta(minutes=2),
+                windows=(one_minute, weak_five_minutes),
+                price=101,
+                high_price=102,
+                low_price=96,
+                memory=replace(
+                    capital_memory(),
+                    day_main_net=-1_000_000,
+                    day_trough=-4_000_000,
+                ),
+            ),
+            watching,
+            ELIGIBLE,
+        )
+
+        self.assertIsNone(proposal)
+
+    def test_post_invalidation_reversal_rejects_weak_recovery_and_chasing(self) -> None:
+        watching = state(
+            StrategyStatus.WATCHING,
+            updated_at=NOW,
+            metadata={
+                "watch_kind": "post_invalidation_reversal",
+                "watch_price": 100,
+                "local_low_price": 96,
+            },
+        )
+        one_minute = window(
+            60,
+            buys=2,
+            active_buy_amount=1_200_000,
+            active_sell_amount=200_000,
+        )
+        five_minutes = window(
+            300,
+            buys=4,
+            sells=2,
+            active_buy_amount=4_000_000,
+            active_sell_amount=1_500_000,
+        )
+        weak_recovery = replace(
+            capital_memory(),
+            day_main_net=-3_600_000,
+            day_trough=-4_000_000,
+        )
+        weak = self.machine.evaluate(
+            snapshot(
+                as_of=NOW + timedelta(minutes=2),
+                windows=(one_minute, five_minutes),
+                price=101,
+                high_price=102,
+                low_price=96,
+                memory=weak_recovery,
+            ),
+            watching,
+            ELIGIBLE,
+        )
+        chasing = self.machine.evaluate(
+            snapshot(
+                as_of=NOW + timedelta(minutes=2),
+                windows=(one_minute, five_minutes),
+                price=109,
+                high_price=110,
+                low_price=96,
+                memory=replace(
+                    weak_recovery,
+                    day_main_net=-1_000_000,
+                ),
+            ),
+            watching,
+            ELIGIBLE,
+        )
+
+        self.assertIsNone(weak)
+        self.assertIsNone(chasing)
 
     def test_soft_ineligible_setup_does_not_watch_without_v2_evidence(self) -> None:
         item = snapshot(as_of=NOW + timedelta(minutes=5))

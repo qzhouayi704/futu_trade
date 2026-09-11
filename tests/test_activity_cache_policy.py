@@ -120,6 +120,37 @@ def test_discovery_score_admits_relative_hotspot_before_hard_threshold():
     assert result['active'][0]['activity_reason'] == 'emerging_hotspot'
 
 
+def test_high_price_stock_can_use_turnover_instead_of_absolute_volume():
+    config = SimpleNamespace(realtime_activity_filter={
+        'discovery_score_threshold': 0.99,
+        'emerging_liquidity_floor_ratio': 0.35,
+        'high_turnover_volume_bypass_multiple': 5.0,
+    })
+    calculator = ActivityCalculator(config=config)
+    quotes = pd.DataFrame([{
+        'code': 'HK.06106',
+        'turnover_rate': 0.45,
+        'turnover': 30_000_000,
+        'volume': 375_000,
+        'last_price': 80.2,
+        'prev_close_price': 70.75,
+        'change_rate': 0,
+    }])
+
+    result = calculator.filter_stocks_by_activity(
+        batch=[{'code': 'HK.06106', 'market': 'HK'}],
+        quote_data=quotes,
+        min_turnover_rate=0.3,
+        min_turnover_amount=5_000_000,
+        min_volume=500_000,
+        min_price_config={},
+    )
+
+    assert [stock['code'] for stock in result['active']] == ['HK.06106']
+    assert result['active'][0]['activity_reason'] == 'high_turnover'
+    assert round(result['active'][0]['change_rate'], 2) == 13.36
+
+
 def test_subscription_cleanup_requires_two_inactive_refreshes():
     helper = SubscriptionHelper.__new__(SubscriptionHelper)
     helper.config = SimpleNamespace(

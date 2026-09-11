@@ -75,6 +75,7 @@
     "regular_refilter_interval_seconds": 300,
     "discovery_score_threshold": 0.65,
     "emerging_liquidity_floor_ratio": 0.35,
+    "high_turnover_volume_bypass_multiple": 5.0,
     "demotion_confirmation_cycles": 2
   },
   "realtime_hot_filter": {

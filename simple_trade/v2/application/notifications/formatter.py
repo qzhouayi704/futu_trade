@@ -24,6 +24,9 @@ class NotificationFormatter:
         "FAST_15M_MULTI_INFLOW_CONFIRMED": "15分钟多次主力流入确认",
         "STRICT_MOMENTUM_SHADOW_CONFIRMED": "严格热门动量影子确认",
         "STRONG_TREND_SECOND_INFLOW_CONFIRMED": "强势股二次大单资金确认",
+        "POST_INVALIDATION_FLOW_RECOVERY_CONFIRMED": (
+            "候选失效后低位资金恢复确认"
+        ),
         "OVERNIGHT_PRIORITY_LOW_REENTRY_SHADOW_CONFIRMED": (
             "前日资金强势股次日低位影子确认（仅记录，不推送）"
         ),
@@ -119,6 +122,7 @@ class NotificationFormatter:
                             reason in {
                                 "WEAK_MARKET_60M_STRONG_STOCK_CONFIRMED",
                                 "EXTREME_MARKET_60M_MULTI_INFLOW_CONFIRMED",
+                                "POST_INVALIDATION_FLOW_RECOVERY_CONFIRMED",
                             }
                             for reason in intent.reason_codes
                         )

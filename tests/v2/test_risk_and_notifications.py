@@ -292,6 +292,14 @@ class NotificationFormatterTests(unittest.TestCase):
         self.assertIn("建议首仓15%", event.message)
         self.assertIn("单票总仓不超过25%", event.message)
 
+    def test_post_invalidation_recovery_uses_small_initial_position(self):
+        event = NotificationFormatter(expiry_seconds=300).build(
+            self._buy_source("POST_INVALIDATION_FLOW_RECOVERY_CONFIRMED")
+        )[0]
+
+        self.assertIn("候选失效后低位资金恢复确认", event.message)
+        self.assertIn("建议首仓10%", event.message)
+
     def test_rejected_buy_is_only_an_observation_without_allocation_advice(self):
         source = self._buy_source("FAST_15M_MULTI_INFLOW_CONFIRMED")
         source = replace(source, event_type=EventType.RISK_REJECTED, risk=replace(source.risk, result=RiskResult.REJECTED))

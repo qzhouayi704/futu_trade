@@ -27,6 +27,9 @@ def _portfolio_sources(payload: dict) -> list[str]:
         str(value) for value in portfolio.get("strategy_sources", [])
         if str(value).strip()
     }
+    lifecycle_source = str(payload.get("lifecycle_strategy_source") or "").strip()
+    if lifecycle_source:
+        sources.add(lifecycle_source)
     for nomination in portfolio.get("nominations", []):
         if not isinstance(nomination, dict):
             continue

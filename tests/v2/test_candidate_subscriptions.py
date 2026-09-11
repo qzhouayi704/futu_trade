@@ -38,7 +38,12 @@ def entered_event(new_state: str = "SETUP") -> DecisionEvent:
     )
 
 
-def invalidated_event(reason_code: str) -> DecisionEvent:
+def invalidated_event(
+    reason_code: str,
+    *,
+    payload: dict | None = None,
+    old_state: str = "WATCHING",
+) -> DecisionEvent:
     now = datetime.now(timezone.utc)
     return DecisionEvent(
         event_type=EventType.CANDIDATE_INVALIDATED,
@@ -48,9 +53,10 @@ def invalidated_event(reason_code: str) -> DecisionEvent:
         source="test",
         schema_version=1,
         strategy_version="test-v2",
-        old_state="WATCHING",
+        old_state=old_state,
         new_state="INVALIDATED",
         reason_code=reason_code,
+        payload=payload or {},
     )
 
 
@@ -144,7 +150,7 @@ class CandidateSubscriptionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(port.protected, ("HK.03690", "HK.00100", "HK.00819"))
         await coordinator.stop()
 
-    async def test_hard_invalidation_keeps_intraday_observation_protected(self) -> None:
+    async def test_hard_invalidation_releases_intraday_and_overnight_protection(self) -> None:
         port = FakeSubscriptionPort()
         coordinator = CandidateSubscriptionCoordinator(port)
         await coordinator.start()
@@ -154,7 +160,47 @@ class CandidateSubscriptionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             invalidated_event("PRICE_ACCEPTANCE_BROKEN")
         )
 
-        self.assertEqual(port.protected, ("HK.03690", "HK.00100"))
+        self.assertEqual(port.protected, ("HK.03690",))
+        await coordinator.stop()
+
+    async def test_invalidation_releases_intraday_candidate_protection(self) -> None:
+        port = FakeSubscriptionPort()
+        coordinator = CandidateSubscriptionCoordinator(port, cooldown_seconds=0)
+        await coordinator.start()
+        coordinator.on_candidate_activity(activity_event())
+
+        coordinator.on_candidate_invalidated(
+            invalidated_event("FLOW_CONFIRMATION_EXPIRED")
+        )
+
+        self.assertEqual(port.protected, ())
+        await coordinator.stop()
+
+    async def test_recoverable_active_invalidation_holds_ticker_for_one_hour(self) -> None:
+        port = FakeSubscriptionPort()
+        coordinator = CandidateSubscriptionCoordinator(
+            port,
+            cooldown_seconds=0,
+            recovery_hold_seconds=0.02,
+        )
+        await coordinator.start()
+        coordinator.on_candidate_activity(activity_event())
+
+        coordinator.on_candidate_invalidated(invalidated_event(
+            "MARKET_CONTEXT_INCOMPLETE",
+            old_state="SETUP",
+            payload={
+                "feature_snapshot": {
+                    "activity": {"is_active": True},
+                    "liquidity": {"score": 80},
+                    "quote": {"low_price": 9.5},
+                }
+            },
+        ))
+
+        self.assertEqual(port.protected, ("HK.00100",))
+        await asyncio.sleep(0.04)
+        self.assertEqual(port.protected, ())
         await coordinator.stop()
 
     async def test_temporary_invalidation_keeps_overnight_candidate_protected(self) -> None:

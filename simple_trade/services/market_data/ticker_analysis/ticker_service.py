@@ -15,6 +15,8 @@ from typing import Dict, List, Optional
 
 from futu import RET_OK, SubType
 
+from ....utils.trade_time import normalize_futu_trade_time
+
 logger = logging.getLogger(__name__)
 
 
@@ -261,7 +263,8 @@ class TickerService:
             rows = []
             for r in records:
                 # 从逐笔记录的真实成交时间解析 trade_date 和 timestamp
-                parsed = self._parse_ticker_time(r.time)
+                trade_time = normalize_futu_trade_time(r.time)
+                parsed = self._parse_ticker_time(trade_time)
                 if parsed is None:
                     continue
                 real_ts_ms, real_date = parsed
@@ -273,6 +276,8 @@ class TickerService:
                     r.direction,
                     real_ts_ms,
                     real_date,
+                    None,
+                    trade_time,
                 ))
             if rows:
                 queries = TickerQueries(self._db_manager.conn_manager)

@@ -2,9 +2,10 @@
 
 import asyncio
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timedelta
 import json
-from typing import Protocol
-from datetime import datetime
+from typing import Callable, Protocol
+
 from ....utils.trade_time import HK_TIMEZONE
 
 from ...domain.serialization import to_primitive
@@ -22,15 +23,17 @@ class V2ReadModelService:
     def __init__(
         self, db: ReadDatabasePort, runtime=None,
         *, alert_performance_reader: AlertPerformanceReader | None = None,
+        now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self._db = db
         self._runtime = runtime
         self._alert_performance = alert_performance_reader or AlertPerformanceReader(db)
         self._candidate_history = CandidateHistoryReader(db)
+        self._now_provider = now_provider or (lambda: datetime.now(HK_TIMEZONE))
 
     async def cockpit(self) -> dict:
         candidates, positions, decisions, distribution = await asyncio.gather(
-            self.candidates(limit=8), self.positions(), self.decisions(limit=12),
+            self.candidates(limit=200), self.positions(), self.decisions(limit=12),
             self.outcome_distribution(),
         )
         return {
@@ -48,7 +51,7 @@ class V2ReadModelService:
                 "evaluated_signals": distribution["sample_count"],
                 "reached_5_ratio": distribution["milestones"]["reached_5_ratio"],
             },
-            "candidates": candidates["items"],
+            "candidates": candidates["items"][:8],
             "positions": positions["items"],
             "decisions": decisions["items"],
         }
@@ -63,6 +66,10 @@ class V2ReadModelService:
         if stock_code:
             conditions.append("s.stock_code=?")
             params.append(stock_code.strip().upper())
+        session_date = self._now_provider().astimezone(HK_TIMEZONE).date()
+        next_date = session_date + timedelta(days=1)
+        conditions.append("s.updated_at>=? AND s.updated_at<?")
+        params.extend((session_date.isoformat(), next_date.isoformat()))
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
         rows = await self._query(
@@ -78,7 +85,11 @@ class V2ReadModelService:
             tuple(params),
         )
         items = [self._candidate_row(row) for row in rows]
-        return {"items": items, "count": len(items)}
+        return {
+            "items": items,
+            "count": len(items),
+            "trade_date": session_date.isoformat(),
+        }
 
     async def overnight_candidates(self) -> dict:
         now = datetime.now(HK_TIMEZONE)
@@ -267,14 +278,18 @@ class V2ReadModelService:
         score = payload.get("candidate_score") or {}
         portfolio = payload.get("strategy_portfolio") or {}
         feature = payload.get("feature_snapshot") or {}
+        strategy_sources = list(portfolio.get("strategy_sources", []))
+        lifecycle_source = str(payload.get("lifecycle_strategy_source") or "").strip()
+        if lifecycle_source and lifecycle_source not in strategy_sources:
+            strategy_sources.append(lifecycle_source)
         return {
             "stock_code": row[0], "stock_name": row[1], "status": row[2],
             "version": row[3], "confirmed_price": row[4], "peak_price": row[5],
             "updated_at": row[6], "reason_code": row[8],
             "score": score.get("total"), "quality": score.get("quality"),
             "portfolio_score": portfolio.get("ranking_score"),
-            "strategy_sources": portfolio.get("strategy_sources", []),
-            "consensus_count": portfolio.get("consensus_count", 0),
+            "strategy_sources": strategy_sources,
+            "consensus_count": len(strategy_sources),
             "strategy_nominations": portfolio.get("nominations", []),
             "alert_eligible": payload.get("alert_eligible", True),
             "market_context": feature.get("market_context"),
