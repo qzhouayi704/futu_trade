@@ -19,7 +19,7 @@ export const permissionText: Record<V2SignalPermission, string> = {
   TRACKING: "仅站内跟踪",
   RESEARCH: "研究确认，暂不推送买入",
   FORMAL_ELIGIBLE: "具备正式提醒资格",
-  DELIVERED: "正式提醒已送达",
+  DELIVERED: "微信接口已接受正式提醒",
 };
 
 const strategySourceText: Record<string, string> = {

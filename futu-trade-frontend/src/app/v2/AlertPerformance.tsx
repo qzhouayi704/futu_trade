@@ -187,7 +187,7 @@ export function AlertPerformance() {
         <span>当前有效 <strong className="text-foreground">{lifecycle.active}</strong></span>
         <span>当前已失效 <strong className="text-foreground">{lifecycle.invalidated}</strong></span>
         <span>当日曾确认 <strong className="text-foreground">{lifecycle.confirmed}</strong></span>
-        <span>正式提醒资格或已送达 <strong className="text-foreground">{lifecycle.formal}</strong></span>
+        <span>正式提醒资格或接口已接受 <strong className="text-foreground">{lifecycle.formal}</strong></span>
       </div>}
 
       {Object.keys(data.summary_by_strategy_source).length > 0 && <div className="mt-3 overflow-x-auto border-y border-border">

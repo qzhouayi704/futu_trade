@@ -187,7 +187,18 @@ class AlertPerformanceReader:
             and observed.date().isoformat() == selected_date
         ]
         eligible, exclusions = eligible_delivered(rows)
-        return collapse_delivered(eligible), exclusions
+        alerts = collapse_delivered(eligible)
+        buy_alerts = [item for item in alerts if item["action"] == "BUY"]
+        if buy_alerts:
+            lifecycle_rows = await self._candidate_lifecycle_rows(buy_alerts, selected_date)
+            confirmed_ids = {
+                row[0] for row in lifecycle_rows if row[1] == "BUY_CONFIRMED"
+            }
+            matched = [item for item in buy_alerts if item["event_id"] in confirmed_ids]
+            apply_candidate_lifecycle(matched, lifecycle_rows)
+            for item in matched:
+                item["alert_permission"] = "DELIVERED"
+        return alerts, exclusions
 
     async def _candidate_alerts(self, selected_date: str, *, scope: str) -> list[dict]:
         if scope == "confirmed":
@@ -216,10 +227,14 @@ class AlertPerformanceReader:
         ]
         if not alerts:
             return []
-        codes = sorted({item["stock_code"] for item in alerts})
+        lifecycle_rows = await self._candidate_lifecycle_rows(alerts, selected_date)
+        return apply_candidate_lifecycle(alerts, lifecycle_rows)
+
+    async def _candidate_lifecycle_rows(self, items: list[dict], selected_date: str) -> list[tuple]:
+        codes = sorted({item["stock_code"] for item in items})
         event_placeholders = ",".join("?" for _ in CANDIDATE_EVENT_TYPES)
         code_placeholders = ",".join("?" for _ in codes)
-        lifecycle_rows = await self._query(
+        return await self._query(
             "SELECT e.event_id, e.event_type, e.stock_code, e.exchange_time, "
             "e.reason_code, e.strategy_version, e.new_state, e.payload_json "
             "FROM v2_decision_events e "
@@ -233,7 +248,6 @@ class AlertPerformanceReader:
                 *self._date_bounds(selected_date),
             ),
         )
-        return apply_candidate_lifecycle(alerts, lifecycle_rows)
 
     async def _names(self, codes: list[str]) -> dict[str, str]:
         placeholders = ",".join("?" for _ in codes)

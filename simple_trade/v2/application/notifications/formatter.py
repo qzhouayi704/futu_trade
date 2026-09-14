@@ -83,8 +83,8 @@ class NotificationFormatter:
         if source.intent.intent_type is IntentType.BUY:
             adding = "POSITION_ADD_CAPITAL_CONFIRMED" in source.intent.reason_codes
             if adding:
-                return "V2 加仓确认" if approved else "V2 加仓观察（风控未通过）"
-            return "V2 首次建仓确认" if approved else "V2 建仓观察（风控未通过）"
+                return f"V2 加仓确认 · {source.stock_code}" if approved else "V2 加仓观察（风控未通过）"
+            return f"V2 首次建仓确认 · {source.stock_code}" if approved else "V2 建仓观察（风控未通过）"
         if source.intent.intent_type is IntentType.SELL:
             return "V2 持仓退出提醒" if approved else "V2 持仓风险（执行受限）"
         return "V2 换票建议" if approved else "V2 换票观察（风控未通过）"

@@ -288,7 +288,7 @@ class NotificationFormatterTests(unittest.TestCase):
             self._buy_source("FAST_15M_MULTI_INFLOW_CONFIRMED")
         )[0]
 
-        self.assertEqual(event.title, "V2 首次建仓确认")
+        self.assertEqual(event.title, "V2 首次建仓确认 · HK.00100")
         self.assertIn("建议首仓15%", event.message)
         self.assertIn("单票总仓不超过25%", event.message)
 
@@ -326,7 +326,7 @@ class NotificationFormatterTests(unittest.TestCase):
             self._buy_source("POSITION_ADD_CAPITAL_CONFIRMED")
         )[0]
 
-        self.assertEqual(adding.title, "V2 加仓确认")
+        self.assertEqual(adding.title, "V2 加仓确认 · HK.00100")
         self.assertIn("建议加仓10%", adding.message)
         self.assertIn("只加盈利仓", adding.message)
         self.assertIn("风控：**通过**", adding.message)

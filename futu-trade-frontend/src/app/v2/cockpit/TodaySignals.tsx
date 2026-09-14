@@ -226,7 +226,7 @@ export function TodaySignals() {
               const { item } = row;
               return <tr key={`${item.event_id}-${item.action}-${item.strategy_version}`} className="align-top hover:bg-muted/20">
                 <td className="max-w-48 px-3 py-3"><div className="break-words font-semibold">{item.stock_name || item.stock_code}</div><div className="mt-1 text-[11px] text-muted-foreground">{item.stock_code}</div><div className="mt-1 break-all text-[10px] text-muted-foreground" title={item.strategy_version}>{versionLabel(item.strategy_version)}</div></td>
-                <td className="w-52 px-3 py-3"><div className="font-medium">{signalHeadline(item)}</div><div className="mt-1 text-[11px] text-muted-foreground">首次 {stageText[item.entry_stage]} · 最高 {stageText[item.max_stage]}</div><div className="mt-1 text-[11px] text-muted-foreground">{permissionText[item.alert_permission]}</div><div className="mt-1 text-[11px] text-muted-foreground">{item.delivered_at ? `已送达 ${signalClock(item.delivered_at)}` : "没有送达记录"}</div>
+                <td className="w-52 px-3 py-3"><div className="font-medium">{signalHeadline(item)}</div><div className="mt-1 text-[11px] text-muted-foreground">首次 {stageText[item.entry_stage]} · 最高 {stageText[item.max_stage]}</div><div className="mt-1 text-[11px] text-muted-foreground">{permissionText[item.alert_permission]}</div><div className="mt-1 text-[11px] text-muted-foreground">{item.delivered_at ? `接口接受 ${signalClock(item.delivered_at)}` : "没有接口回执"}</div>
                   <SignalDetails item={item} />
                 </td>
                 <td className="px-3 py-3 tabular-nums"><div className="font-medium">{signalClock(item.signal_time)}</div></td>
@@ -249,7 +249,7 @@ export function TodaySignals() {
               </div>
               <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1"><span>{signalHeadline(item)}</span><span className="text-muted-foreground">{signalClock(item.signal_time)} / {item.signal_price.toFixed(3)}</span></div>
               <div className="mt-1 text-[10px] text-muted-foreground">首次 {stageText[item.entry_stage]} · 最高 {stageText[item.max_stage]} · {permissionText[item.alert_permission]}</div>
-              <div className="mt-1 text-[10px] text-muted-foreground">{item.delivered_at ? `已送达 ${signalClock(item.delivered_at)}` : "没有送达记录"}</div>
+              <div className="mt-1 text-[10px] text-muted-foreground">{item.delivered_at ? `接口接受 ${signalClock(item.delivered_at)}` : "没有接口回执"}</div>
               <div className="my-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground"><span>最高 <strong className={tone(row.high)}>{pct(row.high)}</strong></span><span>最低 <strong className={tone(row.low)}>{pct(row.low)}</strong></span></div>
               <Observation row={row} />
               <SignalDetails item={item} />
@@ -257,7 +257,7 @@ export function TodaySignals() {
           })}
         </div>
         {!rows.length && <div className="flex min-h-28 items-center justify-center px-4 text-center text-xs text-muted-foreground">
-          {data.count ? "没有匹配的股票或策略版本" : scope === "alerts" ? "今日暂无已送达的正式预警，候选与观察记录单独统计" : "今日当前范围暂无信号记录"}
+          {data.count ? "没有匹配的股票或策略版本" : scope === "alerts" ? "今日暂无微信接口已接受的正式预警，候选与观察记录单独统计" : "今日当前范围暂无信号记录"}
         </div>}
       </div>
       <div className="mt-2 flex flex-wrap justify-between gap-1 text-[10px] text-muted-foreground"><span>同股同版本同动作合并 · 当前状态不改变原阶段基准价 · 最高 / 最低均相对信号价</span><span>统计截至 {signalClock(data.as_of)} · {versions.length}个策略版本</span></div>

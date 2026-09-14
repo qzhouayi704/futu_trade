@@ -17,7 +17,8 @@ beforeEach(() => { state.options = []; });
 describe("cockpit request load", () => {
   it("only enables cockpit and today's performance on first load", () => {
     renderToStaticMarkup(createElement(V2WorkbenchPage));
-    expect(state.options.filter((option) => option.enabled !== false).map((option) => option.queryKey[1])).toEqual(["cockpit", "alert-performance"]);
+    expect(state.options.filter((option) => option.enabled !== false).map((option) => option.queryKey[1])).toEqual(["cockpit", "alert-performance", "alert-performance"]);
+    expect(state.options.filter((option) => option.queryKey[1] === "alert-performance").map((option) => option.queryKey[3])).toEqual(["alerts", "candidates"]);
     expect(state.options.filter((option) => option.enabled === false).map((option) => option.queryKey[1])).toEqual(["candidates", "positions", "decisions", "distribution", "shadow-acceptance", "health"]);
   });
 });

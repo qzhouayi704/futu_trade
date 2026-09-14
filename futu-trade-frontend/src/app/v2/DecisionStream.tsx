@@ -24,7 +24,7 @@ const eventLabel: Record<string, string> = {
   ORDER_UPDATED: "订单状态更新",
   EXECUTION_COMPLETED: "交易执行完成",
   NOTIFICATION_REQUESTED: "提醒待发送",
-  NOTIFICATION_DELIVERED: "提醒已送达",
+  NOTIFICATION_DELIVERED: "提醒接口已接受",
   NOTIFICATION_FAILED: "提醒发送失败",
 };
 

@@ -436,6 +436,32 @@ class AlertPerformanceReaderTests(unittest.IsolatedAsyncioTestCase):
             item["alert_permission"] == "DELIVERED" for item in result["items"]
         ))
 
+    async def test_delivered_buy_keeps_history_but_shows_later_invalidation(self) -> None:
+        database = FakeAlertDatabase()
+        database.candidate_lifecycle_rows.extend([
+            (
+                "buy-1", "BUY_CONFIRMED", "HK.00100",
+                "2026-09-02T10:00:00+08:00", "FAST_15M_MULTI_INFLOW_CONFIRMED",
+                "v2", "CONFIRMED", '{"alert_eligible":true}',
+            ),
+            (
+                "invalid-1", "BUY_INVALIDATED", "HK.00100",
+                "2026-09-02T10:30:00+08:00", "PRICE_ACCEPTANCE_BROKEN",
+                "v2", "INVALIDATED", '{"alert_eligible":false}',
+            ),
+        ])
+
+        result = await AlertPerformanceReader(database).history(
+            trade_date="2026-09-02", scope="alerts"
+        )
+
+        buy = next(item for item in result["items"] if item["action"] == "BUY")
+        self.assertEqual(buy["current_status"], "INVALIDATED")
+        self.assertEqual(buy["current_reason_code"], "PRICE_ACCEPTANCE_BROKEN")
+        self.assertEqual(buy["alert_permission"], "DELIVERED")
+        self.assertEqual(buy["signal_price"], 100)
+        self.assertEqual(buy["delivered_at"], "2026-09-02T10:00:02+08:00")
+
     async def test_strategy_summary_uses_only_sources_known_at_the_scope_basis(self) -> None:
         database = FakeAlertDatabase()
         row = list(database.candidate_rows[0])

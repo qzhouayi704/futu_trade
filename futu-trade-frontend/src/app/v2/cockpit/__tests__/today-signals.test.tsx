@@ -190,7 +190,7 @@ describe("驾驶舱今日信号展示", () => {
   it("shows Chinese scopes, baseline and visible performance without claiming a win rate", () => {
     const html = render();
     for (const label of ["今日信号表现", "候选池", "资金观察", "买点确认", "正式预警", "09:40", "100.000", "+2.50%", "行情截至", "10:00", "盘中未结算", "阶段记录", "非实盘盈亏", "当前已确认", "研究确认，暂不推送买入", "首次 资金观察", "最高 买点确认"]) expect(html).toContain(label);
-    expect(html).toContain("没有送达记录");
+    expect(html).toContain("没有接口回执");
     expect(html).not.toContain("胜率");
     expect(html).not.toContain("WATCHING");
   });
@@ -215,7 +215,7 @@ describe("驾驶舱今日信号展示", () => {
     const html = render();
     expect(html).toContain("卖出后反涨");
     expect(html).toContain("+3.00%");
-    expect(html).toContain("已送达");
+    expect(html).toContain("接口接受");
   });
 
   it("shows a later invalidation instead of leaving the row at its first stage", () => {
