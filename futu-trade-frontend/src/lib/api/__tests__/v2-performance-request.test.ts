@@ -15,6 +15,17 @@ afterEach(() => {
 });
 
 describe("bounded performance requests", () => {
+  it("bounds paper ledger requests and does not multiply a timeout", async () => {
+    const controller = new AbortController();
+    const adapter = vi.fn<AxiosAdapter>(async (config) => {
+      expect(config.timeout).toBe(10_000);
+      expect(config.signal).toBe(controller.signal);
+      throw new AxiosError("timeout", "ECONNABORTED", config);
+    });
+    apiClient.defaults.adapter = adapter;
+    await expect(v2Api.paperLedger(controller.signal)).rejects.toMatchObject({ message: "timeout" });
+    expect(adapter).toHaveBeenCalledTimes(1);
+  });
   it("uses a 20-second timeout and forwards query cancellation", async () => {
     const controller = new AbortController();
     let received: InternalAxiosRequestConfig | undefined;

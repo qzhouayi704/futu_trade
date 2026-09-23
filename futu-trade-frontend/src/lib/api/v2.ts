@@ -1,6 +1,7 @@
 import apiClient from "./client";
 import type { AxiosRequestConfig } from "axios";
 import type { ApiResponse } from "@/types";
+import type { PaperLedgerView } from "@/types/v2/paper-ledger";
 
 export interface V2Candidate {
   stock_code: string;
@@ -395,6 +396,9 @@ async function getData<T>(path: string, options?: AxiosRequestConfig): Promise<T
 }
 
 export const v2Api = {
+  paperLedger: (signal?: AbortSignal) => getData<PaperLedgerView>(
+    "/v2/paper/ledger", { timeout: 10_000, signal },
+  ),
   overnightCandidates: () => getData<V2OvernightPool>("/v2/candidates/overnight"),
   cockpit: () => getData<V2Cockpit>("/v2/cockpit"),
   candidates: () => getData<{ items: V2Candidate[]; count: number }>("/v2/candidates"),

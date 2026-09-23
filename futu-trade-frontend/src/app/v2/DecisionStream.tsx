@@ -71,6 +71,7 @@ const reasonLabel: Record<string, string> = {
   STRICT_MOMENTUM_WATCH: "强势动量，等待多次资金确认",
   STRICT_MOMENTUM_SHADOW_CONFIRMED: "强势动量影子确认",
   STRONG_TREND_SECOND_INFLOW_CONFIRMED: "强势股二次大单资金确认",
+  STRONG_TREND_SECOND_INFLOW_WATCH: "强势资金观察，等待再次确认",
   POST_INVALIDATION_REVERSAL_WATCH: "失效后低位资金反转，等待持续确认",
   POST_INVALIDATION_FLOW_RECOVERY_CONFIRMED: "失效候选低位资金恢复确认",
   OVERNIGHT_PRIORITY_LOW_WATCH: "前日资金强势，等待次日低位确认",

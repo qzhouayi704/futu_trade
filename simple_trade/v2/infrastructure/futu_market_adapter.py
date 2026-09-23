@@ -25,6 +25,7 @@ from ..domain.market import (
     TickTrade,
 )
 from ..domain.serialization import require_aware, require_stock_code
+from .market_reference.lot_cache import LotObservationCache
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,7 @@ class FutuMarketAdapter:
         self._schema_version = schema_version
         self._dedupe_capacity = no_sequence_dedupe_capacity
         self._lock = threading.RLock()
+        self._lot_observations = LotObservationCache()
         self._last_sequence: dict[tuple[str, str], int] = {}
         self._last_sequence_time: dict[tuple[str, str], datetime] = {}
         self._seen_without_sequence: dict[tuple[str, str], set[tuple[object, ...]]] = defaultdict(set)
@@ -85,6 +87,11 @@ class FutuMarketAdapter:
             if last_price <= 0 or prev_close < 0:
                 raise ValueError("invalid quote price")
             quality = DataQuality.DEGRADED if used_fallback or row.get("is_realtime") is False else DataQuality.GOOD
+            lot_observation = self._lot_observations.resolve(
+                code, row.get("lot_size"), exchange_time=exchange_time, received_time=received,
+                source=str(row.get("lot_size_source") or "futu.quote"),
+                realtime=not used_fallback and row.get("is_realtime") is not False,
+            )
             quote = QuoteSnapshot(
                 stock_code=code,
                 exchange_time=exchange_time,
@@ -97,7 +104,8 @@ class FutuMarketAdapter:
                 turnover=self._float(row, "turnover"),
                 turnover_rate=self._optional_nonnegative_float(row.get("turnover_rate")),
                 amplitude=self._optional_nonnegative_float(row.get("amplitude")),
-                lot_size=self._optional_positive_int(row.get("lot_size")),
+                lot_size=lot_observation.lot_size if lot_observation else None,
+                lot_size_observation=lot_observation,
                 sector_code=str(
                     row.get("plate_code") or row.get("plate_name") or ""
                 ).strip() or None,
@@ -270,6 +278,7 @@ class FutuMarketAdapter:
                 bid_levels=bids,
                 ask_levels=asks,
                 quality=quality,
+                timestamp_basis="LOCAL_RECEIPT",
             )
             event = OrderBookEvent(
                 event_type=EventType.ORDER_BOOK_UPDATED,

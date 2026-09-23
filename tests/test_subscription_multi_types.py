@@ -4,37 +4,25 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, PropertyMock
+from unittest.mock import Mock, patch
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Mock futu module
-sys.modules['futu'] = MagicMock()
+# Keep SDK constants real; only the client is mocked in each test.
 from futu import SubType, RET_OK
-
-# 正确设置 Mock 的 name 属性
-SubType.QUOTE = Mock()
-type(SubType.QUOTE).name = PropertyMock(return_value='QUOTE')
-
-SubType.TICKER = Mock()
-type(SubType.TICKER).name = PropertyMock(return_value='TICKER')
-
-SubType.ORDER_BOOK = Mock()
-type(SubType.ORDER_BOOK).name = PropertyMock(return_value='ORDER_BOOK')
-
-RET_OK = 0
 
 from simple_trade.api.subscription_manager import SubscriptionManager
 
 
-def test_subscribe_multi_types_with_enum():
+@patch('simple_trade.utils.rate_limiter.wait_for_api')
+def test_subscribe_multi_types_with_enum(_wait):
     """测试使用 SubType 枚举订阅多类型"""
     # Mock FutuClient
     mock_client = Mock()
     mock_client.is_available.return_value = True
-    mock_client.client.subscribe.return_value = (RET_OK, None)
+    mock_client.subscribe_stocks.return_value = (RET_OK, None)
 
     # 创建 SubscriptionManager
     manager = SubscriptionManager(futu_client=mock_client)
@@ -54,12 +42,13 @@ def test_subscribe_multi_types_with_enum():
     print("\n[SUCCESS] SubType 枚举订阅测试通过")
 
 
-def test_subscribe_by_type_handles_string():
+@patch('simple_trade.utils.rate_limiter.wait_for_api')
+def test_subscribe_by_type_handles_string(_wait):
     """测试 _subscribe_by_type 能够处理字符串类型"""
     # Mock FutuClient
     mock_client = Mock()
     mock_client.is_available.return_value = True
-    mock_client.client.subscribe.return_value = (RET_OK, None)
+    mock_client.subscribe_stocks.return_value = (RET_OK, None)
 
     # 创建 SubscriptionManager
     manager = SubscriptionManager(futu_client=mock_client)

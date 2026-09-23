@@ -11,3 +11,10 @@ class LegacyCandidateSubscriptionAdapter:
 
     def protect_candidates(self, stock_codes: tuple[str, ...]) -> None:
         self._subscription_helper.set_candidate_priority_stocks(list(stock_codes))
+
+    def protect_exposure(self, stock_codes: tuple[str, ...]) -> None:
+        self._subscription_helper.set_exposure_priority_stocks(list(stock_codes))
+
+    def subscribe_exposure(self, stock_code: str) -> bool:
+        result = self._subscription_helper.subscribe_for_candidate_data(stock_code, for_exposure=True)
+        return bool(result.get("success"))

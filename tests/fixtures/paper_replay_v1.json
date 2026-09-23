@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "data_origin": "SYNTHETIC_TEST_FIXTURE_NOT_MARKET_DATA",
+  "account_id": "paper:synthetic-demo",
+  "policy": {
+    "initial_cash": "100000", "fee_rate": "0.001", "minimum_fee": "3",
+    "risk_fraction": "0.01", "portfolio_risk_fraction": "0.03"
+  },
+  "events": [
+    {
+      "kind": "plan", "event_id": "synthetic-plan", "when": "2026-09-21T10:00:00+08:00",
+      "setup": {
+        "setup_id": "synthetic-breakout", "source_event_id": "synthetic-decision",
+        "strategy_id": "synthetic-test-only", "strategy_version": "fixture-v1",
+        "stock_code": "HK.00100", "created_at": "2026-09-21T10:00:00+08:00",
+        "valid_until": "2026-09-21T10:05:00+08:00", "exit_at": "2026-09-21T11:00:00+08:00",
+        "entry_min": "9.8", "entry_limit": "10", "stop_price": "9.5",
+        "take_profit": "11", "lot_size": 100
+      }
+    },
+    {
+      "kind": "book",
+      "book": {
+        "event_id": "synthetic-book-0", "stock_code": "HK.00100",
+        "exchange_time": "2026-09-21T10:00:00+08:00", "received_at": "2026-09-21T10:00:00+08:00",
+        "bid": "9.99", "ask": "10", "bid_size": 2000, "ask_size": 2000, "market_open": true
+      }
+    },
+    {
+      "kind": "book",
+      "book": {
+        "event_id": "synthetic-book-1", "stock_code": "HK.00100",
+        "exchange_time": "2026-09-21T10:00:01+08:00", "received_at": "2026-09-21T10:00:01+08:00",
+        "bid": "9.99", "ask": "10", "bid_size": 2000, "ask_size": 2000, "market_open": true
+      }
+    },
+    {
+      "kind": "book",
+      "book": {
+        "event_id": "synthetic-book-2", "stock_code": "HK.00100",
+        "exchange_time": "2026-09-21T10:00:02+08:00", "received_at": "2026-09-21T10:00:02+08:00",
+        "bid": "10.1", "ask": "10.2", "bid_size": 8000, "ask_size": 8000, "market_open": true
+      }
+    },
+    {
+      "kind": "book",
+      "book": {
+        "event_id": "synthetic-book-3", "stock_code": "HK.00100",
+        "exchange_time": "2026-09-21T10:00:03+08:00", "received_at": "2026-09-21T10:00:03+08:00",
+        "bid": "9.99", "ask": "10", "bid_size": 8000, "ask_size": 8000, "market_open": true
+      }
+    },
+    {
+      "kind": "book",
+      "book": {
+        "event_id": "synthetic-book-4", "stock_code": "HK.00100",
+        "exchange_time": "2026-09-21T10:00:04+08:00", "received_at": "2026-09-21T10:00:04+08:00",
+        "bid": "11.1", "ask": "11.2", "bid_size": 10000, "ask_size": 10000, "market_open": true
+      }
+    },
+    {
+      "kind": "book",
+      "book": {
+        "event_id": "synthetic-book-5", "stock_code": "HK.00100",
+        "exchange_time": "2026-09-21T10:00:05+08:00", "received_at": "2026-09-21T10:00:05+08:00",
+        "bid": "10.8", "ask": "10.9", "bid_size": 10000, "ask_size": 10000, "market_open": true
+      }
+    }
+  ]
+}

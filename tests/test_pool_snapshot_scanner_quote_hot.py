@@ -1,5 +1,9 @@
 import unittest
 import time
+import json
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+import pandas as pd
 
 from simple_trade.services.market_data.pool_snapshot_scanner import (
     AnomalyStock,
@@ -17,6 +21,20 @@ class FakeContainer:
 
 
 class PoolSnapshotScannerQuoteHotTests(unittest.TestCase):
+    def test_snapshot_preserves_json_safe_lot_with_source(self) -> None:
+        client = MagicMock()
+        client.is_available.return_value = True
+        client.get_market_snapshot.return_value = (0, pd.DataFrame([
+            {"code": "HK.00100", "lot_size": 500.0, "last_price": 100},
+            {"code": "HK.00700", "lot_size": float("nan"), "last_price": 100},
+        ]))
+        scanner = PoolSnapshotScanner(SimpleNamespace(futu_client=client))
+        rows = scanner._fetch_snapshots(["HK.00100", "HK.00700"])
+        self.assertEqual(rows[0]["lot_size"], 500)
+        self.assertEqual(rows[1]["lot_size"], 0)
+        self.assertEqual(rows[0]["lot_size_source"], "futu.market_snapshot")
+        json.dumps(rows, allow_nan=False)
+
     def setUp(self) -> None:
         self.scanner = PoolSnapshotScanner(FakeContainer())
         self.scanner._batch_get_capital_flow = lambda codes: {}

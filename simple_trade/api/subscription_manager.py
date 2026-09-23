@@ -305,6 +305,11 @@ class SubscriptionManager:
             f"ORDER_BOOK:{cleared_orderbook}, RT_DATA:{cleared_rt_data})"
         )
 
+    def invalidate_orderbook_cache(self, stock_codes: List[str]) -> None:
+        """A new quote connection invalidates book state, not QUOTE/TICKER owners."""
+        with self._subscription_lock:
+            self._orderbook_subscribed.difference_update(stock_codes)
+
     def unsubscribe_all(self):
         """取消所有订阅"""
         if not self._is_client_available() or not self._subscribed_stocks:

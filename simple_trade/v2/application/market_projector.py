@@ -16,6 +16,7 @@ class MarketProjection:
     quote: QuoteSnapshot | None = None
     last_tick: TickTrade | None = None
     order_book: OrderBookSnapshot | None = None
+    order_book_received_at: datetime | None = None
     restored_capital: TickAggregate | None = None
     quality: DataQuality = DataQuality.GOOD
     quality_reasons: tuple[str, ...] = ()
@@ -113,6 +114,8 @@ class MarketProjector:
             return
         with self._lock:
             current = self._current(event.stock_code)
+            if current.order_book_received_at is not None and event.received_time < current.order_book_received_at:
+                return
             quality, reasons = self._component_quality(
                 current.quote,
                 current.last_tick,
@@ -121,6 +124,7 @@ class MarketProjector:
             self._stocks[event.stock_code] = replace(
                 current,
                 order_book=event.order_book,
+                order_book_received_at=event.received_time,
                 quality=quality,
                 quality_reasons=reasons,
                 updated_at=event.received_time,

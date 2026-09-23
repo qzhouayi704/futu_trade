@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .enums import DataQuality, MarketRegime
-from .market import CapitalMemory, QuoteSnapshot, TickAggregate
+from .market import CapitalMemory, OrderBookSnapshot, QuoteSnapshot, TickAggregate
 from .serialization import require_aware, require_stock_code
 
 
@@ -205,6 +205,8 @@ class FeatureSnapshot:
     price_acceptance: PriceAcceptance | None = None
     capital_memory: CapitalMemory | None = None
     missing_fields: tuple[str, ...] = ()
+    order_book: OrderBookSnapshot | None = None
+    order_book_received_at: datetime | None = None
 
     def __post_init__(self) -> None:
         code = require_stock_code(self.stock_code)
@@ -212,6 +214,10 @@ class FeatureSnapshot:
         require_aware(self.computed_at, "computed_at")
         if self.quote.stock_code != code:
             raise ValueError("quote 与 FeatureSnapshot 的 stock_code 不一致")
+        if self.order_book is not None and self.order_book.stock_code != code:
+            raise ValueError("order book must belong to the feature stock")
+        if self.order_book_received_at is not None:
+            require_aware(self.order_book_received_at, "order_book_received_at")
         if any(window.stock_code != code for window in self.tick_windows):
             raise ValueError("tick_windows 与 FeatureSnapshot 的 stock_code 不一致")
         if self.capital_memory is not None and self.capital_memory.stock_code != code:

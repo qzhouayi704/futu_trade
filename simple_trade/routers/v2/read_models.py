@@ -8,6 +8,9 @@ from ...dependencies import get_container
 from ...schemas.common import APIResponse
 from ...v2.application.read_models import V2ReadModelService
 from ...v2.application.read_models.alert_performance import AlertPerformanceReader
+from ...v2.application.paper_session.read_model import PaperLedgerReader
+from ...v2.domain.serialization import to_primitive
+from ...v2.infrastructure.paper.session_report import read_ledger_snapshot
 
 
 router = APIRouter(prefix="/api/v2", tags=["V2交易工作台"])
@@ -169,3 +172,17 @@ async def get_health(container=Depends(get_container)):
 async def get_runtime(container=Depends(get_container)):
     service = _service(container)
     return await _respond(service.runtime, "V2运行状态读取成功")
+
+
+@router.get("/paper/ledger", response_model=APIResponse)
+async def get_paper_ledger(container=Depends(get_container)):
+    session = getattr(getattr(container, "v2_runtime", None), "paper_session", None)
+    reader = getattr(container, "v2_paper_ledger_reader", None)
+    if reader is None or reader.session is not session:
+        reader = PaperLedgerReader(session, read_ledger_snapshot)
+        container.v2_paper_ledger_reader = reader
+    try:
+        return APIResponse(success=True, data=to_primitive(await reader.read()), message="模拟账本读取成功")
+    except Exception:
+        logger.exception("Paper ledger read failed")
+        return APIResponse(success=False, data=None, message="模拟账本暂不可读，请稍后重试或查看系统日志")

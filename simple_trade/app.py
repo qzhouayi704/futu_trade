@@ -171,8 +171,29 @@ async def lifespan(app: FastAPI):
                 candidate_subscription_port=LegacyCandidateSubscriptionAdapter(
                     container.subscription_helper
                 ),
+                exposure_subscription_port=LegacyCandidateSubscriptionAdapter(
+                    container.subscription_helper
+                ),
             )
             container.v2_runtime = v2_runtime
+            try:
+                from .v2.domain.capture import BookCaptureConfig
+                from .v2.infrastructure.book_capture.futu_port import FutuBookCapturePort
+                capture_config = BookCaptureConfig.from_env()
+                if capture_config is not None:
+                    v2_runtime.configure_book_capture(capture_config, FutuBookCapturePort(
+                        container.futu_client, container.subscription_manager,
+                        max_stocks=capture_config.max_stocks,
+                    ))
+            except Exception:
+                logging.exception("盘口采集配置失败，现有提醒继续运行")
+            try:
+                from .v2.domain.paper_session import PaperSessionConfig
+                paper_config = PaperSessionConfig.from_env()
+                if paper_config is not None:
+                    v2_runtime.configure_paper_session(paper_config)
+            except Exception:
+                logging.exception("本地模拟实验配置失败，现有提醒继续运行")
         except Exception as e:
             v2_runtime = None
             container.v2_runtime = None

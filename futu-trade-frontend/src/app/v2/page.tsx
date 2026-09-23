@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, BarChart3, BriefcaseBusiness, ListFilter, RefreshCw, ServerCog } from "lucide-react";
+import { Activity, BarChart3, BriefcaseBusiness, FlaskConical, ListFilter, RefreshCw, ServerCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSocket } from "@/lib/socket";
@@ -18,12 +18,14 @@ import { ShadowAcceptance } from "./ShadowAcceptance";
 import { SystemPanel } from "./SystemPanel";
 import { FormalBuyAlerts } from "./cockpit/FormalBuyAlerts";
 import { TodaySignals } from "./cockpit/TodaySignals";
+import { PaperLedger } from "./paper/PaperLedger";
 
 const tabs = [
   { id: "cockpit", label: "盘中驾驶舱", icon: Activity },
   { id: "candidates", label: "候选池", icon: ListFilter },
   { id: "positions", label: "持仓与换票", icon: BriefcaseBusiness },
   { id: "review", label: "复盘中心", icon: BarChart3 },
+  { id: "paper", label: "模拟账本", icon: FlaskConical },
   { id: "system", label: "系统状态", icon: ServerCog },
 ] as const;
 type TabId = (typeof tabs)[number]["id"];
@@ -69,6 +71,7 @@ export default function V2WorkbenchPage() {
         {tab === "positions" && <PositionTable items={positions.data?.items || []} />}
         {tab === "review" && <div className="space-y-10"><AlertPerformance /><ShadowAcceptance data={acceptance.data} /><OutcomeDistribution data={distribution.data} /><section><h2 className="mb-2 text-sm font-semibold">事件回放</h2><DecisionStream items={decisions.data?.items || []} /></section></div>}
         {tab === "system" && <SystemPanel data={health.data} />}
+        {tab === "paper" && <PaperLedger />}
       </main>
     </div>
   </TooltipProvider>;

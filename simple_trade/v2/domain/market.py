@@ -8,6 +8,24 @@ from .serialization import require_aware, require_stock_code
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class LotSizeObservation:
+    stock_code: str
+    lot_size: int
+    observed_at: datetime
+    quote_exchange_time: datetime
+    source: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "stock_code", require_stock_code(self.stock_code))
+        if type(self.lot_size) is not int or self.lot_size <= 0 or not self.source.strip():
+            raise ValueError("lot observation requires an integer size and a source")
+        require_aware(self.observed_at, "observed_at")
+        require_aware(self.quote_exchange_time, "quote_exchange_time")
+        if self.quote_exchange_time > self.observed_at:
+            raise ValueError("lot observation cannot precede its source quote")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class QuoteSnapshot:
     stock_code: str
     exchange_time: datetime
@@ -21,6 +39,7 @@ class QuoteSnapshot:
     turnover_rate: float | None = None
     amplitude: float | None = None
     lot_size: int | None = None
+    lot_size_observation: LotSizeObservation | None = None
     sector_code: str | None = None
     quality: DataQuality = DataQuality.GOOD
 
@@ -37,6 +56,10 @@ class QuoteSnapshot:
             raise ValueError("振幅不能小于 0")
         if self.lot_size is not None and self.lot_size <= 0:
             raise ValueError("每手股数必须大于 0")
+        if self.lot_size_observation is not None:
+            if (self.lot_size_observation.stock_code != self.stock_code
+                    or self.lot_size_observation.lot_size != self.lot_size):
+                raise ValueError("lot observation must match the quote")
         if self.sector_code is not None:
             sector = self.sector_code.strip()
             object.__setattr__(self, "sector_code", sector or None)
@@ -80,12 +103,15 @@ class OrderBookSnapshot:
     bid_levels: tuple[OrderBookLevel, ...]
     ask_levels: tuple[OrderBookLevel, ...]
     quality: DataQuality
+    timestamp_basis: str = "EXCHANGE"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stock_code", require_stock_code(self.stock_code))
         require_aware(self.exchange_time, "exchange_time")
         if len(self.bid_levels) > 10 or len(self.ask_levels) > 10:
             raise ValueError("盘口最多保留十档")
+        if self.timestamp_basis not in {"EXCHANGE", "LOCAL_RECEIPT"}:
+            raise ValueError("unsupported order book timestamp basis")
 
     @property
     def best_bid(self) -> float | None:

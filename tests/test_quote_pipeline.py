@@ -204,6 +204,16 @@ class TestLegacyObserveMode:
 
 class TestRunPipeline:
 
+    def test_subscribed_exposure_outside_pool_still_receives_quote_polling(self):
+        pipeline, container, _, _ = _make_pipeline()
+        container.subscription_manager.subscribed_stocks.add('HK.00916')
+        container.subscription_helper.priority_stocks = {'HK.00700'}
+        container.subscription_helper.exposure_priority_stocks = {'HK.00916', 'HK.00100'}
+        stocks = pipeline._get_target_stocks()
+        assert {s['code'] for s in stocks} == {'HK.00700', 'HK.09988', 'HK.00916'}
+        assert len(stocks) == 3
+        assert next(s for s in stocks if s['code'] == 'HK.00916')['market'] == 'HK'
+
     def test_full_pipeline_fetches_and_broadcasts(self):
         """run_pipeline 应获取报价并广播"""
         pipeline, container, sm, sock = _make_pipeline()

@@ -108,6 +108,21 @@ class CandidateStateMachine:
             strong_trend = self._confirm_strong_trend_reentry(snapshot, universe)
             if strong_trend is not None:
                 return strong_trend
+            if self._strong_trend_watch_context(snapshot, universe):
+                return TransitionProposal(
+                    new_status=StrategyStatus.WATCHING,
+                    event_type=EventType.CANDIDATE_UPDATED,
+                    reason_code="STRONG_TREND_SECOND_INFLOW_WATCH",
+                    confirmation_price=snapshot.quote.last_price,
+                    alert_eligible=False,
+                    metadata={
+                        "watch_kind": "strong_trend_reentry",
+                        "strategy_source": "strong_trend_reentry",
+                        "alert_eligible": False,
+                        "watch_started_at": snapshot.computed_at,
+                        "watch_price": snapshot.quote.last_price,
+                    },
+                )
             low_position_watch = self._enter_low_position_watch(
                 snapshot, universe, event_type=EventType.CANDIDATE_UPDATED
             )
@@ -182,6 +197,16 @@ class CandidateStateMachine:
         if status is StrategyStatus.CONFIRMED:
             return None
         if status is not StrategyStatus.WATCHING or state is None:
+            return None
+
+        # A strategy-specific watch must not fall through to another route's buy rule.
+        if state.metadata.get("watch_kind") == "strong_trend_reentry":
+            if (
+                self._state_age(snapshot, state) > self.FAST_WINDOW_SECONDS
+                or snapshot.computed_at.timetz().replace(tzinfo=None)
+                > CandidateSignalRules.MEMORY_WATCH_CUTOFF
+            ):
+                return self._active_invalidated(snapshot, "FLOW_CONFIRMATION_EXPIRED")
             return None
 
         fast = self._window(snapshot, self.FAST_WINDOW_SECONDS)
@@ -645,6 +670,10 @@ class CandidateStateMachine:
             and self._state_age(snapshot, state) > self.UNIVERSE_GRACE_SECONDS
             and not self._strict_momentum_context(snapshot, universe)
             and not (
+                state.metadata.get("watch_kind") == "strong_trend_reentry"
+                and self._strong_trend_watch_context(snapshot, universe)
+            )
+            and not (
                 tolerant_watch
                 and bool(universe.reason_codes)
                 and set(universe.reason_codes).issubset(
@@ -662,6 +691,15 @@ class CandidateStateMachine:
         ):
             return self._active_invalidated(snapshot, "HOT_UNIVERSE_EXITED")
         return None
+
+    @classmethod
+    def _strong_trend_watch_context(
+        cls, snapshot: FeatureSnapshot, universe: UniverseDecision,
+    ) -> bool:
+        return bool(
+            not (set(universe.reason_codes) - cls.SOFT_UNIVERSE_REASONS)
+            and CandidateSignalRules.strong_trend_reentry_context(snapshot)
+        )
 
     @classmethod
     def _confirm_strong_trend_reentry(

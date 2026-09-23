@@ -113,6 +113,7 @@ class TickerPushHandler(TickerHandlerBase if FUTU_AVAILABLE else object):
         protected = (
             set(getattr(helper, 'priority_stocks', set()))
             | set(getattr(helper, 'candidate_priority_stocks', set()))
+            | set(getattr(helper, 'exposure_priority_stocks', set()))
         )
         return stock_code in protected
 

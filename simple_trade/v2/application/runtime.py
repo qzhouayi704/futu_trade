@@ -12,7 +12,16 @@ from ...utils.trading_calendar import get_trading_calendar
 if TYPE_CHECKING:
     from ...database.core.db_manager import DatabaseManager
 from ..config.models import V2Config
-from ..domain.enums import EventType, RuntimeMode
+from ..domain.enums import CandidateStatus, EventType, RuntimeMode
+from ..domain.capture import BookCaptureConfig, CaptureStats
+from ..domain.paper_session import PaperSessionConfig, PaperSessionStats
+from ..infrastructure.paper.session_store import SqlitePaperSessionStore
+from .paper_session.runner import PaperSessionRunner
+from ..ports.book_capture import BookCapturePort
+from ..infrastructure.book_capture.archive import SqliteBookArchive
+from ..infrastructure.book_capture.normalize import normalize_book
+from .book_capture.coordinator import BookCaptureCoordinator
+from .book_capture.recorder import BookRecorder
 from ..domain.events import DomainEvent, MarketEvent
 from ..domain.events import QuoteEvent, TickEvent
 from ..domain.events import PositionReconciledEvent
@@ -35,6 +44,8 @@ from ..infrastructure.notifications import SqliteNotificationStore, UnifiedNotif
 from ..infrastructure.outcomes import SqliteOutcomeStore
 from ..infrastructure.risk import SqliteTradeIntentStore
 from .event_bus import EventBus, EventBusStats
+from .exposure_subscriptions import ExposureSubscriptionCoordinator, ExposureSubscriptionStats
+from ..ports.exposure_subscriptions import ExposureSubscriptionPort
 from .candidate_subscriptions import (
     CandidateSubscriptionCoordinator,
     CandidateSubscriptionPort,
@@ -70,12 +81,15 @@ class V2RuntimeSnapshot:
     features: FeatureEngineStats
     candidates: CandidateCoordinatorStats
     candidate_subscriptions: CandidateSubscriptionStats
+    exposure_subscriptions: ExposureSubscriptionStats
     positions: PositionCoordinatorStats
     risk: RiskCoordinatorStats
     notifications: NotificationCoordinatorStats
     outcomes: OutcomeCoordinatorStats
     dual_track: DualTrackReport
     tasks: tuple[TaskSnapshot, ...]
+    book_capture: CaptureStats | None
+    paper_session: PaperSessionStats | None
 
 
 class V2Runtime:
@@ -93,9 +107,12 @@ class V2Runtime:
         frequency_guard=None,
         execution_port=None,
         candidate_subscription_port: CandidateSubscriptionPort | None = None,
+        exposure_subscription_port: ExposureSubscriptionPort | None = None,
         trading_calendar=None,
     ) -> None:
         self.config = config or V2Config.from_env()
+        self.book_capture: BookCaptureCoordinator | None = None
+        self.paper_session: PaperSessionRunner | None = None
         self.event_bus = EventBus(self.config.event_bus_capacity)
         self.supervisor = RuntimeSupervisor()
         self.event_store = SqliteEventStore(db, self.config.write_timeout_seconds)
@@ -131,6 +148,7 @@ class V2Runtime:
         self.candidate_subscription_coordinator = CandidateSubscriptionCoordinator(
             candidate_subscription_port,
         )
+        self.exposure_subscription_coordinator = ExposureSubscriptionCoordinator(exposure_subscription_port)
         self.position_provider = FutuPositionProvider(position_source)
         self.account_provider = FutuAccountProvider(position_source)
         self.position_coordinator = PositionCoordinator(
@@ -199,6 +217,7 @@ class V2Runtime:
         self.feature_engine.register(self.event_bus)
         self.candidate_coordinator.register(self.event_bus)
         self.candidate_subscription_coordinator.register(self.event_bus)
+        self.exposure_subscription_coordinator.register(self.event_bus)
         self.position_coordinator.register(self.event_bus)
         self.outcome_coordinator.register(self.event_bus)
         if self.config.mode is RuntimeMode.ALERT:
@@ -207,6 +226,7 @@ class V2Runtime:
         try:
             await self.candidate_coordinator.start(self.supervisor)
             await self.candidate_subscription_coordinator.start(self.supervisor)
+            await self.exposure_subscription_coordinator.start(self.supervisor)
             await self._refresh_overnight_priorities()
             await self._restore_intraday_signal_subscriptions()
             await self.position_coordinator.start(self.supervisor)
@@ -241,12 +261,19 @@ class V2Runtime:
             self.candidate_coordinator.unregister()
             await self.candidate_subscription_coordinator.stop(drain=False)
             self.candidate_subscription_coordinator.unregister()
+            await self.exposure_subscription_coordinator.stop()
+            self.exposure_subscription_coordinator.unregister()
             self.feature_engine.unregister()
             self.market_projector.unregister()
             await self.supervisor.stop()
             self._loop = None
             raise
         self._started = True
+        if self.book_capture is not None:
+            await self.book_capture.start(self.supervisor)
+        if self.paper_session is not None:
+            self.paper_session.register(self.event_bus)
+            self.paper_session.start()
         if self.position_provider.has_source:
             await self._refresh_broker_positions()
             self.supervisor.create_task(
@@ -258,6 +285,10 @@ class V2Runtime:
 
     async def stop(self) -> None:
         self._started = False
+        if self.paper_session is not None:
+            await asyncio.to_thread(self.paper_session.stop)
+        if self.book_capture is not None:
+            await self.book_capture.stop()
         if self.event_bus.snapshot().running:
             await self.event_bus.join()
             await self.candidate_coordinator.stop(drain=True)
@@ -282,6 +313,8 @@ class V2Runtime:
         self.outcome_coordinator.unregister()
         self.candidate_coordinator.unregister()
         self.candidate_subscription_coordinator.unregister()
+        await self.exposure_subscription_coordinator.stop()
+        self.exposure_subscription_coordinator.unregister()
         self.feature_engine.unregister()
         self.market_projector.unregister()
         await self.supervisor.stop()
@@ -290,6 +323,50 @@ class V2Runtime:
     @property
     def started(self) -> bool:
         return self._started
+
+    def configure_book_capture(self, config: BookCaptureConfig, port: BookCapturePort) -> None:
+        if self._started or self.book_capture is not None:
+            raise RuntimeError("configure capture once before runtime start")
+        recorder = BookRecorder(config, SqliteBookArchive(config), normalize_book)
+        self.book_capture = BookCaptureCoordinator(config, port, self._book_capture_targets, recorder)
+
+    def configure_paper_session(self, config: PaperSessionConfig) -> None:
+        if self._started or self.paper_session is not None or self.book_capture is None:
+            raise RuntimeError("configure paper session once, after capture and before runtime start")
+        if config.path.resolve() == self.book_capture.config.path.resolve():
+            raise ValueError("paper ledger and capture archive must be different files")
+        if config.experiment.strategy_version != self.config.strategy_version:
+            raise ValueError("paper experiment must target the configured strategy version")
+        if config.experiment.policy.max_positions > self.book_capture.config.max_stocks:
+            raise ValueError("paper position capacity exceeds capture capacity")
+        self.paper_session = PaperSessionRunner(
+            config, lambda: SqlitePaperSessionStore(config), self._paper_capture_health,
+        )
+        self.book_capture.recorder.set_committed_sink(self.paper_session.offer_book)
+
+    def _paper_capture_health(self) -> str | None:
+        capture = self.book_capture.snapshot()
+        if not capture.running or capture.error:
+            return "PAPER_CAPTURE_UNAVAILABLE"
+        if capture.dropped or capture.connection_changes:
+            return "PAPER_CAPTURE_DISCONTINUITY"
+        bus = self.event_bus.snapshot()
+        candidates = self.candidate_coordinator.snapshot()
+        if bus.dropped or bus.handler_failures or candidates.dropped or candidates.persistence_failures:
+            return "PAPER_DECISION_STREAM_INCOMPLETE"
+        return None
+
+    def _book_capture_targets(self) -> tuple[str, ...]:
+        today = datetime.now(timezone(timedelta(hours=8))).date()
+        codes = list(self.exposure_subscription_coordinator.protected_codes)
+        if self.paper_session is not None:
+            codes.extend(self.paper_session.snapshot().active_codes)
+            codes.extend(self.paper_session.config.experiment.stock_codes)
+        for candidate in self.candidate_coordinator.ranked(1000):
+            if (candidate.status is CandidateStatus.BUY_CONFIRMED
+                    and candidate.as_of.astimezone(timezone(timedelta(hours=8))).date() == today):
+                codes.append(candidate.stock_code)
+        return tuple(dict.fromkeys(code for code in codes if code.startswith("HK.")))
 
     def ingest_quotes(self, rows: list[dict]) -> None:
         if not self._started:
@@ -354,12 +431,15 @@ class V2Runtime:
             features=self.feature_engine.snapshot(),
             candidates=self.candidate_coordinator.snapshot(),
             candidate_subscriptions=self.candidate_subscription_coordinator.snapshot(),
+            exposure_subscriptions=self.exposure_subscription_coordinator.snapshot(),
             positions=self.position_coordinator.snapshot(),
             risk=self.risk_coordinator.snapshot(),
             notifications=self.notification_coordinator.snapshot(),
             outcomes=self.outcome_coordinator.snapshot(),
             dual_track=self.dual_track.report(),
             tasks=self.supervisor.snapshots(),
+            book_capture=self.book_capture.snapshot() if self.book_capture else None,
+            paper_session=self.paper_session.snapshot() if self.paper_session else None,
         )
 
     def _publish_threadsafe(self, events: tuple[DomainEvent, ...]) -> None:

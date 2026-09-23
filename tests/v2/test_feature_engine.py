@@ -51,7 +51,7 @@ class FeatureEngineTests(unittest.IsolatedAsyncioTestCase):
                         "data_date": "2026-08-31",
                         "data_time": "10:00:05",
                     },
-                    received_time=NOW,
+                    received_time=NOW + timedelta(seconds=5),
                 )
             )
         quotes = tuple(

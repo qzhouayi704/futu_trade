@@ -4,6 +4,7 @@ from ...domain.decisions import DecisionEvent, StrategyState
 from ...domain.enums import StrategyStatus
 from ...domain.events import FeatureSnapshotEvent
 from ...domain.serialization import to_primitive
+from ..planning.evidence import execution_evidence
 from .models import (
     CandidateScore,
     StrategyPortfolioResult,
@@ -78,6 +79,8 @@ def build_transition(
             "strategy_portfolio": to_primitive(portfolio),
             "lifecycle_strategy_source": lifecycle_strategy_source or None,
             "feature_snapshot": to_primitive(source.snapshot),
+            "execution_evidence": to_primitive(execution_evidence(source.snapshot, as_of=source.received_time)),
+            "entry_plan": None,
         },
     )
     confirmed_price = (

@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Set
+from ...utils.converters import parse_positive_int
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,8 @@ class PoolSnapshotScanner:
                             'turnover_rate': float(row.get('turnover_rate', 0) or 0),
                             'turnover': float(row.get('turnover', 0) or 0),
                             'volume': int(row.get('volume', 0)),
+                            'lot_size': parse_positive_int(row.get('lot_size')) or 0,
+                            'lot_size_source': 'futu.market_snapshot',
                             'update_time': row.get('update_time'),
                             'is_realtime': True,
                         })

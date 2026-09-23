@@ -47,7 +47,8 @@ const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
 
 function isRetryable(error: AxiosError): boolean {
-  if (error.config?.url?.includes("/v2/outcomes/alert-performance")) return false;
+  if (error.config?.url?.includes("/v2/outcomes/alert-performance")
+      || error.config?.url?.includes("/v2/paper/ledger")) return false;
   // 只对 GET 请求重试（幂等）
   if (error.config?.method && error.config.method.toUpperCase() !== "GET") return false;
   // 网络超时 / 连接失败

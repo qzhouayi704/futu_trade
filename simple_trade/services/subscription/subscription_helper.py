@@ -37,6 +37,7 @@ class SubscriptionHelper:
         self.container = container
         self.priority_stocks = set()
         self.candidate_priority_stocks = set()
+        self.exposure_priority_stocks = set()
         self._candidate_priority_order = ()
         self._subscription_refresh_lock = threading.Lock()
         self._inactive_refresh_counts: Dict[str, int] = {}
@@ -101,6 +102,13 @@ class SubscriptionHelper:
 
     def get_priority_stocks(self) -> List[str]:
         return list(self.priority_stocks)
+
+    def set_exposure_priority_stocks(self, stock_codes: List[str]) -> None:
+        """Replace broker-reconciled protection without changing other owners."""
+        self.exposure_priority_stocks = {str(code).strip().upper() for code in stock_codes if code}
+
+    def get_exposure_priority_stocks(self) -> set:
+        return set(getattr(self, 'exposure_priority_stocks', set()))
 
     def set_candidate_priority_stocks(self, stock_codes: List[str]):
         """设置 V2 跨日候选，保护其逐笔订阅但不冒充持仓。"""
@@ -226,7 +234,7 @@ class SubscriptionHelper:
             MIN_SUBSCRIPTION_SECONDS = 65  # 富途要求至少 1 分钟，留 5 秒余量
 
             currently_subscribed = self.subscription_manager.subscribed_stocks
-            protected_codes = self.priority_stocks | self.candidate_priority_stocks
+            protected_codes = self.priority_stocks | self.candidate_priority_stocks | self.get_exposure_priority_stocks()
             for code in active_codes | protected_codes:
                 self._inactive_refresh_counts.pop(code, None)
 
@@ -474,7 +482,8 @@ class SubscriptionHelper:
         if max_quota <= 0:
             return
 
-        position_order = sorted(getattr(self, 'priority_stocks', set()))
+        position_order = sorted(self.get_exposure_priority_stocks())
+        position_order.extend(sorted(set(getattr(self, 'priority_stocks', set())) - set(position_order)))
         candidate_set = set(getattr(self, 'candidate_priority_stocks', set()))
         candidate_order = list(getattr(self, '_candidate_priority_order', ()))
         candidate_order.extend(sorted(candidate_set - set(candidate_order)))
@@ -630,7 +639,41 @@ class SubscriptionHelper:
                 'replaced': None
             }
 
-    def subscribe_for_candidate_data(self, stock_code: str) -> Dict[str, Any]:
+    def _ensure_exposure_quote(self, code: str) -> bool:
+        """Preserve existing-risk QUOTE coverage even when shared quota is full."""
+        from futu import SubType
+
+        manager = self.subscription_manager
+        if code in manager.subscribed_stocks:
+            return True
+        manager.subscribe_multi_types([code], [SubType.QUOTE])
+        if code in manager.subscribed_stocks:
+            return True
+        quotes = manager.subscribed_stocks
+        ticker_count = len(manager.ticker_subscribed_stocks)
+        total = (len(quotes) + ticker_count
+                 + len(getattr(manager, 'orderbook_subscribed_stocks', set()))
+                 + len(getattr(manager, 'rt_data_subscribed_stocks', set())))
+        reserve = max(0, getattr(manager, '_ticker_quota_reserve', 0) - ticker_count)
+        at_capacity = (len(quotes) >= getattr(manager, '_max_quote_subscription', float('inf'))
+                       or total + reserve >= getattr(manager, '_total_quota', float('inf')))
+        # Do not displace another quote for a network error or an unknown quota.
+        if not at_capacity or code not in self.get_exposure_priority_stocks():
+            return False
+        displaced = self._find_replaceable_stock(quotes, for_exposure=True)
+        if displaced is None:
+            return False
+        manager.unsubscribe_multi_types([displaced], [SubType.QUOTE])
+        if displaced in manager.subscribed_stocks:
+            return False
+        try:
+            manager.subscribe_multi_types([code], [SubType.QUOTE])
+        finally:
+            if code not in manager.subscribed_stocks:
+                manager.subscribe_multi_types([displaced], [SubType.QUOTE])
+        return code in manager.subscribed_stocks
+
+    def subscribe_for_candidate_data(self, stock_code: str, *, for_exposure: bool = False) -> Dict[str, Any]:
         """Promote a V2 pre-candidate to QUOTE and TICKER priority."""
         code = str(stock_code or "").strip().upper()
         if not code:
@@ -642,12 +685,16 @@ class SubscriptionHelper:
             from futu import SubType
 
             manager = self.subscription_manager
+            if for_exposure and code not in self.get_exposure_priority_stocks():
+                return {'success': True, 'message': '该标的已无待保护风险', 'replaced': None}
+            if for_exposure and not self._ensure_exposure_quote(code):
+                return {'success': False, 'message': '持仓报价订阅失败', 'replaced': None}
             ticker_subscribed = manager.ticker_subscribed_stocks
             had_ticker = code in ticker_subscribed
             if code not in ticker_subscribed:
                 max_quota = manager._max_ticker_subscription
                 if len(ticker_subscribed) >= max_quota:
-                    replaced_stock = self._find_replaceable_stock(ticker_subscribed)
+                    replaced_stock = self._find_replaceable_stock(ticker_subscribed, for_exposure=for_exposure)
                     if replaced_stock is None:
                         return {
                             'success': False,
@@ -710,7 +757,7 @@ class SubscriptionHelper:
                 'replaced': None,
             }
 
-    def _find_replaceable_stock(self, subscribed_stocks: set) -> Optional[str]:
+    def _find_replaceable_stock(self, subscribed_stocks: set, *, for_exposure: bool = False) -> Optional[str]:
         """查找可替换的低优先级股票
 
         优先级：
@@ -729,7 +776,10 @@ class SubscriptionHelper:
                 set(self._get_active_stocks())
                 | set(self.priority_stocks)
                 | set(self.candidate_priority_stocks)
+                | self.get_exposure_priority_stocks()
             )
+            if for_exposure:
+                active_stocks = set(self.priority_stocks) | self.get_exposure_priority_stocks()
 
             # 查找不在活跃列表中的股票
             replaceable = subscribed_stocks - active_stocks

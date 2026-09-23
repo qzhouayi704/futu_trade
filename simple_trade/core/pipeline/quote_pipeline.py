@@ -321,7 +321,14 @@ class QuotePipeline:
         if not subscribed_codes:
             return []
         stock_pool_data = self.state_manager.get_stock_pool()
-        return [s for s in stock_pool_data['stocks'] if s['code'] in subscribed_codes]
+        stocks = [s for s in stock_pool_data['stocks'] if s['code'] in subscribed_codes]
+        known = {stock['code'] for stock in stocks}
+        helper = getattr(self.container, 'subscription_helper', None)
+        protected = (set(getattr(helper, 'priority_stocks', set()))
+                     | set(getattr(helper, 'exposure_priority_stocks', set())))
+        for code in sorted((protected & subscribed_codes) - known):
+            stocks.append({'code': code, 'name': code, 'market': code.split('.')[0]})
+        return stocks
 
     async def _fetch_quotes(self) -> List[Dict]:
         """获取实时报价（唯一的报价获取点，含重试）"""

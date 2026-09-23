@@ -253,6 +253,8 @@ class FeatureEngine:
             price_acceptance=acceptance,
             capital_memory=capital_memory,
             missing_fields=tuple(dict.fromkeys(missing)),
+            order_book=projection.order_book,
+            order_book_received_at=projection.order_book_received_at,
         )
 
     def latest(self, stock_code: str) -> FeatureSnapshot | None:

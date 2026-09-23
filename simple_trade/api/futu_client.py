@@ -148,6 +148,9 @@ class FutuClient:
 
         # Ticker 推送处理器
         self._ticker_push_handler = None
+        self._order_book_sink = None
+        self._order_book_push_handler = None
+        self._book_connection_id = None
 
     @property
     def executor(self) -> ThreadPoolExecutor:
@@ -213,6 +216,10 @@ class FutuClient:
 
                 # 注册 Ticker 推送处理器
                 self._register_ticker_handler()
+                try:
+                    self._register_order_book_handler()
+                except Exception:
+                    logging.exception("Optional book capture handler registration failed")
 
                 return True
             else:
@@ -247,6 +254,8 @@ class FutuClient:
         """清理连接状态"""
         self.client = None
         self.is_connected = False
+        self._order_book_push_handler = None
+        self._book_connection_id = None
 
     @staticmethod
     def _is_connection_error(data) -> bool:
@@ -327,6 +336,32 @@ class FutuClient:
         if self._ticker_push_handler:
             self._ticker_push_handler.set_container(container)
             logging.info("[TickerPush] 容器已注入推送处理器")
+
+    @property
+    def book_connection_id(self):
+        return self._book_connection_id
+
+    def set_order_book_sink(self, sink) -> None:
+        self._order_book_sink = sink
+        if sink is not None and self.is_available() and self._order_book_push_handler is None:
+            self._register_order_book_handler()
+
+    def _register_order_book_handler(self) -> None:
+        if self._order_book_sink is None:
+            return
+        from uuid import uuid4
+        from .order_book_push_handler import OrderBookPushHandler
+
+        connection_id = uuid4().hex
+        def forward(data, received_at, source_connection):
+            # Ignore callbacks still draining from a previously closed connection.
+            sink = self._order_book_sink
+            if sink is not None and source_connection == self._book_connection_id:
+                sink(data, received_at, source_connection)
+        handler = OrderBookPushHandler(forward, connection_id)
+        self.client.set_handler(handler)
+        self._order_book_push_handler = handler
+        self._book_connection_id = connection_id
 
     def get_connection_status(self) -> dict:
         """获取连接状态信息"""

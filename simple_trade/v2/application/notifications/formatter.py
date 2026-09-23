@@ -24,6 +24,7 @@ class NotificationFormatter:
         "FAST_15M_MULTI_INFLOW_CONFIRMED": "15分钟多次主力流入确认",
         "STRICT_MOMENTUM_SHADOW_CONFIRMED": "严格热门动量影子确认",
         "STRONG_TREND_SECOND_INFLOW_CONFIRMED": "强势股二次大单资金确认",
+        "STRONG_TREND_SECOND_INFLOW_WATCH": "强势资金观察，等待再次确认",
         "POST_INVALIDATION_FLOW_RECOVERY_CONFIRMED": (
             "候选失效后低位资金恢复确认"
         ),

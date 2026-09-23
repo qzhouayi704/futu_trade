@@ -7,6 +7,20 @@
 """
 
 from typing import Any, Union
+from decimal import Decimal, InvalidOperation
+
+
+def parse_positive_int(value: object) -> int | None:
+    """Parse an exact positive integer, never truncate or return NaN to JSON."""
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = Decimal(str(value))
+        if parsed.is_finite() and 0 < parsed <= 2**63 - 1 and parsed == parsed.to_integral_value():
+            return int(parsed)
+    except (ValueError, TypeError, InvalidOperation, OverflowError):
+        pass
+    return None
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
