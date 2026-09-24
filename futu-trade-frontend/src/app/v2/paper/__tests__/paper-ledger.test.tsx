@@ -80,4 +80,19 @@ describe("paper ledger", () => {
     expect(paperTime("2026-09-23T02:00:00Z")).toContain("10:00:00");
     expect(paperLabel("FUTURE_STATUS")).toBe("未识别状态，需核查");
   });
+  it("shows shared exit mode, actual fill cost and trigger time without pretending a fill", () => {
+    const data = structuredClone(sample);
+    Object.assign(data.ledger!, { exit_policy: "PRODUCTION_RULES", stale_analysis_codes: ["HK.00100"] });
+    Object.assign(data.ledger!.orders[0], { average_buy_price: "10.04", exit_reason: "TAKE_PROFIT_5_PCT",
+      exit_triggered_at: "2026-09-23T10:30:01+08:00" });
+    const html = renderToStaticMarkup(createElement(PaperLedgerContent, { data }));
+    expect(html).toContain("生产退出规则 · 日内模拟");
+    expect(html).toContain("成交均价 10.040");
+    expect(html).toContain("预算失效价");
+    expect(html).toContain("达到止盈线");
+    expect(html).toContain("10:30:01");
+    expect(html).toContain("等待卖出成交");
+    expect(html).toContain("持仓退出评估缺失或过期");
+    expect(html).not.toContain("已结束");
+  });
 });

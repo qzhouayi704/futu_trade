@@ -29,10 +29,12 @@ export function PaperLedgerContent({ data, section = "orders" }: { data: PaperLe
       <span className="break-all">账户：{ledger.account_id}</span><span className="break-all">实验：{ledger.experiment_id}</span>
       <span>账本截至：{paperTime(ledger.as_of)}</span><span>报告读取：{paperTime(ledger.reported_at)}</span>
       <span>香港时间 · 港元</span>
+      <span>退出模式：<Reason code={ledger.exit_policy || "RESEARCH_ATR"} /></span>
     </div>
     {(data.status === "ERROR" || ledger.run_error_code) && <div role="alert" className="border-l-2 border-rose-500 bg-rose-500/5 p-3 text-sm">模拟实验异常：<Reason code={data.runtime?.error || ledger.run_error_code} /></div>}
     {data.status === "STOPPED" && <div className="border-l-2 border-amber-500 p-3 text-sm">模拟已停止{ledger.run_record_status !== "CLOSED" ? "，账本运行记录未正常关闭，需复核" : ""}</div>}
     {staleCodes.length > 0 && <div role="alert" className="border-l-2 border-amber-500 bg-amber-500/5 p-3 text-sm break-words">持仓估值行情已过期：{staleCodes.join("、")}。估算权益不是可成交金额或最终收益。</div>}
+    {!!ledger.stale_analysis_codes?.length && <div role="alert" className="border-l-2 border-amber-500 bg-amber-500/5 p-3 text-sm break-words">持仓退出评估缺失或过期：{ledger.stale_analysis_codes.join("、")}。不能据此判断应继续持有。</div>}
     <dl className="grid grid-cols-2 divide-x divide-border border-y border-border md:grid-cols-5">
       {[["账本现金", ledger.cash], ["预留资金", ledger.reserved_cash], ["报告时估算权益", ledger.marked_equity], ["已平仓净盈亏", ledger.closed_order_count ? ledger.closed_order_net_pnl : null], ["累计模拟费用", ledger.fees]].map(([label, value]) =>
         <div key={label} className="min-w-0 px-3 py-4"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-2 break-all text-lg font-semibold tabular-nums">{paperMoney(value)}</dd></div>)}
@@ -44,11 +46,12 @@ export function PaperLedgerContent({ data, section = "orders" }: { data: PaperLe
       <span className="break-words">实验股票：{ledger.stock_codes.join("、")}</span>
     </div>
     <div className="overflow-x-auto border-y border-border">
-      {section === "orders" && <table className="w-full min-w-[1020px] text-sm"><thead className="bg-muted/30 text-xs text-muted-foreground"><tr>{["股票 / 批准时间", "状态 / 原因", "买入范围 / 失效价", "计划 / 待买数量", "已买 / 已卖 / 持有", "入场截止 / 退出期限", "已平仓净盈亏"].map(label => <th key={label} className={cell}>{label}</th>)}</tr></thead>
+      {section === "orders" && <table className="w-full min-w-[1120px] text-sm"><thead className="bg-muted/30 text-xs text-muted-foreground"><tr>{["股票 / 批准时间", "状态 / 退出依据", "买入范围 / 成交均价", "计划 / 待买数量", "已买 / 已卖 / 持有", "入场截止 / 退出期限", "已平仓净盈亏"].map(label => <th key={label} className={cell}>{label}</th>)}</tr></thead>
         <tbody className="divide-y divide-border">{ledger.orders.map(order => <tr key={order.plan_id}>
           <td className={cell}><div className="font-medium">{order.stock_code}</div><div className="mt-1 text-xs text-muted-foreground">{paperTime(order.approved_at)}</div></td>
-          <td className={`${cell} max-w-52 break-words`}><Reason code={order.status} /><div className="mt-1 text-xs text-muted-foreground"><Reason code={order.exit_reason || order.entry_end_reason} /></div></td>
-          <td className={`${cell} tabular-nums`}>{paperMoney(order.entry_min, 3)} ~ {paperMoney(order.entry_limit, 3)}<div className="mt-1 text-xs text-muted-foreground">失效 {paperMoney(order.stop_price, 3)}</div></td>
+          <td className={`${cell} max-w-52 break-words`}><Reason code={order.status} /><div className="mt-1 text-xs text-muted-foreground"><Reason code={order.exit_reason || order.position_reason || order.entry_end_reason} /></div>
+            {(order.exit_triggered_at || order.position_evaluated_at) && <div className="mt-1 text-xs text-muted-foreground">{order.exit_triggered_at ? "触发 " : "评估 "}{paperTime(order.exit_triggered_at || order.position_evaluated_at)}</div>}</td>
+          <td className={`${cell} tabular-nums`}>{paperMoney(order.entry_min, 3)} ~ {paperMoney(order.entry_limit, 3)}<div className="mt-1 text-xs">成交均价 {paperMoney(order.average_buy_price, 3)}</div><div className="mt-1 text-xs text-muted-foreground">{ledger.exit_policy === "PRODUCTION_RULES" ? "预算失效价" : "失效价"} {paperMoney(order.stop_price, 3)}</div></td>
           <td className={`${cell} tabular-nums`}>{order.quantity} / {order.entry_remaining}</td>
           <td className={`${cell} tabular-nums`}>{order.bought} / {order.sold} / {order.held}</td>
           <td className={`${cell} text-xs`}>{paperTime(order.valid_until)}<div className="mt-1 text-muted-foreground">{paperTime(order.exit_at)}</div></td>

@@ -4,12 +4,20 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, ROUND_UP
 import hashlib
+import math
 import re
 
 from ..serialization import require_aware, require_stock_code
+from ..positions import PositionState
+from ..enums import StringEnum
 
 
 ZERO = Decimal("0")
+
+
+class PaperExitPolicy(StringEnum):
+    RESEARCH_ATR = "RESEARCH_ATR"
+    PRODUCTION_RULES = "PRODUCTION_RULES"
 
 
 def hk_stock_code(value: str) -> str:
@@ -87,8 +95,10 @@ class EntrySetup:
     lot_size: int
     take_profit: Decimal | None = None
     position_fraction: Decimal | None = None
+    exit_policy: PaperExitPolicy = PaperExitPolicy.RESEARCH_ATR
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "exit_policy", PaperExitPolicy(self.exit_policy))
         for name in ("setup_id", "source_event_id", "strategy_id", "strategy_version"):
             if not getattr(self, name).strip():
                 raise ValueError(f"{name} must not be empty")
@@ -200,6 +210,8 @@ class PaperOrder:
     entry_end_reason: str | None = None
     exit_reason: str | None = None
     exit_triggered_at: datetime | None = None
+    position_state: PositionState | None = None
+    price_history: tuple[tuple[datetime, float], ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("entry_remaining", "bought", "sold"):
@@ -210,6 +222,20 @@ class PaperOrder:
             raise ValueError("exit reason and trigger time must be recorded together")
         if self.exit_triggered_at is not None:
             require_aware(self.exit_triggered_at, "exit_triggered_at")
+        if self.position_state is not None:
+            if (self.plan.setup.exit_policy is not PaperExitPolicy.PRODUCTION_RULES
+                    or self.position_state.stock_code != self.plan.setup.stock_code
+                    or self.position_state.strategy_version != self.plan.setup.strategy_version
+                    or not self.bought):
+                raise ValueError("paper position analysis does not match its filled plan")
+        if len(self.price_history) > 2048:
+            raise ValueError("paper position price history exceeds budget")
+        for stamp, price in self.price_history:
+            require_aware(stamp, "paper price time")
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError("invalid paper price history")
+        if any(a[0] >= b[0] for a, b in zip(self.price_history, self.price_history[1:])):
+            raise ValueError("paper price history must be chronological")
 
     @property
     def held(self) -> int:

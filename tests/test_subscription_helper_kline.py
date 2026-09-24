@@ -22,8 +22,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from simple_trade.services.subscription.subscription_helper import SubscriptionHelper
 from simple_trade.services.market_data.kline.background_kline_task import BackgroundKlineTask
 
-# 抑制测试中的日志输出
-logging.disable(logging.CRITICAL)
+@pytest.fixture(autouse=True)
+def suppress_test_logs():
+    previous = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logging.disable(previous)
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────────

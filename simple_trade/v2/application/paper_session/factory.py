@@ -8,8 +8,9 @@ from decimal import Decimal, InvalidOperation
 from ...domain.decisions import DecisionEvent
 from ...domain.enums import EventType, StrategyStatus
 from ...domain.paper_session import HK_ZONE, PaperExperiment
-from ...domain.planning.models import EntrySetup, positive
+from ...domain.planning.models import EntrySetup, PaperExitPolicy, positive
 from ...domain.serialization import require_aware
+from ..positions.structural_exit import StructuralExitPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,10 +77,15 @@ def research_plan(event: DecisionEvent, experiment: PaperExperiment, when: datet
                 or quote_time.astimezone(HK_ZONE).date() != when.astimezone(HK_ZONE).date()):
             return ResearchPlanResult("LOT_SIZE_EVIDENCE_INVALID")
         price = _price(quote.get("last_price"))
-        distance = max(experiment.minimum_stop_fraction,
-                       _price(position.get("atr_percent")) / 100 * experiment.atr_stop_multiple)
+        atr = _price(position.get("atr_percent")) / 100
+        production_exit = experiment.exit_policy is PaperExitPolicy.PRODUCTION_RULES
+        distance = (Decimal(str(-StructuralExitPolicy.HARD_STOP_PCT)) / 100 if production_exit
+                    else max(experiment.minimum_stop_fraction, atr * experiment.atr_stop_multiple))
         if distance > experiment.maximum_stop_fraction:
             return ResearchPlanResult("RESEARCH_STOP_TOO_WIDE")
+        entry_min = price * (1 - experiment.pullback_fraction)
+        # A lower fill has a lower cost-based stop; reserve against that worst case.
+        stop_price = (entry_min if production_exit else price) * (1 - distance)
         valid_until = min(when + timedelta(seconds=experiment.entry_ttl_seconds), interval.closes_at, exit_at)
         if (valid_until - when).total_seconds() <= experiment.policy.latency_seconds:
             return ResearchPlanResult("ENTRY_WINDOW_TOO_SHORT")
@@ -89,9 +95,10 @@ def research_plan(event: DecisionEvent, experiment: PaperExperiment, when: datet
             source_event_id=event.event_id, strategy_id=experiment.strategy_id,
             strategy_version=f"{event.strategy_version}:paper:{experiment.experiment_id}",
             stock_code=event.stock_code, created_at=when, valid_until=valid_until, exit_at=exit_at,
-            entry_min=price * (1 - experiment.pullback_fraction),
-            entry_limit=price * (1 + experiment.chase_fraction), stop_price=price * (1 - distance),
+            entry_min=entry_min,
+            entry_limit=price * (1 + experiment.chase_fraction), stop_price=stop_price,
             lot_size=lot["lot_size"], position_fraction=experiment.policy.position_fraction,
+            exit_policy=experiment.exit_policy,
         ))
     except (TypeError, ValueError, InvalidOperation, OverflowError):
         return ResearchPlanResult("SIGNAL_EVIDENCE_MISSING_OR_INVALID")

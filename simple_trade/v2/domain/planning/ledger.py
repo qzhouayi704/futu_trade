@@ -25,6 +25,10 @@ class LedgerOrder:
     entry_end_reason: str | None
     exit_reason: str | None
     closed_net_pnl: str | None
+    average_buy_price: str | None = None
+    position_reason: str | None = None
+    position_evaluated_at: datetime | None = None
+    exit_triggered_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +73,8 @@ class PaperLedgerSnapshot:
     fill_count: int
     recent_fills: tuple[LedgerFill, ...]
     recent_signals: tuple[LedgerSignal, ...]
+    exit_policy: str = "RESEARCH_ATR"
+    stale_analysis_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

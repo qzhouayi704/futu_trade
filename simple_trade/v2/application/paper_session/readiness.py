@@ -10,6 +10,7 @@ from ...domain.paper_readiness import (
     ReviewAcknowledgements, StorageFacts,
 )
 from ...domain.paper_session import PaperSessionConfig
+from ...domain.planning.models import PaperExitPolicy
 from ...domain.serialization import require_aware
 
 
@@ -62,6 +63,16 @@ def evaluate_readiness(
     if assumptions is None:
         block("CAPACITY_ASSUMPTIONS_MISSING", "缺少每条盘口和模拟命令的空间估算，需先完成有界容量测试。")
     else:
+        if assumptions.exit_policy is not paper.experiment.exit_policy:
+            block("EXIT_POLICY_CAPACITY_MISMATCH", "容量报告的退出模式与实验不符，不能沿用旧模式的空间估算。")
+        if paper.experiment.exit_policy is PaperExitPolicy.PRODUCTION_RULES:
+            if assumptions.feature_interval_seconds is None:
+                block("PRODUCTION_EXIT_CAPACITY_UNMEASURED", "缺少生产退出模式的特征输入频率和持仓状态写入容量测试。")
+            else:
+                commands += sum(math.ceil(seconds / assumptions.feature_interval_seconds) + 1
+                                for seconds in remaining) * len(paper.experiment.stock_codes)
+            issues.append(ReadinessIssue("FEATURE_RATE_REQUIRES_REVIEW", "WARNING",
+                                         "特征频率只是容量假设，须与实际事件频率核对；盘中仍受硬容量和队列上限保护。"))
         commands += assumptions.extra_commands
         capture_growth = records * assumptions.capture_bytes_per_record
         paper_growth = commands * assumptions.paper_bytes_per_command

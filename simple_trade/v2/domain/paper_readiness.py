@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from .planning.models import integer
+from .planning.models import PaperExitPolicy, integer
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,11 +24,18 @@ class CapacityAssumptions:
     paper_bytes_per_command: int
     source: str
     extra_commands: int = 1000
+    exit_policy: PaperExitPolicy = PaperExitPolicy.RESEARCH_ATR
+    feature_interval_seconds: int | None = None
 
     def __post_init__(self) -> None:
         integer(self.capture_bytes_per_record, "capture_bytes_per_record")
         integer(self.paper_bytes_per_command, "paper_bytes_per_command")
         integer(self.extra_commands, "extra_commands")
+        object.__setattr__(self, "exit_policy", PaperExitPolicy(self.exit_policy))
+        if self.feature_interval_seconds is not None:
+            integer(self.feature_interval_seconds, "feature_interval_seconds")
+        if self.exit_policy is PaperExitPolicy.PRODUCTION_RULES and self.feature_interval_seconds is None:
+            raise ValueError("production exit sizing requires an explicit feature interval")
         if not self.source.strip():
             raise ValueError("capacity assumption source is required")
 

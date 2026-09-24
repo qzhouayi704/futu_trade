@@ -11,10 +11,10 @@ from uuid import uuid4
 from ...domain.capture import CapturedBook
 from ...domain.decisions import DecisionEvent
 from ...domain.enums import EventType
-from ...domain.events import DomainEvent
+from ...domain.events import DomainEvent, FeatureSnapshotEvent
 from ...domain.paper_session import PaperSessionConfig, PaperSessionStats
 from ...domain.planning.codec import encode
-from ...domain.planning.models import PaperAccount
+from ...domain.planning.models import PaperAccount, PaperExitPolicy
 from ...ports.paper_session import PaperSessionStore
 from ..event_bus import EventBus
 from .service import PaperSessionService
@@ -27,7 +27,7 @@ class PaperSessionRunner:
                  health: Callable[[], str | None], *,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self.config, self._factory, self._health, self._clock = config, store_factory, health, clock
-        self._queue: queue.Queue[DecisionEvent | CapturedBook] = queue.Queue(config.queue_capacity)
+        self._queue: queue.Queue[DecisionEvent | CapturedBook | FeatureSnapshotEvent] = queue.Queue(config.queue_capacity)
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -43,6 +43,8 @@ class PaperSessionRunner:
             raise RuntimeError("paper runner already registered")
         for kind in self.SIGNAL_EVENTS:
             bus.subscribe(kind, self.offer_signal)
+        if self.config.experiment.exit_policy is PaperExitPolicy.PRODUCTION_RULES:
+            bus.subscribe(EventType.FEATURE_SNAPSHOT_READY, self.offer_feature)
         self._bus = bus
 
     def start(self) -> None:
@@ -61,7 +63,13 @@ class PaperSessionRunner:
         if book.stock_code in self.config.experiment.stock_codes:
             self._offer(book)
 
-    def _offer(self, item: DecisionEvent | CapturedBook) -> None:
+    def offer_feature(self, event: DomainEvent) -> None:
+        if (self.config.experiment.exit_policy is PaperExitPolicy.PRODUCTION_RULES
+                and isinstance(event, FeatureSnapshotEvent)
+                and event.stock_code in self.config.experiment.stock_codes):
+            self._offer(event)
+
+    def _offer(self, item: DecisionEvent | CapturedBook | FeatureSnapshotEvent) -> None:
         with self._lock:
             if not self._running:
                 return
@@ -115,6 +123,8 @@ class PaperSessionRunner:
                     result = service.book(item, now)
                 elif isinstance(item, DecisionEvent):
                     result = service.signal(item, now)
+                elif isinstance(item, FeatureSnapshotEvent):
+                    result = service.feature(item, now)
                 else:
                     due = any((order.entry_remaining and now >= order.plan.setup.valid_until)
                               or (order.held and not order.exit_reason and now >= order.plan.setup.exit_at)
@@ -147,6 +157,7 @@ class PaperSessionRunner:
         if self._bus is not None:
             for kind in self.SIGNAL_EVENTS:
                 self._bus.unsubscribe(kind, self.offer_signal)
+            self._bus.unsubscribe(EventType.FEATURE_SNAPSHOT_READY, self.offer_feature)
             self._bus = None
         with self._lock:
             self._running = False

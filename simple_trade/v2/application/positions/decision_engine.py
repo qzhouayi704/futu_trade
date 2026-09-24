@@ -21,6 +21,8 @@ class PositionDecisionEngine:
         state: PositionState | None,
         efficiency: PositionEfficiency,
         feature: FeatureSnapshot | None,
+        *,
+        allow_additions: bool = True,
     ) -> PositionEvaluation:
         if position.active_order_ids:
             return self._hold(
@@ -54,8 +56,8 @@ class PositionDecisionEngine:
                 metadata_updates=structural.metadata_updates,
             )
 
-        addition = self._addition.assess(position, state, efficiency, feature)
-        if addition.confirmed:
+        addition = self._addition.assess(position, state, efficiency, feature) if allow_additions else None
+        if addition is not None and addition.confirmed:
             return PositionEvaluation(
                 decision=PositionDecision(
                     stock_code=position.stock_code,

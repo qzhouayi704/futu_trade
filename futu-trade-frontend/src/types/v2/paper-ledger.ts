@@ -16,6 +16,10 @@ export interface PaperLedgerOrder {
   entry_end_reason: string | null;
   exit_reason: string | null;
   closed_net_pnl: string | null;
+  average_buy_price?: string | null;
+  position_reason?: string | null;
+  position_evaluated_at?: string | null;
+  exit_triggered_at?: string | null;
 }
 
 export interface PaperLedgerSnapshot {
@@ -25,6 +29,8 @@ export interface PaperLedgerSnapshot {
   experiment_id: string;
   strategy_id: string;
   strategy_version: string;
+  exit_policy?: "RESEARCH_ATR" | "PRODUCTION_RULES";
+  stale_analysis_codes?: string[];
   stock_codes: string[];
   run_record_status: string;
   run_error_code: string | null;

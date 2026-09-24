@@ -9,6 +9,7 @@ import json
 from ...domain.capture import CapturedBook
 from ...domain.decisions import DecisionEvent
 from ...domain.enums import EventType
+from ...domain.events import FeatureSnapshotEvent
 from ...domain.paper_session import PaperExperiment
 from ...domain.planning.codec import encode
 from ...domain.planning.models import PaperAccount
@@ -17,12 +18,14 @@ from ...ports.paper_account import PaperAccountStore
 from ..book_capture.paper_input import to_paper_book
 from ..planning.paper_engine import PaperEngine
 from .factory import research_plan
+from .positions import PaperPositionFollower
 
 
 class PaperSessionService:
     def __init__(self, store: PaperAccountStore, experiment: PaperExperiment) -> None:
         self.store = store
         self.experiment = experiment
+        self._positions = PaperPositionFollower(experiment)
         account = store.read()
         if account.policy != experiment.policy:
             raise ValueError("paper account policy does not match experiment")
@@ -54,6 +57,14 @@ class PaperSessionService:
             return {"reason": result.reason, "assessment": result}
 
         return self._apply(f"paper-signal:{event.event_id}", source, when, operate)
+
+    def feature(self, event: FeatureSnapshotEvent, when: datetime) -> str:
+        def operate(account: PaperAccount) -> dict[str, object]:
+            PaperEngine.advance(account, when)
+            result = self._positions.evaluate(account, event, when)
+            return {"reason": result.reason, "decisions": result.decisions}
+
+        return self._apply(f"paper-position:{event.event_id}", to_primitive(event), when, operate)
 
     def book(self, book: CapturedBook, when: datetime) -> str:
         def operate(account: PaperAccount) -> dict[str, object]:

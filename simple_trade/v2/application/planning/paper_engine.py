@@ -5,7 +5,7 @@ from decimal import Decimal
 import hashlib
 
 from ...domain.planning.models import (
-    EntrySetup, PaperAccount, PaperBook, PaperFill, PaperOrder, PlanAssessment,
+    EntrySetup, PaperAccount, PaperBook, PaperExitPolicy, PaperFill, PaperOrder, PlanAssessment,
 )
 from ...domain.serialization import require_aware
 from .builder import PlanBuilder
@@ -44,6 +44,13 @@ class PaperEngine:
         order.entry_end_reason = "ENTRY_CANCELLED"
 
     @classmethod
+    def request_exit(cls, account: PaperAccount, order: PaperOrder, reason: str, when: datetime) -> None:
+        cls.advance(account, when)
+        if not any(item is order for item in account.orders) or not order.held or not reason:
+            raise ValueError("an exit requires an owned, filled paper position and a reason")
+        cls._trigger_exit(order, reason, when)
+
+    @classmethod
     def on_book(cls, account: PaperAccount, book: PaperBook) -> str:
         cls.advance(account, book.received_at)
         age = (book.received_at - book.exchange_time).total_seconds()
@@ -71,13 +78,14 @@ class PaperEngine:
                 if quantity:
                     cls._fill(account, order, book, "SELL", quantity, book.bid)
             return
-        if book.bid <= setup.stop_price:
+        research_exit = setup.exit_policy is PaperExitPolicy.RESEARCH_ATR
+        if book.bid <= setup.stop_price and (research_exit or not order.held):
             order.entry_remaining = 0
             order.entry_end_reason = "ENTRY_STRUCTURE_BROKEN"
             if order.held:
                 cls._trigger_exit(order, "STOP_BROKEN", book.received_at)
             return
-        if order.held and setup.take_profit is not None and book.bid >= setup.take_profit:
+        if research_exit and order.held and setup.take_profit is not None and book.bid >= setup.take_profit:
             cls._trigger_exit(order, "TAKE_PROFIT", book.received_at)
             return
         elapsed = (book.exchange_time - order.plan.approved_at).total_seconds()

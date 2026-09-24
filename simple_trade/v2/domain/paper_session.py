@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from .planning.codec import policy_from_payload
-from .planning.models import PaperPolicy, hk_stock_code, integer, positive
+from .planning.models import PaperExitPolicy, PaperPolicy, hk_stock_code, integer, positive
 from .serialization import require_aware
 
 
@@ -46,8 +46,10 @@ class PaperExperiment:
     entry_ttl_seconds: int
     exit_before_close_seconds: int
     maximum_signal_age_seconds: int
+    exit_policy: PaperExitPolicy = PaperExitPolicy.RESEARCH_ATR
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "exit_policy", PaperExitPolicy(self.exit_policy))
         for key in ("experiment_id", "strategy_id", "strategy_version", "schedule_source"):
             if not isinstance(getattr(self, key), str) or not getattr(self, key).strip():
                 raise ValueError(f"{key} is required")

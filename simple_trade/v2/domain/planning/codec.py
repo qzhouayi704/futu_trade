@@ -1,9 +1,13 @@
 """Versioned JSON boundary for paper replay and durable Decimal account state."""
 
-from dataclasses import asdict, is_dataclass
+from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
 from datetime import datetime
 from decimal import Decimal
 import json
+
+from ..enums import PositionStatus
+from ..positions import PositionState
 
 from .models import (
     EntrySetup, PaperAccount, PaperBook, PaperFill, PaperOrder, PaperPolicy, TradePlan,
@@ -14,7 +18,9 @@ def _default(value: object) -> object:
     if isinstance(value, (Decimal, datetime)):
         return value.isoformat() if isinstance(value, datetime) else str(value)
     if is_dataclass(value):
-        return asdict(value)
+        return {field.name: getattr(value, field.name) for field in fields(value)}
+    if isinstance(value, Mapping):
+        return dict(value)
     raise TypeError(f"unsupported paper JSON value: {type(value).__name__}")
 
 
@@ -68,6 +74,16 @@ def decode_account(raw: str) -> PaperAccount:
             order_values[name] = Decimal(order_values[name])
         if order_values.get("exit_triggered_at"):
             order_values["exit_triggered_at"] = datetime.fromisoformat(order_values["exit_triggered_at"])
+        if order_values.get("position_state") is not None:
+            state = dict(order_values["position_state"])
+            state["status"] = PositionStatus(state["status"])
+            for name in ("updated_at", "opened_at", "last_high_at", "stalled_since", "profit_ready_since"):
+                if state.get(name) is not None:
+                    state[name] = datetime.fromisoformat(state[name])
+            order_values["position_state"] = PositionState(**state)
+        order_values["price_history"] = tuple(
+            (datetime.fromisoformat(stamp), float(price)) for stamp, price in item.get("price_history", ())
+        )
         orders.append(PaperOrder(**order_values))
     fills = []
     for item in values["fills"]:

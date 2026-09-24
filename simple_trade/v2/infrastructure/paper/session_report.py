@@ -10,6 +10,7 @@ import time
 
 from ...domain.planning.codec import decode_account
 from ...domain.planning.ledger import LedgerFill, LedgerOrder, LedgerSignal, PaperLedgerSnapshot
+from ...domain.planning.models import PaperExitPolicy
 from .sqlite_account_store import SqlitePaperAccountStore
 
 
@@ -45,18 +46,30 @@ def read_session_report(path: Path, *, now: datetime | None = None) -> dict:
     ))
     realized = sum((order.sell_notional - order.buy_notional - order.buy_fee - order.sell_fee
                     for order in account.orders if order.bought and not order.held), Decimal("0"))
+    configuration = json.loads(run[0])
+    stale_analysis = tuple(order.plan.setup.stock_code for order in account.orders
+                           if order.held and not order.exit_reason
+                           and order.plan.setup.exit_policy is PaperExitPolicy.PRODUCTION_RULES
+                           and (order.position_state is None or not 0 <= (
+                               now - order.position_state.updated_at).total_seconds()
+                               <= configuration["experiment"]["maximum_signal_age_seconds"]))
     return {
         "mode": "LOCAL_PAPER_EXPERIMENT_ONLY", "execution_model": "sampled_server_time_approximation",
         "reported_at": now, "account_id": account.account_id, "as_of": account.as_of,
         "run_id": run[1], "started_at": run[2], "ended_at": run[3], "error": run[4],
         "run_record_status": "CLOSED" if run[3] else "OPEN_OR_UNCLEAN",
-        "configuration": json.loads(run[0]), "cash": account.cash, "reserved_cash": account.reserved_cash,
+        "configuration": configuration, "cash": account.cash, "reserved_cash": account.reserved_cash,
         "marked_equity": account.equity, "stale_position_codes": stale,
+        "stale_analysis_codes": stale_analysis,
         "closed_order_net_pnl": realized,
         "fees": sum((fill.fee for fill in account.fills), Decimal("0")),
         "orders": [{"plan": order.plan, "status": order.status, "held": order.held,
                     "entry_remaining": order.entry_remaining, "bought": order.bought, "sold": order.sold,
                     "entry_end_reason": order.entry_end_reason, "exit_reason": order.exit_reason,
+                    "average_buy_price": order.buy_notional / order.bought if order.bought else None,
+                    "position_reason": order.position_state.metadata.get("last_reason") if order.position_state else None,
+                    "position_evaluated_at": order.position_state.updated_at if order.position_state else None,
+                    "exit_triggered_at": order.exit_triggered_at,
                     "closed_net_pnl": (order.sell_notional - order.buy_notional - order.buy_fee - order.sell_fee
                                        if order.bought and not order.held else None)}
                    for order in account.orders],
@@ -82,6 +95,9 @@ def read_ledger_snapshot(path: Path, *, now: datetime | None = None) -> PaperLed
             str(setup.entry_min), str(setup.entry_limit), str(setup.stop_price), setup.valid_until,
             setup.exit_at, item["entry_end_reason"], item["exit_reason"],
             str(item["closed_net_pnl"]) if item["closed_net_pnl"] is not None else None,
+            average_buy_price=str(item["average_buy_price"]) if item["average_buy_price"] is not None else None,
+            position_reason=item["position_reason"], position_evaluated_at=item["position_evaluated_at"],
+            exit_triggered_at=item["exit_triggered_at"],
         ))
     return PaperLedgerSnapshot(
         reported_at=report["reported_at"], as_of=report["as_of"], account_id=report["account_id"],
@@ -101,4 +117,6 @@ def read_ledger_snapshot(path: Path, *, now: datetime | None = None) -> PaperLed
         recent_signals=tuple(LedgerSignal(
             item["event_id"], item["input"]["stock_code"], item["processed_at"], item["result"]["reason"],
         ) for item in report["recent_signals"]),
+        exit_policy=experiment.get("exit_policy", "RESEARCH_ATR"),
+        stale_analysis_codes=report["stale_analysis_codes"],
     )

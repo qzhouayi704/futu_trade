@@ -171,18 +171,39 @@ def test_cli_reports_missing_reviews_without_creating_output_databases(tmp_path)
     assert not capture.path.exists() and not paper.path.exists()
 
 
-def test_benchmark_is_bounded_and_cleans_only_its_own_temporary_directory(tmp_path):
+@pytest.mark.parametrize("mode", ["RESEARCH_ATR", "PRODUCTION_RULES"])
+def test_benchmark_is_bounded_and_cleans_only_its_own_temporary_directory(tmp_path, mode):
     script = Path(__file__).resolve().parents[2] / "scripts" / "paper_capacity_benchmark.py"
     sentinel = tmp_path / "keep.txt"
     sentinel.write_text("preserve", encoding="utf-8")
     result = subprocess.run([sys.executable, str(script), "--directory", str(tmp_path), "--records", "100",
-                             "--stocks", "3"], capture_output=True, text=True, timeout=45)
+                             "--stocks", "3", "--exit-policy", mode], capture_output=True, text=True, timeout=45)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["mode"] == "SYNTHETIC_CAPACITY_ONLY" and payload["execution_allowed"] is False
     assert payload["plan_count"] == 3 and payload["active_positions"] == 3
     assert payload["sizing_assumptions"]["capture_bytes_per_record"] > 0
+    assumptions = CapacityAssumptions(**payload["sizing_assumptions"])
+    assert assumptions.exit_policy == mode
+    if mode == "PRODUCTION_RULES":
+        assert payload["analysed_positions"] == 3
+        assert payload["feature_commands"] > 0 and payload["feature_command_p95_ms"] > 0
     assert list(tmp_path.iterdir()) == [sentinel]
     result = subprocess.run([sys.executable, str(script), "--directory", str(tmp_path), "--records", "10001"],
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 1 and list(tmp_path.iterdir()) == [sentinel]
+
+
+def test_production_readiness_requires_matching_capacity_and_counts_features(tmp_path):
+    paper, capture, values = inputs(tmp_path)
+    paper = replace(paper, experiment=replace(paper.experiment, exit_policy="PRODUCTION_RULES"))
+    report = evaluate_readiness(paper, capture, **values)
+    assert {"EXIT_POLICY_CAPACITY_MISMATCH", "PRODUCTION_EXIT_CAPACITY_UNMEASURED"} <= codes(report)
+    old_commands = report.projection.paper_commands
+    assumptions = replace(ASSUMPTIONS, exit_policy="PRODUCTION_RULES", feature_interval_seconds=5)
+    report = evaluate_readiness(paper, capture, **(values | {"assumptions": assumptions}))
+    assert report.ready_for_paper_trial
+    assert report.projection.paper_commands > old_commands
+    assert report.projection.paper_growth_bytes == report.projection.paper_commands * assumptions.paper_bytes_per_command
+    with pytest.raises(ValueError):
+        replace(assumptions, feature_interval_seconds=None)
