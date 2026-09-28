@@ -76,11 +76,23 @@ class ThemeCaptureLifecycleTest(unittest.TestCase):
         cls.stack.callback(os.chdir, original_cwd)
         cls.violations = []
         safe_env = {k: v for k, v in os.environ.items() if k.upper() in
-                    ('PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'COMSPEC', 'PATHEXT', 'USERPROFILE')}
+                    ('PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'COMSPEC', 'PATHEXT', 'USERPROFILE', 'HOME')}
         safe_env.update(APPDATA=str(cls.root/'sdk-logs'), V2_ENABLED='0', FUTU_AUTO_TRADE='0',
                         RESEARCH_THEME_CAPTURE_ENABLED='0', CAPITAL_TICK_ACCUMULATOR_ENABLED='0',
                         CAPITAL_TREND_ALERT_ENABLED='0', LEGACY_SIGNAL_MODE='observe')
         cls.stack.enter_context(patch.dict(os.environ, safe_env, clear=True))
+        # Linux Futu imports require the existing HOME value. Keep it unchanged,
+        # but redirect actual SDK file logging into the fixture, as on Windows.
+        (cls.root/'sdk-logs').mkdir()
+        original_file_handler = logging.FileHandler.__init__
+
+        def fixture_file_handler(handler, filename, *args, **kwargs):
+            target = Path(filename).resolve()
+            if not target.is_relative_to(cls.root):
+                target = cls.root/'sdk-logs'/target.name
+            original_file_handler(handler, target, *args, **kwargs)
+
+        cls.stack.enter_context(patch.object(logging.FileHandler, '__init__', fixture_file_handler))
         cls.stack.enter_context(warnings.catch_warnings())
         warnings.simplefilter('ignore', DeprecationWarning)
         # urllib3 otherwise probes IPv6 by binding ::1 during import. Disable the

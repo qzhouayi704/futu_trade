@@ -7,7 +7,7 @@ default_runtime=".venv/bin/python"
 [[ -x "$default_runtime" ]] || default_runtime=".venv/Scripts/python.exe"
 runtime="${THEME_SMOKE_PYTHON:-$default_runtime}"
 if [[ "$mode" == "check" ]]; then
-  uv --cache-dir backtest_results/uv-cache run --offline --no-project --python "$runtime" python -X utf8 -c 'import sys, json, importlib.metadata as m; print(json.dumps({"executable":sys.executable,"version":sys.version,"dependencies":{name:m.version(name) for name in ("fastapi","starlette","pydantic","futu-api","python-socketio","pytest")}},ensure_ascii=False))'
+  uv --cache-dir backtest_results/uv-cache run --offline --no-project --python "$runtime" python -X utf8 -c 'import sys, json, importlib.util, importlib.metadata as m; print(json.dumps({"executable":sys.executable,"version":sys.version,"dependencies":{name:m.version(name) for name in ("fastapi","starlette","pydantic","futu-api","python-socketio")},"optional_pytest":m.version("pytest") if importlib.util.find_spec("pytest") else None},ensure_ascii=False))'
 elif [[ "$mode" == "test" ]]; then
   export THEME_CAPTURE_ISOLATED_SMOKE=1
   uv --cache-dir backtest_results/uv-cache run --offline --no-project --python "$runtime" python -B -X utf8 -m unittest tests.v2.test_theme_capture_lifecycle "$@"
