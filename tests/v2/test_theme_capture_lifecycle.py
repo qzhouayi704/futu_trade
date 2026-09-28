@@ -102,6 +102,9 @@ class ThemeCaptureLifecycleTest(unittest.TestCase):
             cls.stack.enter_context(patch.object(socket.socket, name, cls.reject_network))
         cls.stack.enter_context(patch('socket.getaddrinfo', cls.reject_network))
         cls.stack.enter_context(patch('socket.create_connection', cls.reject_network))
+        # Resolve the SDK's local crypto library before the blanket process guard:
+        # Linux locates libgmp using read-only ldconfig. No broker module is loaded.
+        importlib.import_module('Crypto.PublicKey.RSA')
         cls.stack.enter_context(patch('subprocess.check_output', return_value=b'isolated-smoke-fixture'))
         cls.stack.enter_context(patch('subprocess.Popen', side_effect=AssertionError('subprocess forbidden in smoke')))
         original_connect = sqlite3.connect
