@@ -11,14 +11,17 @@ import logging
 import asyncio
 import json
 import os
-from datetime import datetime
-from typing import List, Dict, Tuple, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, List, Dict, Tuple, Optional
 from ...utils.logger import get_flow_logger
 from ...utils import env_flag, parse_flag
 from ...config.legacy_signal_policy import resolve_legacy_signal_policy
 
 from .pipeline_broadcast import PipelineBroadcast
 from .signal_arbitrator import SignalArbitrator
+
+if TYPE_CHECKING:
+    from ...services.research.theme_capture.models import ThemeCapturePort
 
 import re as _re
 
@@ -69,6 +72,7 @@ class QuotePipeline:
         stock_data_service=None,
         alert_service=None,
         kline_service=None,
+        theme_capture: "ThemeCapturePort | None" = None,
     ):
         """
         初始化行情管道
@@ -84,6 +88,7 @@ class QuotePipeline:
             stock_data_service: 股票数据服务（显式注入）
             alert_service: 告警服务（显式注入）
             kline_service: K线服务（显式注入）
+            theme_capture: 默认关闭的研究证据采集接口，不具有交易权限
         """
         self.container = container
         self.socket_manager = socket_manager
@@ -99,6 +104,7 @@ class QuotePipeline:
         self.stock_data_service = stock_data_service or getattr(container, 'stock_data_service', None)
         self.alert_service = alert_service or getattr(container, 'alert_service', None)
         self.kline_service = kline_service or getattr(container, 'kline_service', None)
+        self.theme_capture = theme_capture
 
         self.push_interval = 10
         self.strategy_check_interval = 60
@@ -1150,6 +1156,11 @@ class QuotePipeline:
             trading = self._filter_trading_quotes(quotes)
             if not trading:
                 return
+            if self.theme_capture is not None:
+                try:
+                    self.theme_capture.request_refresh()
+                except Exception:
+                    logging.exception('主题研究预采集失败；原信号判断继续')
             inflow_contexts = self._capital_inflow_market_gate.evaluate(trading)
             bs = getattr(self.container, 'baseline_service', None)
             held = positions or {}
@@ -1185,6 +1196,11 @@ class QuotePipeline:
                 alert_payload = alert.to_dict()
                 alert_payload['advisory'] = not self.legacy_signal_policy.action_enabled
                 alert_payload['legacy_observe_only'] = self.legacy_signal_policy.observe_only
+                if self.theme_capture is not None:
+                    try:
+                        self.theme_capture.on_signal(alert_payload, received_at=datetime.now(timezone.utc))
+                    except Exception:
+                        logging.exception('主题研究信号留痕失败；原信号广播和落库继续')
                 if self.legacy_signal_policy.action_enabled:
                     await self.socket_manager.emit_to_all('capital_trend_alert', alert_payload)
                 emitted.append(alert_payload)

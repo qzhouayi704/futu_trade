@@ -59,6 +59,7 @@ async def lifespan(app: FastAPI):
     quote_pusher_started = False
     quote_pusher = None
     v2_runtime = None
+    theme_capture = None
     background_tasks: list[asyncio.Task] = []
 
     def _track(coro, name: str) -> asyncio.Task:
@@ -118,6 +119,13 @@ async def lifespan(app: FastAPI):
         from .websocket import get_socket_manager as _get_socket_manager
         socket_manager = _get_socket_manager()
 
+        # 可选研究证据采集：默认关闭，不改变策略、订阅或交易权限。
+        try:
+            from .services.research.theme_capture.service import configured_capture
+            theme_capture = configured_capture(container.db_manager.database_path, os.environ)
+        except Exception:
+            logging.exception('主题研究采集装配失败；主应用继续且采集保持关闭')
+
         # 初始化统一行情处理管道（A6: 显式依赖注入）
         quote_pipeline = QuotePipeline(
             container=container,
@@ -131,6 +139,7 @@ async def lifespan(app: FastAPI):
             stock_data_service=container.stock_data_service,
             alert_service=container.alert_service,
             kline_service=container.kline_service,
+            theme_capture=theme_capture,
         )
 
         # 初始化系统协调器（替代旧的 MonitorCoordinator 和 BroadcastCoordinator）
@@ -554,11 +563,21 @@ async def lifespan(app: FastAPI):
             await asyncio.gather(*background_tasks, return_exceptions=True)
             logging.info(f"已取消 {len(background_tasks)} 个后台任务")
 
-        # 确保清理所有资源
+        # 先停止信号生产者，再关闭研究队列，保留退出期间最后一批信号。
         try:
             if quote_pusher_started and quote_pusher:
                 await quote_pusher.stop()
+        except Exception:
+            logging.exception('行情推送停止异常；继续排空研究采集并清理资源')
+        finally:
+            if theme_capture is not None:
+                try:
+                    await asyncio.to_thread(theme_capture.close)
+                except Exception:
+                    logging.exception('主题研究采集停止失败；不影响主应用清理')
 
+        # 确保清理所有资源
+        try:
             try:
                 state = state_manager
                 if state.is_running():

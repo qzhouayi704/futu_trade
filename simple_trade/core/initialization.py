@@ -105,7 +105,8 @@ async def initialize_system_data(container: ServiceContainer, state_manager) -> 
     # 4. 清理当天不完整K线数据（仅盘中清理，收盘后数据已完整）
     if container.futu_client.is_available():
         from ..utils.market_helper import MarketTimeHelper
-        active_markets = MarketTimeHelper.get_current_active_markets()
+        # 订阅市场选择有休市回退值，不能作为删除当天K线的交易时段判断。
+        active_markets = [m for m in ('HK', 'US') if MarketTimeHelper.is_market_trading(m)]
         if active_markets:
             # 盘中启动：今天数据可能不完整，清理
             try:
